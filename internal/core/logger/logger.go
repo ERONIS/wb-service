@@ -52,10 +52,20 @@ func NewLogger(config Config) (*Logger, error) {
 
 	return &Logger{
 		Logger: zapLogger,
+		file:   logFile,
 	}, nil
 }
 
 func (l *Logger) Close() {
+	if l == nil {
+		return
+	}
+
+	_ = l.Sync()
+	if l.file == nil {
+		return
+	}
+
 	if err := l.file.Close(); err != nil {
 		fmt.Println("failed to close application logger", err)
 	}

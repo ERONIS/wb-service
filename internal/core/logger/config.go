@@ -7,8 +7,8 @@ import (
 )
 
 type Config struct {
-	Level  string `envconfig:"LEVEL" required:"true"`
-	Folder string `envconfig:"FOLDER" required:"true"`
+	Level  string `envconfig:"LEVEL" default:"info"`
+	Folder string `envconfig:"FOLDER" default:"out/logs"`
 }
 
 func NewConfig() (Config, error) {
