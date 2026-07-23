@@ -7,8 +7,10 @@ import (
 	"os/signal"
 	"syscall"
 
+	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
 	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
+	core_tg_middleware "github.com/ERONIS/wb-service/internal/core/transport/telegram/middleware"
 	telegram_server "github.com/ERONIS/wb-service/internal/core/transport/telegram/server"
 	users_postgres_repository "github.com/ERONIS/wb-service/internal/feature/users/repository/postgres"
 	users_service "github.com/ERONIS/wb-service/internal/feature/users/service"
@@ -29,6 +31,25 @@ func run() error {
 		syscall.SIGTERM,
 	)
 	defer cancel()
+
+	// Logger.
+
+	loggerConfig, err := core_logger.NewConfig()
+	if err != nil {
+		return fmt.Errorf(
+			"create logger config: %w",
+			err,
+		)
+	}
+
+	logger, err := core_logger.NewLogger(loggerConfig)
+	if err != nil {
+		return fmt.Errorf(
+			"create logger: %w",
+			err,
+		)
+	}
+	defer logger.Close()
 
 	// PostgreSQL.
 
@@ -73,6 +94,7 @@ func run() error {
 	}
 
 	bot := telegramServer.Bot()
+	bot.Use(core_tg_middleware.Logger(logger.Logger))
 
 	// Users feature:
 	// PostgreSQL repository → service → Telegram handler.
