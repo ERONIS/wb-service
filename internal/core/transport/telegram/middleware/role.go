@@ -42,20 +42,40 @@ func NewRoleAccess(
 func (a *RoleAccess) GetRole(
 	ctx tele.Context,
 ) (domain.UserRole, bool, error) {
+	telegramID, err := telegramSenderID(ctx)
+	if errors.Is(err, errTelegramSenderUnavailable) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+
+	return a.getRole(telegramID)
+}
+
+var errTelegramSenderUnavailable = errors.New(
+	"Telegram sender is unavailable",
+)
+
+func telegramSenderID(ctx tele.Context) (int64, error) {
 	if ctx == nil {
-		return "", false, fmt.Errorf(
-			"telegram context is nil",
-		)
+		return 0, fmt.Errorf("telegram context is nil")
 	}
 
 	sender := ctx.Sender()
 	if sender == nil || sender.ID <= 0 {
-		return "", false, nil
+		return 0, errTelegramSenderUnavailable
 	}
 
+	return sender.ID, nil
+}
+
+func (a *RoleAccess) getRole(
+	telegramID int64,
+) (domain.UserRole, bool, error) {
 	role, err := a.roleProvider.GetRole(
 		a.appCtx,
-		sender.ID,
+		telegramID,
 	)
 	if err != nil {
 		if errors.Is(err, core_errors.ErrNotFound) {
@@ -64,7 +84,7 @@ func (a *RoleAccess) GetRole(
 
 		return "", false, fmt.Errorf(
 			"get role for TelegramID='%d': %w",
-			sender.ID,
+			telegramID,
 			err,
 		)
 	}
@@ -73,7 +93,7 @@ func (a *RoleAccess) GetRole(
 		return "", false, fmt.Errorf(
 			"invalid role '%s' for TelegramID='%d'",
 			role,
-			sender.ID,
+			telegramID,
 		)
 	}
 
@@ -110,7 +130,24 @@ func (a *RoleAccess) Require(
 
 	return func(next tele.HandlerFunc) tele.HandlerFunc {
 		return func(ctx tele.Context) error {
-			actualRole, found, err := a.GetRole(ctx)
+			telegramID, err := telegramSenderID(ctx)
+			if err != nil {
+				responseErr := respondRoleMessage(
+					ctx,
+					"Не удалось определить Telegram-пользователя.",
+				)
+				if responseErr != nil {
+					return fmt.Errorf(
+						"respond to missing Telegram sender: %v: %w",
+						responseErr,
+						err,
+					)
+				}
+
+				return nil
+			}
+
+			actualRole, found, err := a.getRole(telegramID)
 			if err != nil {
 				responseErr := respondRoleMessage(
 					ctx,
@@ -147,6 +184,10 @@ func respondRoleMessage(
 	ctx tele.Context,
 	message string,
 ) error {
+	if ctx == nil {
+		return fmt.Errorf("telegram context is nil")
+	}
+
 	if ctx.Callback() != nil {
 		return ctx.RespondAlert(message)
 	}

@@ -10,21 +10,11 @@ import (
 	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
 	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
-	core_tg_middleware "github.com/ERONIS/wb-service/internal/core/transport/telegram/middleware"
 	telegram_server "github.com/ERONIS/wb-service/internal/core/transport/telegram/server"
-	users_postgres_repository "github.com/ERONIS/wb-service/internal/feature/users/repository/postgres"
-	users_service "github.com/ERONIS/wb-service/internal/feature/users/service"
-	users_transport_tg "github.com/ERONIS/wb-service/internal/feature/users/transport/telegram"
+	users "github.com/ERONIS/wb-service/internal/feature/users"
 )
 
 func main() {
-	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "run application:", err)
-		os.Exit(1)
-	}
-}
-
-func run() error {
 	ctx, cancel := signal.NotifyContext(
 		context.Background(),
 		os.Interrupt,
@@ -34,116 +24,51 @@ func run() error {
 
 	// Logger.
 
-	loggerConfig, err := core_logger.NewConfig()
+	logger, err := core_logger.NewLogger(
+		core_logger.NewConfigMust(),
+	)
 	if err != nil {
-		return fmt.Errorf(
-			"create logger config: %w",
-			err,
-		)
-	}
-
-	logger, err := core_logger.NewLogger(loggerConfig)
-	if err != nil {
-		return fmt.Errorf(
-			"create logger: %w",
-			err,
-		)
+		panic(fmt.Errorf("create logger: %w", err))
 	}
 	defer logger.Close()
 
 	// PostgreSQL.
 
-	postgresConfig, err := core_postgres_pool.NewConfig()
-	if err != nil {
-		return fmt.Errorf(
-			"create PostgreSQL config: %w",
-			err,
-		)
-	}
-
 	postgresPool, err := core_postgres_pool.NewConnectionPool(
-		postgresConfig,
+		core_postgres_pool.NewConfigMust(),
 		ctx,
 	)
 	if err != nil {
-		return fmt.Errorf(
-			"create PostgreSQL pool: %w",
-			err,
-		)
+		panic(fmt.Errorf("create PostgreSQL pool: %w", err))
 	}
 	defer postgresPool.Close()
 
 	// Telegram.
 
-	telegramConfig, err := telegram_server.NewConfig()
-	if err != nil {
-		return fmt.Errorf(
-			"create Telegram config: %w",
-			err,
-		)
-	}
-
 	telegramServer, err := telegram_server.New(
-		telegramConfig,
+		telegram_server.NewConfigMust(),
+		logger.Logger,
 	)
 	if err != nil {
-		return fmt.Errorf(
-			"create Telegram server: %w",
-			err,
-		)
+		panic(fmt.Errorf("create Telegram server: %w", err))
 	}
 
 	bot := telegramServer.Bot()
-	bot.Use(core_tg_middleware.Logger(logger.Logger))
 
-	// Users feature:
-	// PostgreSQL repository → service → Telegram handler.
-
-	usersRepository :=
-		users_postgres_repository.NewUsersRepository(
-			postgresPool,
-		)
-
-	usersService :=
-		users_service.NewUsersService(
-			usersRepository,
-		)
-
-	usersTelegramHandler :=
-		users_transport_tg.NewUsersTgHandler(
-			ctx,
-			usersService,
-		)
-
-	// Общие Telegram-команды.
-
-	telegramRoleAccess :=
-		core_tg_middleware.NewRoleAccess(
-			ctx,
-			usersService,
-		)
-
-	telegramHandler :=
-		core_transport_telegram.NewHandler(
-			bot,
-			telegramRoleAccess,
-		)
-
-	telegramHandler.Register()
-
-	// Users-команды.
-
-	usersTelegramHandler.Register(
-		bot,
-		telegramHandler,
+	usersFeature := users.New(
+		ctx,
+		postgresPool,
 	)
+	// Telegram commands.
+
+	telegramHandler := core_transport_telegram.Register(
+		ctx,
+		bot,
+		usersFeature.Service(),
+	)
+	usersFeature.RegisterTelegram(telegramHandler)
 
 	if err := telegramServer.Run(ctx); err != nil {
-		return fmt.Errorf(
-			"run Telegram server: %w",
-			err,
-		)
+		panic(fmt.Errorf("run Telegram server: %w", err))
 	}
-
-	return nil
 }
