@@ -7,7 +7,6 @@ import (
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
-	core_tg_middleware "github.com/ERONIS/wb-service/internal/core/transport/telegram/middleware"
 	users_service "github.com/ERONIS/wb-service/internal/feature/users/service"
 
 	tele "gopkg.in/telebot.v3"
@@ -105,51 +104,47 @@ func NewUsersTgHandler(
 }
 
 func (h *UsersTgHandler) Register(
-	bot *tele.Bot,
 	menu *core_transport_telegram.Handler,
 ) {
-	bot.Handle(tele.OnText, h.AddUserInput)
+	menu.RegisterHandler(
+		tele.OnText,
+		domain.RoleUser,
+		h.AddUserInput,
+	)
 
 	menu.RegisterMenuItem(
 		buttonListUsers,
 		domain.RoleAdmin,
 		h.ListUsers,
-		core_tg_middleware.RequireSender,
 	)
 	menu.RegisterCallback(
 		buttonStartAddUser,
 		domain.RoleAdmin,
 		h.StartAddUser,
-		core_tg_middleware.RequireSender,
 	)
 	menu.RegisterCallback(
 		buttonCancelAddUser,
 		domain.RoleAdmin,
 		h.CancelAddUser,
-		core_tg_middleware.RequireSender,
 	)
 	menu.RegisterCallback(
 		buttonGetUser,
 		domain.RoleAdmin,
 		withUserPayload(h.getUser),
-		core_tg_middleware.RequireSender,
 	)
 	menu.RegisterCallback(
 		buttonSetAdmin,
 		domain.RoleAdmin,
 		withUserPayload(h.setAdmin),
-		core_tg_middleware.RequireSender,
 	)
 	menu.RegisterCallback(
 		buttonConfirmDeleteUser,
 		domain.RoleAdmin,
 		withUserPayload(h.confirmDeleteUser),
-		core_tg_middleware.RequireSender,
 	)
 	menu.RegisterCallback(
 		buttonDeleteUser,
 		domain.RoleAdmin,
 		withUserPayload(h.deleteUserCallback),
-		core_tg_middleware.RequireSender,
 	)
 }

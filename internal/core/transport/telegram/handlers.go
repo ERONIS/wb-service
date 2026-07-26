@@ -1,7 +1,7 @@
 package core_transport_telegram
 
 import (
-	"fmt"
+	"context"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_tg_middleware "github.com/ERONIS/wb-service/internal/core/transport/telegram/middleware"
@@ -9,12 +9,39 @@ import (
 	tele "gopkg.in/telebot.v3"
 )
 
-const mainMenuText = "🏠 <b>Главное меню</b>\n\nВыберите действие:"
-
 type Handler struct {
 	bot        *tele.Bot
 	roleAccess *core_tg_middleware.RoleAccess
 	menuItems  []menuItem
+}
+
+// Register создаёт Telegram-обработчик и регистрирует главное меню.
+func Register(
+	ctx context.Context,
+	bot *tele.Bot,
+	roleProvider core_tg_middleware.RoleProvider,
+) *Handler {
+	roleAccess := core_tg_middleware.NewRoleAccess(
+		ctx,
+		roleProvider,
+	)
+	handler := NewHandler(bot, roleAccess)
+	handler.RegisterMainMenu()
+
+	return handler
+}
+
+// RegisterHandler регистрирует команду или Telegram event с проверкой роли.
+func (h *Handler) RegisterHandler(
+	endpoint any,
+	minimumRole domain.UserRole,
+	handler tele.HandlerFunc,
+) {
+	h.bot.Handle(
+		endpoint,
+		handler,
+		h.roleAccess.Require(minimumRole),
+	)
 }
 
 func NewHandler(
@@ -35,24 +62,7 @@ func NewHandler(
 	}
 }
 
-func (h *Handler) Register() {
-	mainMenuButton := MainMenuButton()
-
-	h.RegisterCallback(
-		mainMenuButton,
-		domain.RoleUser,
-		h.handleMainMenu,
-		core_tg_middleware.RequireSender,
-	)
-	h.bot.Handle(
-		"/start",
-		h.handleMainMenu,
-		core_tg_middleware.RequireSender,
-	)
-}
-
 // RegisterCallback регистрирует нативный callback endpoint Telebot.
-// Middleware, которое не вызывает next, должно само ответить на callback.
 func (h *Handler) RegisterCallback(
 	button tele.Btn,
 	minimumRole domain.UserRole,
@@ -68,17 +78,5 @@ func (h *Handler) RegisterCallback(
 		&button,
 		handler,
 		core_tg_middleware.Callback(middlewares...)...,
-	)
-}
-
-func (h *Handler) handleMainMenu(ctx tele.Context) error {
-	markup, err := h.mainMenuMarkup(ctx)
-	if err != nil {
-		return fmt.Errorf("build main menu markup: %w", err)
-	}
-
-	return ctx.EditOrSend(
-		mainMenuText,
-		markup,
 	)
 }
