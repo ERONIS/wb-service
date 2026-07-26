@@ -65,6 +65,5 @@ func (h *CardsTgHandler) Register(
 ) {
 	h.openFile = bot.File
 
-	menu.Register()
-	
+	menu.RegisterMainMenu()
 }
