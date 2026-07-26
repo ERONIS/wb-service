@@ -117,8 +117,17 @@ func run() error {
 
 	// Общие Telegram-команды.
 
+	telegramRoleAccess :=
+		core_tg_middleware.NewRoleAccess(
+			ctx,
+			usersService,
+		)
+
 	telegramHandler :=
-		core_transport_telegram.NewHandler(bot)
+		core_transport_telegram.NewHandler(
+			bot,
+			telegramRoleAccess,
+		)
 
 	telegramHandler.Register()
 
