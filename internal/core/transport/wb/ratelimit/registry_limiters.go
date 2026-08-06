@@ -2,7 +2,6 @@ package core_transport_wb_ratelimit
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 
 	core_transport_wb_policy "github.com/ERONIS/wb-service/internal/core/transport/wb/policy"
@@ -40,44 +39,4 @@ func (registry *Registry) limiterFor(
 	registry.limiters[key] = limiter
 
 	return limiter, nil
-}
-func (registry *Registry) limitersFor(
-	sellerScope string,
-	bucketIDs []core_transport_wb_policy.BucketID,
-) ([]*bucketLimiter, error) {
-	limiters := make(
-		[]*bucketLimiter,
-		0,
-		len(bucketIDs),
-	)
-
-	for _, bucketID := range bucketIDs {
-		limiter, err := registry.limiterFor(
-			sellerScope,
-			bucketID,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		limiters = append(
-			limiters,
-			limiter,
-		)
-	}
-
-	slices.SortFunc(
-		limiters,
-		func(
-			left *bucketLimiter,
-			right *bucketLimiter,
-		) int {
-			return strings.Compare(
-				string(left.policy.ID),
-				string(right.policy.ID),
-			)
-		},
-	)
-
-	return limiters, nil
 }
