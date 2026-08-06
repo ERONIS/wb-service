@@ -10,7 +10,7 @@ import (
 
 func (registry *Registry) ObserveResponse(
 	sellerScope string,
-	bucketIDs []core_transport_wb_policy.BucketID,
+	bucketID core_transport_wb_policy.BucketID,
 	response *http.Response,
 ) error {
 	if response == nil {
@@ -18,11 +18,11 @@ func (registry *Registry) ObserveResponse(
 	}
 
 	if err :=
-		core_transport_wb_policy.ValidateBucketIDs(
-			bucketIDs,
+		core_transport_wb_policy.ValidateBucketID(
+			bucketID,
 		); err != nil {
 		return fmt.Errorf(
-			"validate WB rate limiter bucket IDs: %w",
+			"validate WB rate limiter bucket ID: %w",
 			err,
 		)
 	}
@@ -50,18 +50,19 @@ func (registry *Registry) ObserveResponse(
 		}
 	}
 
-	limiters, err := registry.limitersFor(
+	limiter, err := registry.limiterFor(
 		sellerScope,
-		bucketIDs,
+		bucketID,
 	)
 	if err != nil {
 		return fmt.Errorf(
-			"prepare WB rate limiters: %w",
+			"prepare WB rate limiter: %w",
 			err,
 		)
 	}
 
-	lockLimiters(limiters)
+	limiter.mutex.Lock()
+	defer limiter.mutex.Unlock()
 
 	now := time.Now()
 
@@ -71,22 +72,16 @@ func (registry *Registry) ObserveResponse(
 				*headerValues.retrySeconds,
 			) * time.Second
 
-		for _, limiter := range limiters {
-			limiter.applyRetryLocked(
-				now,
-				retryDuration,
-			)
-		}
+		limiter.applyRetryLocked(
+			now,
+			retryDuration,
+		)
 	} else {
-		for _, limiter := range limiters {
-			limiter.clampRemainingLocked(
-				now,
-				*headerValues.remaining,
-			)
-		}
+		limiter.clampRemainingLocked(
+			now,
+			*headerValues.remaining,
+		)
 	}
-
-	unlockLimiters(limiters)
 
 	return nil
 }
