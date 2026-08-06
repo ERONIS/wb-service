@@ -20,7 +20,7 @@ type Operation struct {
 	Name      string
 	Method    string
 	Path      string
-	Buckets   []BucketID
+	BucketID  BucketID
 	RetryMode RetryMode
 }
 
@@ -34,9 +34,9 @@ func (operation Operation) Validate() error {
 	if !strings.HasPrefix(operation.Path, "/") {
 		return errors.New("operation path must start with /")
 	}
-	if err := ValidateBucketIDs(operation.Buckets); err != nil {
+	if err := ValidateBucketID(operation.BucketID); err != nil {
 		return fmt.Errorf(
-			"validate operation bucket IDs: %w",
+			"validate operation bucket ID: %w",
 			err,
 		)
 	}

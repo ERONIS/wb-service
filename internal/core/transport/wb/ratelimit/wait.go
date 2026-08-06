@@ -11,25 +11,25 @@ import (
 func (registry *Registry) Wait(
 	ctx context.Context,
 	sellerScope string,
-	bucketIDs []core_transport_wb_policy.BucketID,
+	bucketID core_transport_wb_policy.BucketID,
 ) error {
 	if err :=
-		core_transport_wb_policy.ValidateBucketIDs(
-			bucketIDs,
+		core_transport_wb_policy.ValidateBucketID(
+			bucketID,
 		); err != nil {
 		return fmt.Errorf(
-			"validate WB rate limiter bucket IDs: %w",
+			"validate WB rate limiter bucket ID: %w",
 			err,
 		)
 	}
 
-	limiters, err := registry.limitersFor(
+	limiter, err := registry.limiterFor(
 		sellerScope,
-		bucketIDs,
+		bucketID,
 	)
 	if err != nil {
 		return fmt.Errorf(
-			"prepare WB rate limiters: %w",
+			"prepare WB rate limiter: %w",
 			err,
 		)
 	}
@@ -37,33 +37,32 @@ func (registry *Registry) Wait(
 	for {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf(
-				"wait for WB rate limiters: %w",
+				"wait for WB rate limiter: %w",
 				err,
 			)
 		}
 
-		lockLimiters(limiters)
+		limiter.mutex.Lock()
 
 		if err := ctx.Err(); err != nil {
-			unlockLimiters(limiters)
+			limiter.mutex.Unlock()
 
 			return fmt.Errorf(
-				"wait for WB rate limiters: %w",
+				"wait for WB rate limiter: %w",
 				err,
 			)
 		}
 
 		waitDuration :=
-			maxWaitDurationLocked(
-				limiters,
+			limiter.waitDurationLocked(
 				time.Now(),
 			)
 
 		if waitDuration == 0 {
-			takeLimitersLocked(limiters)
+			limiter.takeLocked()
 		}
 
-		unlockLimiters(limiters)
+		limiter.mutex.Unlock()
 
 		if waitDuration == 0 {
 			return nil
@@ -76,52 +75,11 @@ func (registry *Registry) Wait(
 			timer.Stop()
 
 			return fmt.Errorf(
-				"wait for WB rate limiters: %w",
+				"wait for WB rate limiter: %w",
 				ctx.Err(),
 			)
 
 		case <-timer.C:
 		}
-	}
-}
-
-func lockLimiters(
-	limiters []*bucketLimiter,
-) {
-	for _, limiter := range limiters {
-		limiter.mutex.Lock()
-	}
-}
-
-func unlockLimiters(
-	limiters []*bucketLimiter,
-) {
-	for index := len(limiters) - 1; index >= 0; index-- {
-		limiters[index].mutex.Unlock()
-	}
-}
-
-func maxWaitDurationLocked(
-	limiters []*bucketLimiter,
-	now time.Time,
-) time.Duration {
-	var maxWaitDuration time.Duration
-
-	for _, limiter := range limiters {
-		waitDuration :=
-			limiter.waitDurationLocked(now)
-
-		if waitDuration > maxWaitDuration {
-			maxWaitDuration = waitDuration
-		}
-	}
-
-	return maxWaitDuration
-}
-func takeLimitersLocked(
-	limiters []*bucketLimiter,
-) {
-	for _, limiter := range limiters {
-		limiter.takeLocked()
 	}
 }

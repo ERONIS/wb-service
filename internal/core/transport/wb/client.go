@@ -72,13 +72,13 @@ func (client *ScopedClient) DoJSON(
 	}
 
 	requestCtx := core_transport_wb_requestmeta.WithMetadata(
-		ctx , 
+		ctx,
 		core_transport_wb_requestmeta.Metadata{
-			SellerScope: client.credentials.Scope,
+			SellerScope:   client.credentials.Scope,
 			OperationName: operation.Name,
-			BucketIDs: operation.Buckets,
-			RetryMode: operation.RetryMode,
-			Attempt: 1,
+			BucketID:      operation.BucketID,
+			RetryMode:     operation.RetryMode,
+			Attempt:       1,
 		},
 	)
 
