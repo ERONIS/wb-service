@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/ERONIS/wb-service/internal/core/transport/wb/config"
 	core_transport_wb_middleware "github.com/ERONIS/wb-service/internal/core/transport/wb/middleware"
 	core_wb_policy "github.com/ERONIS/wb-service/internal/core/transport/wb/policy"
 	core_transport_wb_requestmeta "github.com/ERONIS/wb-service/internal/core/transport/wb/requestmeta"
@@ -27,7 +28,10 @@ type ScopedClient struct {
 	credentials Credentials
 }
 
-func NewClient(config Config, logger *zap.Logger) *Client {
+func NewClient(
+	config core_transport_wb_config.Config,
+	logger *zap.Logger,
+) *Client {
 	baseURL := strings.TrimSpace(config.BaseURL)
 	baseURL = strings.TrimRight(baseURL, "/")
 

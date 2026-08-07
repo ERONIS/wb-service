@@ -4,11 +4,10 @@
 
 Этот документ описывает текущее состояние WB-транспорта в рабочем дереве репозитория на 2026-08-01. Под «WB-транспортом» далее понимается каталог [`internal/core/transport/wb`](../internal/core/transport/wb) и его подпакеты.
 
-Единый актуальный план развития вынесен в документ
-[`Master-план WB core с middleware`](wb-middleware-core-master-plan.md).
-Он заменяет прежний executor-only completion plan и отдельные планы каталога,
-RateLimit middleware и Retry middleware. Эти superseded-документы удалены;
-история решений сведена в master-план.
+Текущая целевая архитектура и порядок реализации вынесены в документ
+[`Архитектурный master-план wb-service`](wb-service-architecture-plan.md).
+Этот файл остаётся baseline-описанием legacy transport-кода и не переопределяет
+новый план.
 
 Разбор отвечает на четыре разных вопроса:
 
@@ -76,7 +75,7 @@ flowchart LR
 | Путь | Ответственность |
 |---|---|
 | [`client.go`](../internal/core/transport/wb/client.go) | `Client`, `ScopedClient`, credentials, основной orchestration-метод `DoJSON` |
-| [`config.go`](../internal/core/transport/wb/config.go) | загрузка `WB_API_*` конфигурации из environment |
+| [`config/`](../internal/core/transport/wb/config) | загрузка, валидация и безопасное форматирование `WB_API_*` конфигурации |
 | [`request.go`](../internal/core/transport/wb/request.go) | URL, query, JSON request body и HTTP-заголовки |
 | [`response.go`](../internal/core/transport/wb/response.go) | ограниченное чтение body и JSON decoding |
 | [`errors.go`](../internal/core/transport/wb/errors.go) | представление неуспешного HTTP-ответа через `APIError` |
@@ -102,13 +101,14 @@ flowchart TD
     Root[wb] --> Middleware[wb/middleware]
     Root --> Policy[wb/policy]
     Root --> Metadata[wb/requestmeta]
+    Root --> Config[wb/config]
     Middleware --> Metadata
     Metadata --> Policy
     RateLimit[wb/ratelimit] --> Policy
 
     Root --> NetHTTP[net/http]
     Middleware --> Zap[go.uber.org/zap]
-    Root --> Envconfig[kelseyhightower/envconfig]
+    Config --> Envconfig[kelseyhightower/envconfig]
 ```
 
 Важные следствия:
@@ -127,8 +127,6 @@ flowchart TD
 
 Экспортирует:
 
-- `Config`;
-- `NewConfig()` и `NewConfigMust()`;
 - `Client` и `NewClient()`;
 - `Credentials`;
 - `ScopedClient` и `Client.ForCredentials()`;
@@ -137,7 +135,16 @@ flowchart TD
 
 Поля `Client` и `ScopedClient` закрыты. После создания пользователь не может заменить `http.Client`, `RoundTripper`, clock, response limit или middleware chain.
 
-### 6.2. `policy`
+### 6.2. `config`
+
+Экспортирует:
+
+- `CabinetID`;
+- `CabinetConfig`;
+- `Config`;
+- `NewConfig()` и `NewConfigMust()`.
+
+### 6.3. `policy`
 
 Экспортирует:
 
@@ -147,7 +154,7 @@ flowchart TD
 - `BucketPolicy`;
 - методы/функции валидации.
 
-### 6.3. `ratelimit`
+### 6.4. `ratelimit`
 
 Экспортирует только `Registry` и его операции:
 
@@ -158,7 +165,7 @@ flowchart TD
 
 Сам `bucketLimiter` закрыт. Это полезная инкапсуляция: вызывающий код не может напрямую менять токены или обходить mutex.
 
-### 6.4. `middleware` и `requestmeta`
+### 6.5. `middleware` и `requestmeta`
 
 Экспортируются building blocks:
 
@@ -173,20 +180,27 @@ flowchart TD
 
 ## 7. Конфигурация
 
-`Config` содержит два параметра:
+`config.Config` содержит общие HTTP-настройки и ordered список кабинетов:
 
 | Environment | Поле | Default | Смысл |
 |---|---|---:|---|
 | `WB_API_BASE_URL` | `BaseURL` | `https://content-api.wildberries.ru` | базовый адрес API |
 | `WB_API_TIMEOUT` | `Timeout` | `20s` | общий timeout `http.Client` |
+| `WB_API_USER_AGENT` | `UserAgent` | `wb-service/1` | фиксированный User-Agent |
+| `WB_API_CABINETS` | `Cabinets` | отсутствует | ordered список технических ID кабинетов |
 
-`NewConfig()` использует `envconfig.Process("WB_API", &config)`. `NewConfigMust()` предназначен для composition root и паникует при ошибке parsing.
+`config.NewConfig()` загружает общие поля через `envconfig`, затем читает для
+каждого ID обязательные `NAME` и `TOKEN`. `config.NewConfigMust()` предназначен
+для composition root и паникует при ошибке parsing или validation.
 
 Особенности:
 
+- display name trim-ится, token остаётся opaque и не trim-ится;
+- пустые/duplicate ID и normalized names отклоняются;
+- token и конфигурация имеют bounded размеры;
+- `String`/`GoString` и JSON не раскрывают token;
 - `NewClient()` обрезает пробелы и завершающие `/` у `BaseURL`;
-- явной проверки пустого/невалидного URL нет;
-- положительность `Timeout` не валидируется; у `http.Client` значение `0` означает отсутствие общего timeout;
+- точная URL/host validation остаётся задачей нового transport foundation;
 - default host относится к Content API. Если потребуются WB API с другими hosts, одной строки `BaseURL` на общий клиент может быть недостаточно;
 - timeout `http.Client` покрывает весь обмен, включая redirects и чтение response body. Более детальные dial/TLS/header timeouts отдельно не настраиваются, но частично наследуются из clone стандартного transport.
 
