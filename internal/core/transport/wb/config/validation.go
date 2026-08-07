@@ -12,7 +12,7 @@ const (
 	maxUserAgentLength    = 256
 )
 
-func validateConfig(config Config) error {
+func (config Config) Validate() error {
 	if config.BaseURL == "" {
 		return fmt.Errorf("base URL is empty")
 	}
@@ -45,10 +45,47 @@ func validateConfig(config Config) error {
 		return fmt.Errorf("cabinet list is empty")
 	}
 
+	seenIDs := make(map[CabinetID]struct{}, len(config.Cabinets))
+	seenNames := make(map[string]CabinetID, len(config.Cabinets))
+
+	for index, cabinet := range config.Cabinets {
+		if cabinet.ID == "" {
+			return fmt.Errorf(
+				"cabinet ID at position %d is empty",
+				index,
+			)
+		}
+
+		if _, exists := seenIDs[cabinet.ID]; exists {
+			return fmt.Errorf(
+				"cabinet ID %q is duplicated",
+				cabinet.ID,
+			)
+		}
+		seenIDs[cabinet.ID] = struct{}{}
+
+		if err := cabinet.Validate(); err != nil {
+			return err
+		}
+
+		normalizedName := strings.ToLower(
+			strings.TrimSpace(cabinet.Name),
+		)
+
+		if existingID, exists := seenNames[normalizedName]; exists {
+			return fmt.Errorf(
+				"cabinets %q and %q have duplicate names",
+				existingID,
+				cabinet.ID,
+			)
+		}
+		seenNames[normalizedName] = cabinet.ID
+	}
+
 	return nil
 }
 
-func validateCabinetConfig(config CabinetConfig) error {
+func (config CabinetConfig) Validate() error {
 	if err := validateCabinetName(config.Name); err != nil {
 		return fmt.Errorf(
 			"validate cabinet %q name: %w",

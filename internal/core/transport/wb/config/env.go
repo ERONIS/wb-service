@@ -47,7 +47,7 @@ func NewConfig() (Config, error) {
 		Cabinets:  cabinets,
 	}
 
-	if err := validateConfig(config); err != nil {
+	if err := config.Validate(); err != nil {
 		return Config{}, fmt.Errorf(
 			"validate WB API config: %w",
 			err,
@@ -77,8 +77,6 @@ func loadCabinetsFromEnv() ([]CabinetConfig, error) {
 
 	rawIDs := strings.Split(rawCabinetIDs, ",")
 	cabinets := make([]CabinetConfig, 0, len(rawIDs))
-	seenIDs := make(map[CabinetID]struct{}, len(rawIDs))
-	seenNames := make(map[string]CabinetID, len(rawIDs))
 
 	for index, rawID := range rawIDs {
 		id := CabinetID(strings.TrimSpace(rawID))
@@ -88,14 +86,6 @@ func loadCabinetsFromEnv() ([]CabinetConfig, error) {
 				index,
 			)
 		}
-
-		if _, exists := seenIDs[id]; exists {
-			return nil, fmt.Errorf(
-				"WB API cabinet ID %q is duplicated",
-				id,
-			)
-		}
-		seenIDs[id] = struct{}{}
 
 		suffix := strings.ToUpper(string(id))
 
@@ -119,26 +109,11 @@ func loadCabinetsFromEnv() ([]CabinetConfig, error) {
 			)
 		}
 
-		cabinet := CabinetConfig{
+		cabinets = append(cabinets, CabinetConfig{
 			ID:    id,
 			Name:  strings.TrimSpace(name),
 			Token: token,
-		}
-		if err := validateCabinetConfig(cabinet); err != nil {
-			return nil, err
-		}
-
-		normalizedName := strings.ToLower(cabinet.Name)
-		if existingID, exists := seenNames[normalizedName]; exists {
-			return nil, fmt.Errorf(
-				"WB API cabinets %q and %q have duplicate names",
-				existingID,
-				id,
-			)
-		}
-		seenNames[normalizedName] = id
-
-		cabinets = append(cabinets, cabinet)
+		})
 	}
 
 	return cabinets, nil
