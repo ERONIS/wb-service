@@ -1,8 +1,21 @@
 # Единый master-план WB core, cardimport, transfer и live statistics
 
+> **Актуализация архитектуры 2026-08-06.** Текущая реализация `WB Core MVP`,
+> client-go-inspired client architecture, упрощённая opaque-token модель и
+> структура feature-пакетов `service/repository/transport` определяются
+> документом
+> [`wb-service-architecture-plan.md`](./wb-service-architecture-plan.md).
+> При расхождении по архитектуре core, структуре кода и порядку текущей
+> реализации действует новый документ. Этот master-план сохраняет продуктовые
+> требования и long-term production-hardening backlog. Отложенные усиления
+> перечислены в
+> [`wb-core-future-improvements.md`](./wb-core-future-improvements.md).
+
 ## 1. Статус документа
 
-Это единственный канонический план реализации WB-интеграции в `wb-service`.
+Это канонический end-to-end product/backlog план WB-интеграции в `wb-service`.
+Канонический план текущей архитектуры и реализации WB Core MVP находится в
+[`wb-service-architecture-plan.md`](./wb-service-architecture-plan.md).
 
 Документ заменяет:
 
