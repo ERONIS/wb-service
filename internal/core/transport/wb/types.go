@@ -1,8 +1,8 @@
-package core_transport_wb
+package wb
 
-import "github.com/ERONIS/wb-service/internal/core/transport/wb/config"
+import config "github.com/ERONIS/wb-service/internal/core/transport/wb/config"
 
 type CabinetInfo struct {
-	ID   core_transport_wb_config.CabinetID
+	ID   config.CabinetID
 	Name string
 }
