@@ -1,4 +1,4 @@
-package core_transport_wb_config
+package config
 
 import (
 	"fmt"
@@ -9,7 +9,6 @@ import (
 const (
 	maxCabinetNameLength  = 128
 	maxCabinetTokenLength = 16 * 1024
-	maxUserAgentLength    = 256
 )
 
 func (config Config) Validate() error {
@@ -21,25 +20,6 @@ func (config Config) Validate() error {
 	}
 	if config.Timeout <= 0 {
 		return fmt.Errorf("timeout must be positive")
-	}
-	if config.UserAgent == "" {
-		return fmt.Errorf("user agent is empty")
-	}
-	if strings.TrimSpace(config.UserAgent) != config.UserAgent {
-		return fmt.Errorf(
-			"user agent contains surrounding whitespace",
-		)
-	}
-	if len(config.UserAgent) > maxUserAgentLength {
-		return fmt.Errorf(
-			"user agent exceeds %d bytes",
-			maxUserAgentLength,
-		)
-	}
-	if strings.ContainsAny(config.UserAgent, "\r\n") {
-		return fmt.Errorf(
-			"user agent contains a line break",
-		)
 	}
 	if len(config.Cabinets) == 0 {
 		return fmt.Errorf("cabinet list is empty")
