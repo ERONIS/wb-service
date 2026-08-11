@@ -1,4 +1,4 @@
-package core_transport_wb_config
+package config
 
 import (
 	"fmt"
@@ -12,7 +12,7 @@ func (config CabinetConfig) String() string {
 }
 
 func (config CabinetConfig) GoString() string {
-	return config.format("core_transport_wb_config.CabinetConfig")
+	return config.format("config.CabinetConfig")
 }
 
 func (config CabinetConfig) format(typeName string) string {
@@ -32,10 +32,9 @@ func (config CabinetConfig) format(typeName string) string {
 
 func (config Config) String() string {
 	return fmt.Sprintf(
-		"Config{BaseURL:%q, Timeout:%q, UserAgent:%q, Cabinets:%s}",
+		"Config{BaseURL:%q, Timeout:%q, Cabinets:%s}",
 		config.BaseURL,
 		config.Timeout.String(),
-		config.UserAgent,
 		formatCabinetConfigs(config.Cabinets),
 	)
 }

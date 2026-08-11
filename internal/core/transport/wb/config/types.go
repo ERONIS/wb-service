@@ -1,4 +1,4 @@
-package core_transport_wb_config
+package config
 
 import "time"
 
@@ -11,8 +11,7 @@ type CabinetConfig struct {
 }
 
 type Config struct {
-	BaseURL   string
-	Timeout   time.Duration
-	UserAgent string
-	Cabinets  []CabinetConfig
+	BaseURL  string
+	Timeout  time.Duration
+	Cabinets []CabinetConfig
 }

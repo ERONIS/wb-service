@@ -1,4 +1,4 @@
-package core_transport_wb_config
+package config
 
 import (
 	"fmt"
@@ -18,8 +18,6 @@ type environmentConfig struct {
 	BaseURL string `envconfig:"BASE_URL" default:"https://content-api.wildberries.ru"`
 
 	Timeout time.Duration `envconfig:"TIMEOUT" default:"20s"`
-
-	UserAgent string `envconfig:"USER_AGENT" default:"wb-service/1"`
 }
 
 func NewConfig() (Config, error) {
@@ -41,10 +39,9 @@ func NewConfig() (Config, error) {
 	}
 
 	config := Config{
-		BaseURL:   strings.TrimSpace(environment.BaseURL),
-		Timeout:   environment.Timeout,
-		UserAgent: strings.TrimSpace(environment.UserAgent),
-		Cabinets:  cabinets,
+		BaseURL:  strings.TrimSpace(environment.BaseURL),
+		Timeout:  environment.Timeout,
+		Cabinets: cabinets,
 	}
 
 	if err := config.Validate(); err != nil {

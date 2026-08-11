@@ -316,30 +316,73 @@ Worker orchestration остаётся в `feature/<name>/service/*_worker.go`, �
 
 ---
 
-## 17. Миграционный порядок после MVP
+## 17. Собственный User-Agent
+
+После MVP можно добавить собственный фиксированный `User-Agent` для исходящих
+WB-запросов.
+
+Требования:
+
+- значение определяется централизованно и одинаково для всех кабинетов;
+- значение bounded и не содержит CR/LF;
+- в значение не входят CabinetID, display name, token и другие credentials;
+- wrapper клонирует request перед изменением headers;
+- отсутствие собственного `User-Agent` не блокирует startup и WB-запросы;
+- источник значения (`BuildInfo`, config или compile-time value) выбирается
+  отдельным решением.
+
+Добавление собственного `User-Agent` не должно менять typed Content API,
+feature contracts или модель кабинетов.
+
+---
+
+## 18. Усиление границы catalog операций
+
+В MVP валидируемый конструктор `Operation` экспортируется из `policy`, чтобы
+отдельный пакет `api/content/v1` мог создавать закрытый catalog. Feature-коду
+запрещено вызывать этот конструктор правилом зависимостей и review, но Go пока
+не обеспечивает этот запрет на уровне компиляции. Client-go-подобное дерево
+пакетов сохраняется; вложенная директория `wb/internal` не планируется.
+
+Если review-границы окажется недостаточно, отдельно рассмотреть статический
+import/API check либо совместное размещение factory и catalog definitions без
+переноса существующих пакетов. Решение должно сохранять:
+
+- `Operation` и общую валидацию в `policy`;
+- определения операций в `api/content/v1`;
+- невозможность использовать произвольные method/path в feature-коде;
+- отсутствие runtime-проверок вызывающего пакета и `runtime.Caller` hacks.
+
+Точная форма проверки требует отдельного архитектурного review.
+
+---
+
+## 19. Миграционный порядок после MVP
 
 Рекомендуемая последовательность:
 
-1. Structural JWT parser.
-2. SellerKey и duplicate seller detection.
-3. Authenticated probe.
-4. Persistent binding.
-5. Rotation workflow.
-6. Singleton process guard.
-7. PostgreSQL rate backend.
-8. RatePolicyEpoch migration.
-9. Prepared mutation request.
-10. Mutation permit/egress barrier.
-11. Complete mutation cohort/revision.
-12. Extended readiness.
-13. Production rollout review.
+1. Catalog boundary enforcement.
+2. Structural JWT parser.
+3. SellerKey и duplicate seller detection.
+4. Authenticated probe.
+5. Persistent binding.
+6. Rotation workflow.
+7. Singleton process guard.
+8. PostgreSQL rate backend.
+9. RatePolicyEpoch migration.
+10. Prepared mutation request.
+11. Mutation permit/egress barrier.
+12. Complete mutation cohort/revision.
+13. Extended readiness.
+14. Production rollout review.
+15. Optional custom User-Agent.
 
 Каждый этап должен сохранять публичную typed Content API и feature-owned
 `WBTransport` contracts.
 
 ---
 
-## 18. Production boundary
+## 20. Production boundary
 
 До реализации необходимых hardening blocks нельзя обещать:
 

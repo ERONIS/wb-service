@@ -1,6 +1,4 @@
-package core_transport_wb_transport
-
-
+package transport
 
 import "net/http"
 

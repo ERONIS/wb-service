@@ -3,7 +3,7 @@
 ## 1. Статус документа
 
 Статус: канонический план текущей реализации `WB Core MVP` и архитектуры
-feature-пакетов, ревизия 2026-08-06.
+feature-пакетов, ревизия 2026-08-11.
 
 Этот документ заменяет решения о WB core, порядке его реализации и структуре
 feature-каталогов из
@@ -33,6 +33,156 @@ binding, singleton process guard, PostgreSQL admission, mutation ticket и
 вызов отправляется в WB не более одного раза. Неизвестный результат нельзя
 автоматически повторять.
 
+### 1.1. Фактическое состояние реализации на 2026-08-11
+
+В рабочем дереве реализованы Stage 1–8:
+
+```text
+Config
+→ policy и Content API catalog
+→ shared HTTP transport
+→ APIClient.Execute + stateless request/response helpers
+→ in-memory flowcontrol
+→ safe-read retry loop
+→ requestTrace и один итоговый log
+→ typed ContentV1 clients
+→ Clientset и per-cabinet clients
+```
+
+Последующие feature-этапы не завершены. В частности:
+
+- WB Core не подключён к feature-коду и composition root;
+- feature transport для WB ещё не реализован.
+
+Сам WB Core собран, но общий application MVP не завершён до подключения
+Clientset в composition root и feature transports.
+
+### 1.2. Реализованные изменения
+
+Config и базовые типы:
+
+- добавлены `CabinetID`, `CabinetConfig` и публичный безопасный
+  `CabinetInfo`;
+- реализована multi-cabinet ENV-конфигурация с bounded validation;
+- token хранится как opaque value, не trim-ится и исключён из JSON;
+- `String` и `GoString` скрывают credentials.
+
+Policy и Content API catalog:
+
+- добавлены закрытые значения `Operation`, `OperationID`, `OperationKind`,
+  `RetryMode`, `BodyMode`, `BucketID` и `BucketSpec`;
+- operation manifest задаёт method, path, bucket, read/mutation kind, retry
+  mode, success statuses и bounds body;
+- catalog содержит операции Categories, Directories, Cards и Media;
+- bucket policies разделены согласно группам ограничений WB, включая отдельные
+  buckets для `cards/limits` и списка ошибок, списка карточек, загрузок и media;
+- добавлены Content API DTO и bounds;
+- `OperationSpec` пока доступен через экспортированный конструктор `policy`;
+  compile-time catalog boundary остаётся future improvement.
+
+HTTP transport:
+
+- реализован общий `SharedTransport` поверх clone стандартного
+  `*http.Transport`;
+- кабинетные `http.Client` используют общий connection pool;
+- redirects запрещены;
+- auth wrapper добавляет `Authorization: <token>` без `Bearer` и без изменения
+  token;
+- attempt wrapper через `net/http/httptrace.WroteRequest` фиксирует начало
+  отправки и итоговый HTTP status;
+- retry и итоговый logical-request log не выполняются внутри RoundTripper.
+
+Internal client pipeline:
+
+- код разделён на `client`, `client/request` и `client/response` без обратных
+  зависимостей и compatibility aliases;
+- `APIClient` хранит CabinetID, безопасное display name, base URL, копию
+  `http.Client`, limiter registry, backoff, max read attempts и logger;
+- `APIClient.Execute` владеет prepare, timeout, admission, retry, decode и
+  единственным итоговым log;
+- `client/request` готовит immutable URL/body и создаёт новый `http.Request`
+  для каждой physical attempt;
+- `client/response` содержит stateless bounded read/close, decode и retry
+  classification helpers;
+- URL собирается из проверенного base URL и operation path;
+- decode выполняется во временное значение и не изменяет target при ошибке;
+- stateful публичные `Request` и `Result` отсутствуют;
+- ошибки имеют программный контракт `ClassifiedError` с code, delivery state и
+  server retry delay;
+- delivery различает `NotDispatched`, `ResponseReceived` и
+  `UnknownDelivery`.
+
+Flowcontrol и retry:
+
+- limiter реализован через `golang.org/x/time/rate`;
+- registry создаёт limiter лениво для каждой пары `(CabinetID, BucketID)`;
+- очередь ожидания ограничена `BucketSpec.MaxWaiters` и учитывает cancellation;
+- admission выполняется перед каждой физической попыткой;
+- response observation строго разбирает разрешённые WB rate-limit headers и не
+  увеличивает configured burst;
+- `X-Ratelimit-Retry` и стандартный `Retry-After` передаются в classified error
+  и backoff; при наличии обоих используется большая задержка;
+- read retry разрешён только operation manifest и выполняется для `429`,
+  `500`, `502`, `503`, `504` и ограниченного allowlist transport errors;
+- cancellation и deadline не retry-ятся;
+- число read attempts ограничено значением 5; Clientset использует 3 attempts;
+- mutation всегда имеет одну попытку;
+- backoff растёт экспоненциально от base delay 500 ms и проверяет overflow;
+  отдельный недокументированный max delay не используется, а фактическое
+  ожидание ограничивается context deadline логического запроса;
+- перед следующим attempt действуют и локальный limiter, и server block, без
+  намеренного суммирования двух ожиданий.
+
+Tracing и logging:
+
+- один закрытый `requestTrace` объединяет все физические попытки логического
+  запроса;
+- локальный request ID создаётся внутри процесса и не отправляется WB;
+- trace накапливает bounded attempt summaries, limiter wait, размеры body,
+  итоговый status, delivery и error code;
+- trace создаётся до проверки context и prepare, поэтому ошибки подготовки
+  через `APIClient.Execute` также получают итоговый log;
+- для каждого вызова `APIClient.Execute` пишется ровно одно безопасное событие
+  `wb_request_completed`;
+- token, Authorization, query, request body, response body и raw error body не
+  логируются.
+
+Typed Content API:
+
+- реализованы `ContentV1Interface` и `ContentV1Client`;
+- реализованы закрытые Categories, Directories, Cards и Media clients;
+- наружу возвращаются только узкие typed interfaces;
+- каждый typed method сам выбирает operation из Content API catalog;
+- query и body принимаются только как соответствующие Content API DTO;
+- общий execute helper передаёт executor-у конкретный response DTO и не
+  раскрывает raw response body;
+- произвольный method, path или низкоуровневый API через typed layer не
+  предоставляются.
+
+Dependencies и проверки:
+
+- `golang.org/x/time` используется как прямая dependency flowcontrol;
+- `go.uber.org/zap` используется как прямая dependency итогового logger;
+- WB-пакеты проходят `gofmt`, `go test`, `go vet` и `git diff --check`;
+- новых test-файлов нет, поэтому поведение пока подтверждено только сборкой,
+  static checks и ручным review.
+
+### 1.3. Известные расхождения и незавершённость
+
+Текущая реализация имеет следующие осознанные границы:
+
+- nil receiver `(*APIClient)(nil).Execute` возвращает classified error, но не
+  может записать итоговый log, поскольку у него нет logger;
+- operation catalog и rate policies перед реальным feature-подключением должны
+  ещё раз сверяться с актуальной официальной документацией WB;
+- exported `policy.NewOperation` защищён только dependency rule и review, а не
+  компилятором Go;
+- limiter координирует только один процесс и ключуется CabinetID, а не реальным
+  seller identity;
+- отдельно настраиваемого максимума server-provided retry delay нет;
+- отсутствие automated tests не позволяет считать Stage 1–8 доказанными
+  regression gates.
+
 ---
 
 ## 2. Основания архитектуры
@@ -47,8 +197,8 @@ binding, singleton process guard, PostgreSQL admission, mutation ticket и
 Config
 → Clientset
 → typed client
-→ internal API client
-→ Request / Result
+→ shared API executor
+→ request / response helpers
 → HTTP transport wrappers
 ```
 
@@ -140,6 +290,7 @@ service. Все зависимости вручную собираются в `c
 - durable mutation permits/tickets;
 - egress barrier;
 - horizontal replicas;
+- собственный фиксированный `User-Agent` для WB-запросов;
 - generated clients;
 - dynamic client;
 - discovery, informers, watchers и Kubernetes serializers;
@@ -229,19 +380,26 @@ internal/
 │           │
 │           ├── client/
 │           │   ├── api_client.go
-│           │   ├── request.go
-│           │   ├── result.go
+│           │   ├── errors.go
+│           │   ├── execute.go
 │           │   ├── trace.go
-│           │   ├── delivery.go
-│           │   └── errors.go
+│           │   ├── request/
+│           │   │   ├── request.go
+│           │   │   ├── prepare.go
+│           │   │   ├── query.go
+│           │   │   └── errors.go
+│           │   └── response/
+│           │       ├── decode.go
+│           │       ├── body.go
+│           │       ├── retry.go
+│           │       ├── status.go
+│           │       └── errors.go
 │           │
 │           ├── transport/
 │           │   ├── config.go
 │           │   ├── transport.go
 │           │   ├── wrappers.go
 │           │   ├── auth.go
-│           │   ├── user_agent.go
-│           │   ├── request_id.go
 │           │   └── attempt_trace.go
 │           │
 │           └── typed/
@@ -332,7 +490,7 @@ core → feature
 feature → raw WB token
 feature → *http.Client
 feature → произвольный WB method/path
-feature → internal client.Request
+feature → client.APIClient / client.Executor / policy.Operation
 ```
 
 ### 7.3. Владение интерфейсами
@@ -385,7 +543,6 @@ type TransferService interface {
 ```text
 WB_API_BASE_URL=https://content-api.wildberries.ru
 WB_API_TIMEOUT=20s
-WB_API_USER_AGENT=wb-service/1
 WB_API_CABINETS=main,backup
 
 WB_API_CABINET_MAIN_NAME=Основной
@@ -442,10 +599,9 @@ type CabinetConfig struct {
 }
 
 type Config struct {
-	BaseURL   string
-	Timeout   time.Duration
-	UserAgent string
-	Cabinets  []CabinetConfig
+	BaseURL  string
+	Timeout  time.Duration
+	Cabinets []CabinetConfig
 }
 ```
 
@@ -565,7 +721,7 @@ flowchart TD
 - каждый кабинет получает лёгкую копию `http.Client`;
 - per-cabinet auth wrapper хранит только token этого кабинета;
 - wrapper клонирует request/header перед добавлением Authorization;
-- wrapper формирует exact header `Authorization: Bearer <token>`;
+- wrapper формирует exact header `Authorization: <token>` без префикса и изменения token;
 - redirects запрещены;
 - idle connections закрываются один раз через Clientset;
 - shutdown одного CabinetClient отдельно не требуется.
@@ -580,9 +736,7 @@ per-cabinet auth добавлен из-за нескольких WB tokens.
 RoundTripper chain содержит только поведение одного физического HTTP attempt:
 
 ```text
-Request ID
-→ User-Agent
-→ Authorization
+Authorization
 → attempt trace collector
 → shared base Transport
 ```
@@ -600,17 +754,16 @@ func Chain(
 
 Wrappers должны быть узкими:
 
-- `RequestID` добавляет локальный correlation ID;
-- `UserAgent` устанавливает фиксированный User-Agent;
 - `Authorization` добавляет token своего кабинета;
-- `AttemptTrace` собирает duration/status для общего trace;
+- `AttemptTrace` фиксирует per-attempt dispatch/status для общего trace;
 - каждый wrapper клонирует request перед изменением headers;
 - ни один wrapper не читает и не закрывает response body;
 - ни один wrapper не выполняет retry;
 - ни один wrapper не пишет отдельный итоговый request log.
 
-Request ID создаётся один раз для logical Request. Все физические read attempts
-получают тот же request ID, а номер попытки хранится отдельно.
+Локальный request ID создаётся один раз для logical вызова и хранится в
+закрытом `requestTrace`. Все физические read attempts связываются с тем же ID
+только во внутреннем trace; в HTTP-заголовках он не отправляется.
 
 В middleware не помещаются:
 
@@ -646,9 +799,15 @@ type Operation struct {
 }
 ```
 
-Поля `Operation` закрыты. Feature не создаёт `Operation` и не получает
-arbitrary constructor. Read-only accessors не возвращают изменяемые внутренние
-slices.
+Поля `Operation` закрыты. Feature не создаёт `Operation` и не задаёт
+произвольные method/path. Read-only accessors не возвращают изменяемые
+внутренние slices.
+
+В MVP пакет `policy` предоставляет валидируемый конструктор из `OperationSpec`
+для catalog-пакетов внутри `core/transport/wb`. Запрет его использования из
+feature обеспечивается правилом зависимостей и review. Вложенная директория
+`wb/internal` не используется: сохраняется client-go-подобное дерево соседних
+пакетов `client`, `policy`, `transport`, `api` и `typed`.
 
 Manifest обязан задавать:
 
@@ -704,19 +863,19 @@ Wire DTO лежат в независимом пакете:
 core/transport/wb/api/content/v1
 ```
 
-`typed/content/v1` использует эти DTO и internal `client.Interface`.
+`typed/content/v1` использует эти DTO и узкий `client.Executor`.
 
 Feature service не импортирует wire DTO. Mapping выполняется только в
 `feature/.../transport/wb`.
 
 ---
 
-## 13. Internal APIClient
+## 13. Shared APIClient
 
 Название `RESTClient` в проекте не используется, чтобы не путать outbound API
 client с входящим HTTP server.
 
-Внутренний клиент называется `APIClient`:
+Общий низкоуровневый клиент называется `APIClient`:
 
 ```go
 type APIClient struct {
@@ -727,11 +886,17 @@ type APIClient struct {
 }
 ```
 
-Интерфейс из internal package `client` доступен только typed clients:
+Typed clients зависят от узкого executor-контракта:
 
 ```go
-type Interface interface {
-	Request(operation policy.Operation) *Request
+type Executor interface {
+	Execute(
+		ctx context.Context,
+		operation policy.Operation,
+		query any,
+		body any,
+		target any,
+	) error
 }
 ```
 
@@ -749,39 +914,37 @@ DoRaw(...)
 
 ---
 
-## 14. Request builder
+## 14. Подготовленный Request
 
 ### 14.1. Назначение
 
-`Request` хранит описание одного логического WB-вызова:
+`client/request.Prepared` хранит только immutable данные одной операции:
 
 ```go
-type Request struct {
-	client      *APIClient
-	operation   policy.Operation
-	query       any
-	body        any
+type Prepared struct {
+	method      string
+	urlString   string
+	requestMode policy.BodyMode
 	bodyBytes   []byte
-	timeout     time.Duration
-	err         error
 }
 ```
 
-Builder используется только typed client:
+Typed client вызывает executor напрямую:
 
 ```go
-result := apiClient.
-	Request(contentapi.CardsListOperation).
-	Query(query).
-	Body(body).
-	Do(ctx)
+response := new(contentapi.CardsListResponse)
+err := apiClient.Execute(
+	ctx,
+	contentapi.CardsListOperation(),
+	nil,
+	request,
+	response,
+)
 ```
 
-Каждый method builder:
+`request.Prepare`:
 
 - ничего не отправляет;
-- сохраняет первую ошибку;
-- не паникует на invalid input;
 - не изменяет input DTO;
 - не логирует DTO.
 
@@ -789,18 +952,17 @@ result := apiClient.
 
 До первого HTTP attempt:
 
-- проверяется ожидаемый DTO type;
-- выполняется semantic validation;
+- exact DTO обеспечивается публичной сигнатурой typed method;
 - query кодируется один раз;
 - JSON body сериализуется один раз;
 - проверяются operation bounds;
-- immutable `bodyBytes` сохраняются в Request;
+- immutable `bodyBytes` сохраняются в `Prepared`;
 - для read retry создаётся новый `bytes.Reader`;
 - request body никогда не логируется.
 
 ### 14.3. URL safety
 
-`Request` строит URL только из:
+`request.Prepare` строит URL только из:
 
 - заранее проверенного base URL;
 - path из закрытого manifest;
@@ -818,36 +980,33 @@ result := apiClient.
 
 ---
 
-## 15. Result
+## 15. Response helpers
+
+`client/response` не хранит state logical request и не зависит от request,
+flowcontrol или policy. Пакет предоставляет stateless helpers:
 
 ```go
-type Result struct {
-	statusCode int
-	headers    http.Header
-	body       []byte
-	err        error
-	delivery   DeliveryState
-}
-```
-
-Методы:
-
-```go
-func (r Result) Error() error
-func (r Result) StatusCode() int
-func (r Result) Delivery() DeliveryState
-func (r Result) Into(target any) error
+func ReadAndClose(response *http.Response, maxBytes int64) ([]byte, error)
+func Close(response *http.Response) error
+func ValidateTarget(target any) error
+func Decode(body []byte, target any) error
+func IsRetryableStatus(status int) bool
+func IsRetryableTransportError(err error) bool
 ```
 
 Raw response body наружу не возвращается.
 
-`Into`:
+`Decode`:
 
-- проверяет exact target type;
+- проверяет non-nil pointer target;
 - не изменяет caller target при failed decode;
 - запрещает второй JSON value;
-- обрабатывает empty body по manifest;
+- отклоняет empty JSON body;
 - публикует decoded value только после полного success.
+
+Status, delivery, retryability и classified error хранятся только во
+внутреннем результате `APIClient.Execute` и не образуют отдельный публичный
+response object.
 
 ---
 
@@ -932,37 +1091,39 @@ path, bucket или retry mode.
 
 ## 17. Request lifecycle
 
-Один typed method создаёт один логический Request:
+Один typed method выполняет один логический вызов executor:
 
 ```mermaid
 flowchart TD
-    T[typed method] --> R[APIClient.Request]
-    R --> P[preflight and serialize]
-    P --> L[create RequestTrace]
-    L --> O[overall timeout]
+    T[typed method] --> E[APIClient.Execute]
+    E --> L[create requestTrace]
+    L --> P[validate target and prepare immutable request]
+    P --> O[overall timeout]
     O --> A[rate-limit admission]
     A --> H[build HTTP request]
     H --> W[transport wrappers]
     W --> WB[WB API]
-    WB --> B[bounded read and close body]
-    B --> RH[observe rate headers]
-    RH --> C[classify]
+    WB --> RH[observe rate headers once]
+    RH --> B[bounded read and close body]
+    B --> C[classify]
     C --> Q{safe read retry?}
     Q -- yes --> A
-    Q -- no --> D[decode Result]
+    Q -- no --> D[decode final body]
     D --> LOG[one final log]
 ```
 
 Порядок обязан обеспечивать:
 
-1. Trace создаётся до выполнения изменяемых стадий.
+1. Trace создаётся до validation и prepare.
 2. Rate limiter вызывается перед каждым физическим attempt.
 3. Новый `http.Request` создаётся для каждого read retry.
 4. Authorization добавляется только к окончательно построенному request.
 5. Response body имеет одного владельца.
 6. Body bounded читается и закрывается до следующего attempt.
 7. Mutation никогда не проходит вторую итерацию retry loop.
-8. Final log пишется один раз через внешний lifecycle observer.
+8. Final decode входит в lifecycle до единственного final log.
+9. Ошибка rate-header observation учитывается в trace, но не заменяет
+   успешный или уже классифицированный business result.
 
 ---
 
@@ -993,10 +1154,13 @@ func (r *Registry) Observe(
 	cabinetID CabinetID,
 	bucketID BucketID,
 	response *http.Response,
-) error
+) (retryAfter time.Duration, observationErr error)
 ```
 
-Каждая operation использует ровно один `BucketID`.
+Каждая operation использует ровно один `BucketID`. Разрешённые headers
+разбираются один раз: полученный retry delay используется и limiter-ом, и
+executor backoff. Ошибка observation записывается в trace отдельно от
+business result.
 
 ### 18.3. Ограничения MVP
 
@@ -1073,37 +1237,39 @@ Business control flow не анализирует текст `error.Error()`.
 
 ```text
 один typed method call
-→ один Request.Do
-→ один RequestTrace
+→ один APIClient.Execute
+→ один закрытый requestTrace
 → одна итоговая log entry
 ```
 
 Read retries не создают отдельные итоговые logs.
 
-### 20.2. RequestTrace
+### 20.2. requestTrace
 
 ```go
-type RequestTrace struct {
-	RequestID      string
-	CabinetID      CabinetID
-	CabinetName    string
-	Operation      OperationID
-	Method         string
-	Path           string
-	BucketID       BucketID
-	StartedAt      time.Time
-	Attempts       []AttemptTrace
-	RequestBytes   int
-	ResponseBytes  int
-	LimiterWait    time.Duration
-	StatusCode     int
-	Delivery       DeliveryState
-	ErrorCode      string
-	WBRequestID    string
+type requestTrace struct {
+	requestID       string
+	cabinetID       CabinetID
+	cabinetName     string
+	operation       OperationID
+	method          string
+	path            string
+	bucketID        BucketID
+	startedAt       time.Time
+	attempts        []attemptSummary
+	requestBytes    int
+	responseBytes   int
+	limiterWait     time.Duration
+	statusCode      int
+	delivery        DeliveryState
+	errorCode       string
+	observationErrs int
 }
 ```
 
-`AttemptTrace` bounded числом configured read attempts.
+`attemptSummary` bounded числом configured read attempts. Per-attempt recorder
+создаётся заново для каждого `http.Client.Do`, поэтому delivery не вычисляется
+из накопленного dispatch state предыдущих попыток.
 
 ### 20.3. Итоговое событие
 
@@ -1126,7 +1292,6 @@ status_code
 delivery_state
 result
 error_code
-wb_request_id
 ```
 
 ### 20.4. Запрещённые данные
@@ -1384,7 +1549,7 @@ MVP не реализует singleton protection от второго проце�
 - token не передаётся через context;
 - token не экспортируется из CabinetClient;
 - token не попадает в `String`, `GoString`, JSON и logs;
-- `Authorization: Bearer <token>` добавляется только per-cabinet auth wrapper;
+- `Authorization: <token>` добавляется только per-cabinet auth wrapper без изменения token;
 - caller не может установить arbitrary Authorization;
 - request/response bodies не логируются;
 - error preview не выходит в feature как raw body;
@@ -1434,8 +1599,6 @@ Deliverables:
 - safe HTTP client copying;
 - redirect prohibition;
 - wrapper abstraction/chain;
-- Request ID wrapper;
-- User-Agent wrapper;
 - per-cabinet Authorization wrapper;
 - attempt trace collector;
 - close idle connection ownership.
@@ -1451,22 +1614,24 @@ Deliverables:
 - retry modes;
 - allowed success statuses;
 - size/count bounds;
+- validated `OperationSpec` constructor; его использование только catalog-кодом
+  в MVP контролируется dependency rule и review;
 - exact Content v1 request/response DTO;
 - полный operation inventory из раздела 12.
 
-### Stage 4. Internal APIClient, Request и Result
+### Stage 4. APIClient executor и request/response helpers
 
 Deliverables:
 
-- internal `client.Interface`;
+- узкий `client.Executor`;
 - `APIClient`;
-- error-accumulating Request builder;
+- единый logical request lifecycle;
 - query/body preparation;
 - immutable body bytes;
 - safe URL construction;
 - bounded response ownership;
-- `Result`;
-- strict `Into`;
+- stateless response helpers;
+- decode до final log;
 - `DeliveryState` и classified errors.
 
 ### Stage 5. Flowcontrol и retry
@@ -1482,7 +1647,7 @@ Deliverables:
 - mutation one-shot rule;
 - unknown delivery classification.
 
-### Stage 6. Единый RequestTrace и logger
+### Stage 6. Единый requestTrace и logger
 
 Deliverables:
 
@@ -1561,8 +1726,8 @@ Deliverables:
 - `ScopedClient`;
 - публичный `DoJSON`;
 - arbitrary Operation literals;
-- старый request path;
-- старый response path;
+- старый Request builder path;
+- старый stateful Result path;
 - старый physical-request logger;
 - `SellerScope string`;
 - неиспользуемые aliases/helpers;
@@ -1588,7 +1753,7 @@ MVP считается реализованным, когда:
 - ContentV1 предоставляет все обязательные operations;
 - feature не может задать arbitrary method/path;
 - typed methods используют exact DTO;
-- Request pipeline владеет body lifecycle;
+- APIClient executor владеет body lifecycle;
 - in-memory limiter вызывается перед каждым attempt;
 - safe read retry работает согласно manifest;
 - mutation отправляется не более одного раза;
@@ -1647,6 +1812,7 @@ service-owned WBTransport contract
 переписывания services:
 
 - JWT parser меняет только core Config/credentials builder;
+- собственный `User-Agent` добавляется внутренним transport wrapper;
 - SellerKey меняет internal limiter key;
 - persistent binding меняет Clientset construction;
 - startup probe меняет publication phase;
@@ -1669,7 +1835,7 @@ service-owned WBTransport contract
 → несколько per-cabinet logical clients
 → один opaque token на кабинет
 → typed ContentV1 API
-→ internal APIClient / Request / Result pipeline
+→ APIClient.Execute + request/response helper pipeline
 → узкие HTTP transport wrappers
 → in-memory rate limiting
 → retry только safe reads
