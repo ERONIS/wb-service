@@ -11,6 +11,8 @@ import (
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
 	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
 	telegram_server "github.com/ERONIS/wb-service/internal/core/transport/telegram/server"
+	wb "github.com/ERONIS/wb-service/internal/core/transport/wb"
+	wbconfig "github.com/ERONIS/wb-service/internal/core/transport/wb/config"
 	users "github.com/ERONIS/wb-service/internal/feature/users"
 )
 
@@ -52,6 +54,19 @@ func main() {
 	if err != nil {
 		panic(fmt.Errorf("create Telegram server: %w", err))
 	}
+
+	// Wildberries.
+
+	wbConfig := wbconfig.NewConfigMust()
+
+	wbClientset, err := wb.NewForConfig(
+		&wbConfig,
+		logger.Logger,
+	)
+	if err != nil {
+		panic(fmt.Errorf("create WB clientset: %w", err))
+	}
+	defer wbClientset.CloseIdleConnections()
 
 	bot := telegramServer.Bot()
 
