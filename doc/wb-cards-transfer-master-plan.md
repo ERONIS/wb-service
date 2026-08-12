@@ -1,32 +1,18 @@
-# Единый master-план WB core, cardimport, transfer и live statistics
+# Master-план cardimport, transfer и live statistics
 
-> **Актуализация архитектуры 2026-08-06.** Текущая реализация `WB Core MVP`,
-> client-go-inspired client architecture, упрощённая opaque-token модель и
-> структура feature-пакетов `service/repository/transport` определяются
-> документом
-> [`wb-service-architecture-plan.md`](./wb-service-architecture-plan.md).
-> При расхождении по архитектуре core, структуре кода и порядку текущей
-> реализации действует новый документ. Этот master-план сохраняет продуктовые
-> требования и long-term production-hardening backlog. Отложенные усиления
-> перечислены в
-> [`wb-core-future-improvements.md`](./wb-core-future-improvements.md).
+> Фактическая архитектура завершённого WB Core описана в
+> [`wb-core-architecture.md`](./wb-core-architecture.md). Этот документ
+> планирует только продуктовые features поверх готового typed API и не
+> переопределяет устройство ядра.
 
 ## 1. Статус документа
 
-Это канонический end-to-end product/backlog план WB-интеграции в `wb-service`.
-Канонический план текущей архитектуры и реализации WB Core MVP находится в
-[`wb-service-architecture-plan.md`](./wb-service-architecture-plan.md).
+Это канонический end-to-end product/backlog план cardimport, transfer и
+statistics в `wb-service`. Описание используемого WB Core находится в
+[`wb-core-architecture.md`](./wb-core-architecture.md).
 
-Документ заменяет:
-
-- `doc/wb-middleware-core-master-plan.md`;
-- `doc/featers-transfer.md`.
-
-Оба прежних документа остаются в репозитории только как исторический материал.
-Если их текст расходится с этим планом, действует этот план.
-
-Архитектурный baseline `doc/wb-transport-architecture.md` остаётся справочным
-описанием текущего transport-кода, но не переопределяет решения ниже.
+Документ заменяет архивный `doc/featers-transfer.md`. Если его текст расходится
+с этим планом, действует этот документ.
 
 План закрывает вместе:
 
