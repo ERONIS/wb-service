@@ -33,10 +33,6 @@ func (h *UsersTgHandler) AddUserInput(
 	ctx tele.Context,
 ) error {
 	sender := ctx.Sender()
-	if sender == nil || sender.ID <= 0 {
-		return nil
-	}
-
 	pending, claimed := h.claimPendingAdd(sender.ID)
 	if !claimed {
 		return nil
