@@ -182,3 +182,4 @@ func normalizeHeader(value string) string {
 		return character
 	}, value)
 }
+

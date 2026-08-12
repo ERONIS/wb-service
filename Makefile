@@ -1,4 +1,5 @@
 include .env
+include .env.wb
 export
 
 PROJECT_ROOT := $(CURDIR)

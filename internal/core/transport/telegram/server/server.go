@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"net/http"
 
+	core_tg_middleware "github.com/ERONIS/wb-service/internal/core/transport/telegram/middleware"
+
+	"go.uber.org/zap"
 	tele "gopkg.in/telebot.v3"
 )
 
@@ -12,7 +15,14 @@ type Server struct {
 	bot *tele.Bot
 }
 
-func New(cfg Config) (*Server, error) {
+func New(
+	cfg Config,
+	logger *zap.Logger,
+) (*Server, error) {
+	if logger == nil {
+		return nil, fmt.Errorf("telegram server logger is nil")
+	}
+
 	bot, err := tele.NewBot(tele.Settings{
 		Token: cfg.Token,
 		Poller: &tele.LongPoller{
@@ -29,6 +39,7 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create telegram bot: %w", err)
 	}
+	bot.Use(core_tg_middleware.Logger(logger))
 
 	return &Server{
 		bot: bot,

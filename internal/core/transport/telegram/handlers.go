@@ -1,61 +1,82 @@
 package core_transport_telegram
 
 import (
+	"context"
+
+	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_tg_middleware "github.com/ERONIS/wb-service/internal/core/transport/telegram/middleware"
 
 	tele "gopkg.in/telebot.v3"
 )
 
-const mainMenuText = "🏠 <b>Главное меню</b>\n\nВыберите действие:"
-
 type Handler struct {
-	bot       *tele.Bot
-	menuItems []menuItem
+	bot        *tele.Bot
+	roleAccess *core_tg_middleware.RoleAccess
+	menuItems  []menuItem
 }
 
-func NewHandler(bot *tele.Bot) *Handler {
+// Register создаёт Telegram-обработчик и регистрирует главное меню.
+func Register(
+	ctx context.Context,
+	bot *tele.Bot,
+	roleProvider core_tg_middleware.RoleProvider,
+) *Handler {
+	roleAccess := core_tg_middleware.NewRoleAccess(
+		ctx,
+		roleProvider,
+	)
+	handler := NewHandler(bot, roleAccess)
+	handler.RegisterMainMenu()
+
+	return handler
+}
+
+// RegisterHandler регистрирует команду или Telegram event с проверкой роли.
+func (h *Handler) RegisterHandler(
+	endpoint any,
+	minimumRole domain.UserRole,
+	handler tele.HandlerFunc,
+) {
+	h.bot.Handle(
+		endpoint,
+		handler,
+		h.roleAccess.Require(minimumRole),
+	)
+}
+
+func NewHandler(
+	bot *tele.Bot,
+	roleAccess *core_tg_middleware.RoleAccess,
+) *Handler {
 	if bot == nil {
 		panic("telegram bot is nil")
 	}
+	if roleAccess == nil {
+		panic("telegram role access is nil")
+	}
 
 	return &Handler{
-		bot:       bot,
-		menuItems: make([]menuItem, 0),
+		bot:        bot,
+		roleAccess: roleAccess,
+		menuItems:  make([]menuItem, 0),
 	}
 }
 
-func (h *Handler) Register() {
-	mainMenuButton := MainMenuButton()
-
-	h.RegisterCallback(
-		mainMenuButton,
-		h.handleMainMenu,
-		core_tg_middleware.RequireSender,
-	)
-	h.bot.Handle(
-		"/start",
-		h.handleMainMenu,
-		core_tg_middleware.RequireSender,
-	)
-}
-
 // RegisterCallback регистрирует нативный callback endpoint Telebot.
-// Middleware, которое не вызывает next, должно само ответить на callback.
 func (h *Handler) RegisterCallback(
 	button tele.Btn,
+	minimumRole domain.UserRole,
 	handler tele.HandlerFunc,
 	middlewares ...tele.MiddlewareFunc,
 ) {
+	middlewares = append(
+		middlewares,
+		h.roleAccess.Require(minimumRole),
+	)
+
 	h.bot.Handle(
 		&button,
 		handler,
 		core_tg_middleware.Callback(middlewares...)...,
-	)
-}
-
-func (h *Handler) handleMainMenu(ctx tele.Context) error {
-	return ctx.EditOrSend(
-		mainMenuText,
-		h.mainMenuMarkup(ctx),
 	)
 }
