@@ -23,17 +23,16 @@ internal/feature/statistics
 2026-08-03
 ```
 
-Обязательный prerequisite — завершение [WB core master-плана](/home/Eronis/IT/wb-service/doc/wb-middleware-core-master-plan.md).
+Обязательный prerequisite — готовый WB Core, описанный в
+[`wb-core-architecture.md`](./wb-core-architecture.md).
 
-Документ [wb-transport-architecture.md](/home/Eronis/IT/wb-service/doc/wb-transport-architecture.md) описывает текущее, переходное состояние транспорта. Реализация features должна опираться на целевой API из master-плана:
+Feature должна опираться на публичный typed API:
 
 ```go
-client.Cabinets()
-client.ForCabinet(id)
-cabinet.DoJSON(...)
+clientset.Cabinets()
+clientset.ForCabinet(id)
+cabinet.ContentV1()
 ```
-
-Legacy API `ForCredentials` не должен использоваться.
 
 ---
 
@@ -1132,7 +1131,8 @@ POST /content/v3/media/save
 
 То есть медиа передаются по URL из XLSX.
 
-Multipart `/content/v3/media/file` не входит в WB core master-план и не реализуется.
+Multipart `/content/v3/media/file` отсутствует в реализованном WB Core и не
+используется.
 
 При `UncertainOutcomeError` media mutation нельзя повторять вслепую. Сначала требуется проверить карточку через `CardsList` и сравнить ожидаемое состояние медиа.
 
@@ -1142,7 +1142,8 @@ Multipart `/content/v3/media/file` не входит в WB core master-план 
 
 ## 30. Цена
 
-WB core master-план ограничен Content API и не поддерживает отдельный `discounts-prices-api`.
+Реализованный WB Core ограничен Content API и не предоставляет отдельный
+`discounts-prices-api`.
 
 Поэтому:
 
