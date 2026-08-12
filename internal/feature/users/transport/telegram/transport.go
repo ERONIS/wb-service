@@ -7,7 +7,6 @@ import (
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
-	core_tg_middleware "github.com/ERONIS/wb-service/internal/core/transport/telegram/middleware"
 	users_service "github.com/ERONIS/wb-service/internal/feature/users/service"
 
 	tele "gopkg.in/telebot.v3"
@@ -46,11 +45,6 @@ var (
 )
 
 type UsersService interface {
-	IsAdmin(
-		ctx context.Context,
-		telegramID int64,
-	) (bool, error)
-
 	GetUser(
 		ctx context.Context,
 		adminTelegramID int64,
@@ -110,55 +104,47 @@ func NewUsersTgHandler(
 }
 
 func (h *UsersTgHandler) Register(
-	bot *tele.Bot,
 	menu *core_transport_telegram.Handler,
 ) {
-	bot.Handle(tele.OnText, h.AddUserInput)
+	menu.RegisterHandler(
+		tele.OnText,
+		domain.RoleUser,
+		h.AddUserInput,
+	)
 
-	menu.RegisterConditionalMenuItem(
+	menu.RegisterMenuItem(
 		buttonListUsers,
-		h.isVisibleToAdmin,
+		domain.RoleAdmin,
 		h.ListUsers,
-		core_tg_middleware.RequireSender,
 	)
 	menu.RegisterCallback(
 		buttonStartAddUser,
+		domain.RoleAdmin,
 		h.StartAddUser,
-		core_tg_middleware.RequireSender,
 	)
 	menu.RegisterCallback(
 		buttonCancelAddUser,
+		domain.RoleAdmin,
 		h.CancelAddUser,
-		core_tg_middleware.RequireSender,
 	)
 	menu.RegisterCallback(
 		buttonGetUser,
+		domain.RoleAdmin,
 		withUserPayload(h.getUser),
-		core_tg_middleware.RequireSender,
 	)
 	menu.RegisterCallback(
 		buttonSetAdmin,
+		domain.RoleAdmin,
 		withUserPayload(h.setAdmin),
-		core_tg_middleware.RequireSender,
 	)
 	menu.RegisterCallback(
 		buttonConfirmDeleteUser,
+		domain.RoleAdmin,
 		withUserPayload(h.confirmDeleteUser),
-		core_tg_middleware.RequireSender,
 	)
 	menu.RegisterCallback(
 		buttonDeleteUser,
+		domain.RoleAdmin,
 		withUserPayload(h.deleteUserCallback),
-		core_tg_middleware.RequireSender,
 	)
-}
-
-func (h *UsersTgHandler) isVisibleToAdmin(ctx tele.Context) bool {
-	sender := ctx.Sender()
-	if sender == nil || sender.ID <= 0 {
-		return false
-	}
-
-	isAdmin, err := h.usersService.IsAdmin(h.ctx, sender.ID)
-	return err == nil && isAdmin
 }
