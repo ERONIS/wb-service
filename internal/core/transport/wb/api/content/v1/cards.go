@@ -262,7 +262,7 @@ type UploadSize struct {
 	TechSize string   `json:"techSize,omitempty"`
 	WBSize   string   `json:"wbSize,omitempty"`
 	Price    *int64   `json:"price,omitempty"`
-	SKUs     []string `json:"skus"`
+	SKUs     []string `json:"skus,omitempty"`
 }
 
 type UploadCardsResponse struct {
