@@ -1,4 +1,16 @@
-DROP TABLE wb.card_imports ;
-DROP TABLE wb.access_requests ;
-DROP TABLE wb.users ;
+DROP TABLE wb.card_batch_items;
+ALTER TABLE wb.card_import_sessions
+    DROP CONSTRAINT card_import_sessions_finalized_batch_fk;
+DROP TABLE wb.card_batches;
+DROP FUNCTION wb.validate_card_batch_item_insert;
+DROP FUNCTION wb.reject_frozen_card_batch_mutation;
+DROP TABLE wb.card_import_items;
+DROP TABLE wb.card_import_issues;
+DROP TABLE wb.card_import_file_blobs;
+DROP TABLE wb.card_import_files;
+DROP TABLE wb.card_import_sessions;
+DROP TABLE wb.platform_inbox;
+DROP TABLE wb.platform_outbox;
+DROP TABLE wb.platform_runtime_epoch;
+DROP TABLE wb.users;
 DROP SCHEMA wb;

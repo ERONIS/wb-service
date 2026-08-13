@@ -9,6 +9,7 @@
 /dist/
 
 # Runtime-данные
+/.runtime/
 /out/
 /tmp/
 *.log
