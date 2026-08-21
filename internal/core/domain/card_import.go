@@ -144,7 +144,7 @@ func (i *CardImport) MarkReady(cards []Card) error {
 	if len(cards) == 0 {
 		return invalidCardImport("parsed cards are empty")
 	}
-	
+
 	i.Cards = append([]Card(nil), cards...)
 	i.CardsCount = len(cards)
 	i.Status = CardImportStatusReady

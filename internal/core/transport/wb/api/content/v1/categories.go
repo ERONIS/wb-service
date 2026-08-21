@@ -59,6 +59,7 @@ type SubjectCharacteristic struct {
 	SubjectID          int64  `json:"subjectID"`
 	Name               string `json:"name"`
 	Required           bool   `json:"required"`
+	HasFilter          bool   `json:"hasFilter"`
 	UnitName           string `json:"unitName"`
 	MaxCount           int    `json:"maxCount"`
 	Popular            bool   `json:"popular"`
