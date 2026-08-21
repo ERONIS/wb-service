@@ -4,7 +4,7 @@ import (
 	"context"
 	"io"
 
-	platform_transaction "github.com/ERONIS/wb-service/internal/platform/transaction"
+	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 )
 
 type StoredContent struct {
@@ -71,11 +71,17 @@ type Repository interface {
 
 	Finalize(
 		ctx context.Context,
-		tx platform_transaction.DBTX,
+		tx core_postgres_transaction.DBTX,
 		actor TrustedActor,
 		command FinalizeCommand,
 		commandDigest Digest,
 	) (BatchHeader, error)
+
+	ListFinalizedBatches(
+		ctx context.Context,
+		after *BatchCursor,
+		limit int,
+	) ([]BatchHeader, error)
 
 	GetBatch(
 		ctx context.Context,
@@ -91,6 +97,12 @@ type Repository interface {
 }
 
 type BatchReader interface {
+	ListFinalizedBatches(
+		ctx context.Context,
+		after *BatchCursor,
+		limit int,
+	) ([]BatchHeader, error)
+
 	GetBatch(
 		ctx context.Context,
 		batchID BatchID,
@@ -102,8 +114,4 @@ type BatchReader interface {
 		afterPosition int,
 		limit int,
 	) ([]BatchItem, error)
-}
-
-type BatchConsumer interface {
-	Start(ctx context.Context, batchID BatchID) error
 }
