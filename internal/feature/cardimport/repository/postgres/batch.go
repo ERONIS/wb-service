@@ -10,8 +10,8 @@ import (
 	"time"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
+	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
-	platform_transaction "github.com/ERONIS/wb-service/internal/platform/transaction"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -25,7 +25,7 @@ const batchColumns = `
 	batch.normalization_version,
 	batch.checksum,
 	batch.author_snapshot,
-	batch.created_at
+	batch.finalized_at
 `
 
 type lockedFinalizeSession struct {
@@ -47,7 +47,7 @@ type frozenBatchItem struct {
 
 func (r *Repository) Finalize(
 	ctx context.Context,
-	tx platform_transaction.DBTX,
+	tx core_postgres_transaction.DBTX,
 	actor cardimport_service.TrustedActor,
 	command cardimport_service.FinalizeCommand,
 	commandDigest cardimport_service.Digest,
@@ -149,11 +149,11 @@ func (r *Repository) Finalize(
 			author_snapshot
 		)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
-		RETURNING id, created_at;
+		RETURNING id, finalized_at;
 	`
 	var (
-		batchID   int64
-		createdAt time.Time
+		batchID     int64
+		finalizedAt time.Time
 	)
 	if err := tx.QueryRow(
 		ctx,
@@ -166,7 +166,7 @@ func (r *Repository) Finalize(
 		groupsCount,
 		checksum[:],
 		string(snapshotJSON),
-	).Scan(&batchID, &createdAt); err != nil {
+	).Scan(&batchID, &finalizedAt); err != nil {
 		return cardimport_service.BatchHeader{}, fmt.Errorf(
 			"insert cardimport batch: %w",
 			err,
@@ -228,7 +228,7 @@ func (r *Repository) Finalize(
 		NormalizationVersion: cardimport_service.BatchNormalizationVersion,
 		Checksum:             checksum,
 		AuthorSnapshot:       snapshot,
-		CreatedAt:            createdAt,
+		FinalizedAt:          finalizedAt,
 	}
 	if err := header.Validate(); err != nil {
 		return cardimport_service.BatchHeader{}, fmt.Errorf(
@@ -242,7 +242,7 @@ func (r *Repository) Finalize(
 
 func lockFinalizeSession(
 	ctx context.Context,
-	tx platform_transaction.DBTX,
+	tx core_postgres_transaction.DBTX,
 	sessionID cardimport_service.SessionID,
 ) (lockedFinalizeSession, error) {
 	const query = `
@@ -292,7 +292,7 @@ func lockFinalizeSession(
 
 func validateFinalizeReadiness(
 	ctx context.Context,
-	tx platform_transaction.DBTX,
+	tx core_postgres_transaction.DBTX,
 	sessionID cardimport_service.SessionID,
 ) error {
 	const query = `
@@ -351,7 +351,7 @@ func validateFinalizeReadiness(
 
 func loadFrozenItems(
 	ctx context.Context,
-	tx platform_transaction.DBTX,
+	tx core_postgres_transaction.DBTX,
 	sessionID cardimport_service.SessionID,
 ) ([]frozenBatchItem, int, error) {
 	const query = `
@@ -487,7 +487,7 @@ func batchItemDomains(items []frozenBatchItem) []cardimport_service.BatchItem {
 
 func copyFrozenItems(
 	ctx context.Context,
-	tx platform_transaction.DBTX,
+	tx core_postgres_transaction.DBTX,
 	batchID cardimport_service.BatchID,
 	items []frozenBatchItem,
 ) error {
@@ -545,9 +545,66 @@ func (r *Repository) GetBatch(
 	return loadBatch(ctx, r.pool, batchID)
 }
 
+func (r *Repository) ListFinalizedBatches(
+	ctx context.Context,
+	after *cardimport_service.BatchCursor,
+	limit int,
+) ([]cardimport_service.BatchHeader, error) {
+	ctx, cancel := context.WithTimeout(ctx, r.pool.OpTimeout())
+	defer cancel()
+
+	query := `
+		SELECT ` + batchColumns + `
+		FROM wb.card_batches AS batch
+		JOIN wb.card_import_sessions AS session
+			ON session.finalized_batch_id = batch.id
+		   AND session.id = batch.source_session_id
+		   AND session.status = 'finalized'
+	`
+	arguments := make([]any, 0, 3)
+	if after != nil {
+		query += `
+		WHERE (batch.finalized_at, batch.id) > ($1, $2)
+		ORDER BY batch.finalized_at, batch.id
+		LIMIT $3;
+		`
+		arguments = append(
+			arguments,
+			after.FinalizedAt.UTC(),
+			after.BatchID,
+			limit,
+		)
+	} else {
+		query += `
+		ORDER BY batch.finalized_at, batch.id
+		LIMIT $1;
+		`
+		arguments = append(arguments, limit)
+	}
+
+	rows, err := r.pool.Query(ctx, query, arguments...)
+	if err != nil {
+		return nil, fmt.Errorf("select finalized cardimport batches: %w", err)
+	}
+	defer rows.Close()
+
+	batches := make([]cardimport_service.BatchHeader, 0)
+	for rows.Next() {
+		header, err := scanBatchHeader(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan finalized cardimport batch: %w", err)
+		}
+		batches = append(batches, header)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate finalized cardimport batches: %w", err)
+	}
+	return batches, nil
+}
+
 func loadBatch(
 	ctx context.Context,
-	db platform_transaction.DBTX,
+	db core_postgres_transaction.DBTX,
 	batchID cardimport_service.BatchID,
 ) (cardimport_service.BatchHeader, error) {
 	query := `
@@ -594,7 +651,7 @@ func scanBatchHeader(row rowScanner) (cardimport_service.BatchHeader, error) {
 		&header.NormalizationVersion,
 		&checksum,
 		&snapshotJSON,
-		&header.CreatedAt,
+		&header.FinalizedAt,
 	)
 	if err != nil {
 		return cardimport_service.BatchHeader{}, err

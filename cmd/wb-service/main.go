@@ -6,19 +6,20 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
+	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
 	telegram_server "github.com/ERONIS/wb-service/internal/core/transport/telegram/server"
-	wb "github.com/ERONIS/wb-service/internal/core/transport/wb"
-	wbconfig "github.com/ERONIS/wb-service/internal/core/transport/wb/config"
+	core_wb "github.com/ERONIS/wb-service/internal/core/transport/wb"
+	core_wb_config "github.com/ERONIS/wb-service/internal/core/transport/wb/config"
 	cardimport "github.com/ERONIS/wb-service/internal/feature/cardimport"
+	cardprepare "github.com/ERONIS/wb-service/internal/feature/cardprepare"
+	cardprepare_wb_transport "github.com/ERONIS/wb-service/internal/feature/cardprepare/transport/wb"
+	transfer "github.com/ERONIS/wb-service/internal/feature/transfer"
+	transfer_wb_transport "github.com/ERONIS/wb-service/internal/feature/transfer/transport/wb"
 	users "github.com/ERONIS/wb-service/internal/feature/users"
-	platform_outbox "github.com/ERONIS/wb-service/internal/platform/outbox"
-	platform_runtime "github.com/ERONIS/wb-service/internal/platform/runtime"
-	platform_transaction "github.com/ERONIS/wb-service/internal/platform/transaction"
 
 	"github.com/jackc/pgx/v5"
 	"go.uber.org/zap"
@@ -53,36 +54,16 @@ func main() {
 	}
 	defer postgresPool.Close()
 
-	// Singleton runtime. The advisory lock is acquired before Telegram, HTTP or
-	// background workers are constructed.
+	uow := core_postgres_transaction.New(postgresPool, pgx.TxOptions{})
 
-	runtimeManager := platform_runtime.NewManager(
-		platform_runtime.NewPGXConnectionAcquirer(postgresPool.Pool),
-	)
-	runtimeGuard, err := runtimeManager.Acquire(ctx)
+	// Wildberries.
+
+	wbConfig := core_wb_config.NewConfigMust()
+	wbClientset, err := core_wb.NewForConfig(ctx, &wbConfig, logger.Logger)
 	if err != nil {
-		panic(fmt.Errorf("acquire singleton runtime: %w", err))
+		panic(fmt.Errorf("create WB clientset: %w", err))
 	}
-	defer func() {
-		closeContext, closeCancel := context.WithTimeout(
-			context.Background(),
-			5*time.Second,
-		)
-		defer closeCancel()
-
-		if err := runtimeGuard.Close(closeContext); err != nil {
-			logger.Logger.Error(
-				"close singleton runtime",
-				zap.Error(err),
-			)
-		}
-	}()
-	ctx = runtimeGuard.Context()
-	uow := platform_transaction.New(postgresPool, pgx.TxOptions{})
-	outboxWriter := platform_outbox.NewWriter(
-		runtimeGuard.SingletonKey(),
-		runtimeGuard.Epoch(),
-	)
+	defer wbClientset.CloseIdleConnections()
 
 	// Telegram.
 
@@ -94,19 +75,6 @@ func main() {
 		panic(fmt.Errorf("create Telegram server: %w", err))
 	}
 
-	// Wildberries.
-
-	wbConfig := wbconfig.NewConfigMust()
-
-	wbClientset, err := wb.NewForConfig(
-		&wbConfig,
-		logger.Logger,
-	)
-	if err != nil {
-		panic(fmt.Errorf("create WB clientset: %w", err))
-	}
-	defer wbClientset.CloseIdleConnections()
-
 	bot := telegramServer.Bot()
 
 	usersFeature := users.New(
@@ -117,9 +85,38 @@ func main() {
 		ctx,
 		postgresPool,
 		uow,
-		outboxWriter,
 		bot,
 	)
+	transferFeature, err := transfer.New(
+		ctx,
+		postgresPool,
+		uow,
+		cardimportFeature.Service(),
+		transfer_wb_transport.NewTargetTransport(wbClientset),
+		transfer.NewConfigMust(),
+	)
+	if err != nil {
+		panic(fmt.Errorf("create transfer feature: %w", err))
+	}
+	cardprepareFeature := cardprepare.New(
+		postgresPool,
+		uow,
+		cardprepare_wb_transport.NewCatalogTransport(wbClientset),
+		transferFeature.Service(),
+		transferFeature.PreparationResultApplier(),
+	)
+	go func() {
+		if err := transferFeature.RunPolling(
+			ctx,
+			func(err error) {
+				logger.Logger.Error("process pending transfers", zap.Error(err))
+			},
+			cardprepareFeature.Processor(),
+		); err != nil && ctx.Err() == nil {
+			logger.Logger.Error("run transfer polling", zap.Error(err))
+			cancel()
+		}
+	}()
 	// Telegram commands.
 
 	telegramHandler := core_transport_telegram.Register(
