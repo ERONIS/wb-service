@@ -56,7 +56,7 @@ env-cleanup:
 	@read -p "Очистить файлы PostgreSQL? Возможна потеря данных. [y/N]: " ans; \
 	if [ "$$ans" = "y" ]; then \
 		docker compose down; \
-		rm -rf "$(PROJECT_ROOT)/out/pgdata"; \
+		rm -rf "$(PROJECT_ROOT)/.runtime/pgdata"; \
 		echo "Файлы окружения очищены"; \
 	else \
 		echo "Очистка окружения отменена"; \
