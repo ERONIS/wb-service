@@ -4,13 +4,12 @@ import (
 	"context"
 
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
+	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
 	cardimport_postgres_repository "github.com/ERONIS/wb-service/internal/feature/cardimport/repository/postgres"
 	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
 	cardimport_telegram_transport "github.com/ERONIS/wb-service/internal/feature/cardimport/transport/telegram"
 	cardimport_xlsx_transport "github.com/ERONIS/wb-service/internal/feature/cardimport/transport/xlsx"
-	platform_outbox "github.com/ERONIS/wb-service/internal/platform/outbox"
-	platform_transaction "github.com/ERONIS/wb-service/internal/platform/transaction"
 
 	tele "gopkg.in/telebot.v3"
 )
@@ -24,13 +23,12 @@ type Feature struct {
 func New(
 	ctx context.Context,
 	postgresPool core_postgres_pool.Pool,
-	uow platform_transaction.UnitOfWork,
-	outbox platform_outbox.Appender,
+	uow core_postgres_transaction.UnitOfWork,
 	bot *tele.Bot,
 ) *Feature {
 	repository := cardimport_postgres_repository.New(postgresPool)
 	parser := cardimport_xlsx_transport.NewParser()
-	service := cardimport_service.New(repository, parser, uow, outbox)
+	service := cardimport_service.New(repository, parser, uow)
 
 	return &Feature{
 		service: service,

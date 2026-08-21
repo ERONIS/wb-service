@@ -2,25 +2,11 @@ package cardimport_service
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"strconv"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
-	platform_outbox "github.com/ERONIS/wb-service/internal/platform/outbox"
-	platform_transaction "github.com/ERONIS/wb-service/internal/platform/transaction"
+	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 )
-
-const BatchFinalizedEventType = "cardimport.BatchFinalized"
-
-type BatchFinalizedPayload struct {
-	BatchID              BatchID `json:"batchId"`
-	Checksum             string  `json:"checksum"`
-	ItemsCount           int     `json:"itemsCount"`
-	GroupsCount          int     `json:"groupsCount"`
-	SchemaVersion        int     `json:"schemaVersion"`
-	NormalizationVersion int     `json:"normalizationVersion"`
-}
 
 func (s *Service) Finalize(
 	ctx context.Context,
@@ -40,7 +26,7 @@ func (s *Service) Finalize(
 	var batch BatchHeader
 	err := s.uow.WithinTransaction(
 		ctx,
-		func(ctx context.Context, tx platform_transaction.DBTX) error {
+		func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
 			var err error
 			batch, err = s.repository.Finalize(
 				ctx,
@@ -52,35 +38,6 @@ func (s *Service) Finalize(
 			if err != nil {
 				return err
 			}
-
-			payload, err := json.Marshal(BatchFinalizedPayload{
-				BatchID:              batch.ID,
-				Checksum:             batch.Checksum.String(),
-				ItemsCount:           batch.ItemsCount,
-				GroupsCount:          batch.GroupsCount,
-				SchemaVersion:        batch.SchemaVersion,
-				NormalizationVersion: batch.NormalizationVersion,
-			})
-			if err != nil {
-				return fmt.Errorf("marshal BatchFinalized event: %w", err)
-			}
-
-			eventID, err := platform_outbox.NewEventID()
-			if err != nil {
-				return fmt.Errorf("create BatchFinalized event ID: %w", err)
-			}
-			_, err = s.outbox.Append(ctx, tx, platform_outbox.Event{
-				ID:                eventID,
-				Type:              BatchFinalizedEventType,
-				AggregateID:       "card-batch:" + strconv.FormatInt(int64(batch.ID), 10),
-				AggregateRevision: 1,
-				SchemaVersion:     1,
-				Payload:           payload,
-			})
-			if err != nil {
-				return fmt.Errorf("append BatchFinalized event: %w", err)
-			}
-
 			return nil
 		},
 	)
@@ -104,6 +61,27 @@ func (s *Service) GetBatch(
 	}
 
 	return s.repository.GetBatch(ctx, batchID)
+}
+
+func (s *Service) ListFinalizedBatches(
+	ctx context.Context,
+	after *BatchCursor,
+	limit int,
+) ([]BatchHeader, error) {
+	if after != nil {
+		if err := after.Validate(); err != nil {
+			return nil, err
+		}
+	}
+	if limit <= 0 || limit > MaxBatchPageSize {
+		return nil, fmt.Errorf(
+			"invalid finalized batch page limit '%d': %w",
+			limit,
+			core_errors.ErrInvalidArgument,
+		)
+	}
+
+	return s.repository.ListFinalizedBatches(ctx, after, limit)
 }
 
 func (s *Service) ListBatchItems(

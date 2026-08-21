@@ -24,6 +24,21 @@ type BatchItemID int64
 type Digest [sha256.Size]byte
 type SourceGroupKey [sha256.Size]byte
 
+type BatchCursor struct {
+	FinalizedAt time.Time
+	BatchID     BatchID
+}
+
+func (cursor BatchCursor) Validate() error {
+	if cursor.FinalizedAt.IsZero() || cursor.BatchID <= 0 {
+		return fmt.Errorf(
+			"invalid finalized batch cursor: %w",
+			core_errors.ErrInvalidArgument,
+		)
+	}
+	return nil
+}
+
 func (d Digest) String() string {
 	return hex.EncodeToString(d[:])
 }
@@ -79,7 +94,7 @@ type BatchHeader struct {
 	NormalizationVersion int
 	Checksum             Digest
 	AuthorSnapshot       AuthorSnapshot
-	CreatedAt            time.Time
+	FinalizedAt          time.Time
 }
 
 func (h BatchHeader) Validate() error {
@@ -104,8 +119,8 @@ func (h BatchHeader) Validate() error {
 		return invalidBatch("author display name is empty")
 	case len([]rune(h.AuthorSnapshot.DisplayName)) > 100:
 		return invalidBatch("author display name is too long")
-	case h.CreatedAt.IsZero():
-		return invalidBatch("created time is empty")
+	case h.FinalizedAt.IsZero():
+		return invalidBatch("finalized time is empty")
 	default:
 		return nil
 	}

@@ -1,15 +1,20 @@
 package wb
 
 import (
+	"context"
+	"errors"
+
+	client "github.com/ERONIS/wb-service/internal/core/transport/wb/client"
 	config "github.com/ERONIS/wb-service/internal/core/transport/wb/config"
-	contentv1 "github.com/ERONIS/wb-service/internal/core/transport/wb/typed/content/v1"
+	policy "github.com/ERONIS/wb-service/internal/core/transport/wb/policy"
 )
 
-// CabinetClient предоставляет typed API одного кабинета.
+// CabinetClient is a credential-bound generic executor. Endpoint DTO and
+// operation selection belong to a feature transport.
 type CabinetClient struct {
-	id        config.CabinetID
-	name      string
-	contentV1 *contentv1.ContentV1Client
+	id       config.CabinetID
+	name     string
+	executor client.Executor
 }
 
 func (client *CabinetClient) ID() config.CabinetID {
@@ -28,10 +33,17 @@ func (client *CabinetClient) Name() string {
 	return client.name
 }
 
-func (client *CabinetClient) ContentV1() contentv1.ContentV1Interface {
-	if client == nil {
-		return nil
+func (cabinet *CabinetClient) Execute(
+	ctx context.Context,
+	operation policy.Operation,
+	query any,
+	body any,
+	target any,
+) error {
+	if cabinet == nil || cabinet.executor == nil {
+		return errors.New("WB cabinet executor is required")
 	}
-
-	return client.contentV1
+	return cabinet.executor.Execute(ctx, operation, query, body, target)
 }
+
+var _ client.Executor = (*CabinetClient)(nil)
