@@ -1,6 +1,7 @@
 package wb
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -13,7 +14,6 @@ import (
 	config "github.com/ERONIS/wb-service/internal/core/transport/wb/config"
 	flowcontrol "github.com/ERONIS/wb-service/internal/core/transport/wb/flowcontrol"
 	transport "github.com/ERONIS/wb-service/internal/core/transport/wb/transport"
-	contentv1 "github.com/ERONIS/wb-service/internal/core/transport/wb/typed/content/v1"
 	"go.uber.org/zap"
 )
 
@@ -25,17 +25,23 @@ const (
 
 // Clientset хранит immutable registry кабинетов и общий connection pool.
 type Clientset struct {
-	cabinets        map[config.CabinetID]*CabinetClient
-	cabinetInfos    []CabinetInfo
-	sharedTransport *transport.SharedTransport
+	cabinets         map[config.CabinetID]*CabinetClient
+	cabinetInfos     []CabinetInfo
+	credentialTokens map[config.CabinetID]string
+	sharedTransport  *transport.SharedTransport
 }
 
 // NewForConfig создаёт Clientset поверх принадлежащей WB Core копии
-// http.DefaultTransport.
+// http.DefaultTransport и до возврата проверяет credentials через Content API.
 func NewForConfig(
+	ctx context.Context,
 	configuration *config.Config,
 	logger *zap.Logger,
 ) (*Clientset, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("WB startup context is required")
+	}
+
 	configCopy, baseURL, err := prepareClientsetConfig(
 		configuration,
 		logger,
@@ -54,22 +60,32 @@ func NewForConfig(
 
 	baseHTTPClient := &http.Client{Timeout: configCopy.Timeout}
 
-	return buildClientset(
+	clientset, err := buildClientset(
 		configCopy,
 		baseURL,
 		baseHTTPClient,
 		sharedTransport,
 		logger,
 	)
+	if err != nil {
+		return nil, err
+	}
+
+	return verifyClientsetCredentials(ctx, clientset)
 }
 
 // NewForConfigAndHTTPClient создаёт Clientset поверх явно внедрённого base
-// HTTP client, не изменяя его.
+// HTTP client, не изменяя его, и до возврата проверяет credentials.
 func NewForConfigAndHTTPClient(
+	ctx context.Context,
 	configuration *config.Config,
 	httpClient *http.Client,
 	logger *zap.Logger,
 ) (*Clientset, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("WB startup context is required")
+	}
+
 	configCopy, baseURL, err := prepareClientsetConfig(
 		configuration,
 		logger,
@@ -99,13 +115,30 @@ func NewForConfigAndHTTPClient(
 	baseHTTPClient := *httpClient
 	baseHTTPClient.Timeout = configCopy.Timeout
 
-	return buildClientset(
+	clientset, err := buildClientset(
 		configCopy,
 		baseURL,
 		&baseHTTPClient,
 		sharedTransport,
 		logger,
 	)
+	if err != nil {
+		return nil, err
+	}
+
+	return verifyClientsetCredentials(ctx, clientset)
+}
+
+func verifyClientsetCredentials(
+	ctx context.Context,
+	clientset *Clientset,
+) (*Clientset, error) {
+	if err := clientset.verifyCredentialsAtStartup(ctx, time.Now().UTC()); err != nil {
+		clientset.CloseIdleConnections()
+		return nil, fmt.Errorf("verify WB credentials at startup: %w", err)
+	}
+
+	return clientset, nil
 }
 
 // Cabinets возвращает deterministic snapshot настроенных кабинетов.
@@ -120,7 +153,7 @@ func (clientset *Clientset) Cabinets() []CabinetInfo {
 	return result
 }
 
-// ForCabinet возвращает typed client указанного кабинета.
+// ForCabinet возвращает generic executor указанного кабинета.
 func (clientset *Clientset) ForCabinet(
 	id config.CabinetID,
 ) (*CabinetClient, error) {
@@ -134,6 +167,14 @@ func (clientset *Clientset) ForCabinet(
 	}
 
 	return cabinet, nil
+}
+
+// ExecutorForCabinet exposes only the generic execution contract expected by
+// feature transports.
+func (clientset *Clientset) ExecutorForCabinet(
+	id config.CabinetID,
+) (client.Executor, error) {
+	return clientset.ForCabinet(id)
 }
 
 // CloseIdleConnections закрывает idle connections общего transport.
@@ -256,6 +297,10 @@ func buildClientset(
 		0,
 		len(configuration.Cabinets),
 	)
+	credentialTokens := make(
+		map[config.CabinetID]string,
+		len(configuration.Cabinets),
+	)
 
 	for _, cabinetConfig := range configuration.Cabinets {
 		roundTripper := sharedTransport.RoundTripper(
@@ -293,20 +338,12 @@ func buildClientset(
 			)
 		}
 
-		contentClient, err := contentv1.NewContentV1Client(apiClient)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"create WB Content v1 client for cabinet %q: %w",
-				cabinetConfig.ID,
-				err,
-			)
-		}
-
 		cabinets[cabinetConfig.ID] = &CabinetClient{
-			id:        cabinetConfig.ID,
-			name:      cabinetConfig.Name,
-			contentV1: contentClient,
+			id:       cabinetConfig.ID,
+			name:     cabinetConfig.Name,
+			executor: apiClient,
 		}
+		credentialTokens[cabinetConfig.ID] = cabinetConfig.Token
 		cabinetInfos = append(cabinetInfos, CabinetInfo{
 			ID:   cabinetConfig.ID,
 			Name: cabinetConfig.Name,
@@ -314,8 +351,9 @@ func buildClientset(
 	}
 
 	return &Clientset{
-		cabinets:        cabinets,
-		cabinetInfos:    cabinetInfos,
-		sharedTransport: sharedTransport,
+		cabinets:         cabinets,
+		cabinetInfos:     cabinetInfos,
+		credentialTokens: credentialTokens,
+		sharedTransport:  sharedTransport,
 	}, nil
 }
