@@ -151,13 +151,9 @@ func (repository *Repository) LoadPreparationSource(
 		JOIN wb.transfer_targets AS target
 			ON target.transfer_id = group_target.transfer_id
 		   AND target.id = group_target.target_id
-		JOIN wb.transfer_group_members AS member
-			ON member.transfer_id = group_target.transfer_id
-		   AND member.source_group_id = group_target.source_group_id
 		JOIN wb.transfer_items AS item
-			ON item.transfer_id = member.transfer_id
-		   AND item.source_group_id = member.source_group_id
-		   AND item.id = member.transfer_item_id
+			ON item.transfer_id = group_target.transfer_id
+		   AND item.source_group_id = group_target.source_group_id
 		WHERE transfer.id = $1
 			AND transfer.phase = 'preparing'
 			AND transfer.outcome = 'running'

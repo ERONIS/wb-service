@@ -44,7 +44,6 @@ type MediaAction struct {
 	NMID                   int64
 	IdentityRevision       int64
 	AttemptID              int64
-	ErrorBaselineID        int64
 	RecheckObservationID   int64
 	AttemptRequestDigest   Digest
 	AttemptRequestPayload  []byte
@@ -96,15 +95,15 @@ func (action MediaAction) Validate() error {
 		return errors.New("publication media action digest differs")
 	}
 	if action.AttemptID == 0 {
-		if action.ErrorBaselineID != 0 || action.RecheckObservationID != 0 ||
+		if action.RecheckObservationID != 0 ||
 			action.AttemptRequestDigest != (Digest{}) ||
 			len(action.AttemptRequestPayload) != 0 || !action.AttemptStartedAt.IsZero() {
 			return errors.New("publication media action has a partial attempt")
 		}
 		return nil
 	}
-	if action.State != "dispatching" || action.ErrorBaselineID <= 0 ||
-		action.RecheckObservationID <= 0 || action.AttemptRequestDigest == (Digest{}) ||
+	if action.State != "dispatching" || action.RecheckObservationID <= 0 ||
+		action.AttemptRequestDigest == (Digest{}) ||
 		len(action.AttemptRequestPayload) == 0 || action.AttemptStartedAt.IsZero() {
 		return errors.New("publication media attempt is incomplete")
 	}
@@ -142,7 +141,6 @@ type MediaAttempt struct {
 	TransferID           transfer_service.TransferID
 	ActionID             int64
 	AuthorizationID      transfer_service.LiveAuthorizationID
-	ErrorBaselineID      int64
 	RecheckObservationID int64
 	AttributionID        int64
 	RequestDigest        Digest
@@ -824,7 +822,6 @@ func mediaAttemptFromAction(action MediaAction) MediaAttempt {
 		TransferID:           action.TransferID,
 		ActionID:             action.ActionID,
 		AuthorizationID:      action.AuthorizationID,
-		ErrorBaselineID:      action.ErrorBaselineID,
 		RecheckObservationID: action.RecheckObservationID,
 		AttributionID:        action.AttributionID,
 		RequestDigest:        action.AttemptRequestDigest,

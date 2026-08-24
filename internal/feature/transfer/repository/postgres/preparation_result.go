@@ -50,7 +50,7 @@ func (repository *Repository) ApplyPreparationResult(
 				WHEN 'unresolved' THEN 'unresolved'
 			END,
 			attention_code = CASE
-				WHEN $3 = 'unresolved' THEN $7
+				WHEN $3 = 'unresolved' THEN $7::VARCHAR(128)
 				ELSE NULL
 			END,
 			finished_at = CASE

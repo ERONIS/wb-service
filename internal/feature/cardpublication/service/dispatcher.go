@@ -513,7 +513,6 @@ func attemptFromAction(action ProductAction) ProductAttempt {
 		TransferID:           action.TransferID,
 		ActionID:             action.ActionID,
 		AuthorizationID:      action.AuthorizationID,
-		ErrorBaselineID:      action.ErrorBaselineID,
 		RecheckObservationID: action.RecheckObservationID,
 		RequestDigest:        action.RequestDigest,
 		StartedAt:            action.AttemptStartedAt,

@@ -29,8 +29,8 @@ func (repository *Repository) ListDispatchableMediaActions(
 				action.id AS action_id,
 				action.target_id,
 				target.cabinet_id,
-				authorization.id AS authorization_id,
-				authorization.revision AS authorization_revision,
+				live_auth.id AS authorization_id,
+				live_auth.revision AS authorization_revision,
 				plan.plan_digest,
 				plan.target_set_root,
 				target.position AS target_position,
@@ -47,10 +47,10 @@ func (repository *Repository) ListDispatchableMediaActions(
 			JOIN wb.transfer_targets AS target
 			  ON target.transfer_id = action.transfer_id
 			 AND target.id = action.target_id
-			JOIN wb.transfer_live_authorizations AS authorization
-			  ON authorization.transfer_id = action.transfer_id
-			 AND authorization.plan_id = action.plan_id
-			 AND authorization.plan_digest = plan.plan_digest
+			JOIN wb.transfer_live_authorizations AS live_auth
+			  ON live_auth.transfer_id = action.transfer_id
+			 AND live_auth.plan_id = action.plan_id
+			 AND live_auth.plan_digest = plan.plan_digest
 			JOIN wb.publication_action_members AS media_member
 			  ON media_member.transfer_id = action.transfer_id
 			 AND media_member.action_id = action.id
@@ -84,8 +84,8 @@ func (repository *Repository) ListDispatchableMediaActions(
 				AND plan.state = 'executing'
 				AND transfer.phase IN ('reconciling', 'media')
 				AND transfer.outcome = 'running'
-				AND authorization.state = 'authorized'
-				AND authorization.expires_at > CURRENT_TIMESTAMP
+				AND live_auth.state = 'authorized'
+				AND live_auth.expires_at > CURRENT_TIMESTAMP
 				AND NOT EXISTS (
 					SELECT 1
 					FROM wb.publication_attempts AS attempt
@@ -150,8 +150,8 @@ func (repository *Repository) ListInterruptedMediaActions(
 			action.id,
 			action.target_id,
 			target.cabinet_id,
-			authorization.id,
-			authorization.revision,
+			live_auth.id,
+			live_auth.revision,
 			plan.plan_digest,
 			plan.target_set_root
 		FROM wb.publication_actions AS action
@@ -161,9 +161,9 @@ func (repository *Repository) ListInterruptedMediaActions(
 		JOIN wb.transfer_targets AS target
 		  ON target.transfer_id = action.transfer_id
 		 AND target.id = action.target_id
-		JOIN wb.transfer_live_authorizations AS authorization
-		  ON authorization.transfer_id = action.transfer_id
-		 AND authorization.id = action.authorization_id
+		JOIN wb.transfer_live_authorizations AS live_auth
+		  ON live_auth.transfer_id = action.transfer_id
+		 AND live_auth.id = action.authorization_id
 		JOIN wb.publication_attempts AS attempt
 		  ON attempt.transfer_id = action.transfer_id
 		 AND attempt.action_id = action.id
@@ -209,8 +209,8 @@ func (repository *Repository) ListPendingMediaActions(
 				action.id AS action_id,
 				action.target_id,
 				target.cabinet_id,
-				authorization.id AS authorization_id,
-				authorization.revision AS authorization_revision,
+				live_auth.id AS authorization_id,
+				live_auth.revision AS authorization_revision,
 				plan.plan_digest,
 				plan.target_set_root,
 				target.position AS target_position,
@@ -235,7 +235,7 @@ func (repository *Repository) ListPendingMediaActions(
 				  AND live.plan_digest = plan.plan_digest
 				ORDER BY live.id DESC
 				LIMIT 1
-			) AS authorization ON TRUE
+			) AS live_auth ON TRUE
 			JOIN wb.publication_action_members AS media_member
 			  ON media_member.transfer_id = action.transfer_id
 			 AND media_member.action_id = action.id
@@ -343,12 +343,11 @@ func (repository *Repository) LockMediaAction(
 			attribution.nm_id,
 			identity.revision,
 			attempt.id,
-			attempt.error_baseline_id,
 			attempt.recheck_observation_id,
 			attempt.request_digest,
 			attempt.request_payload,
 			attempt.started_at,
-			authorization.revision,
+			live_auth.revision,
 			(
 				SELECT COUNT(*)
 				FROM wb.publication_action_members AS counted_member
@@ -382,9 +381,9 @@ func (repository *Repository) LockMediaAction(
 		JOIN wb.transfer_targets AS target
 		  ON target.transfer_id = action.transfer_id
 		 AND target.id = action.target_id
-		JOIN wb.transfer_live_authorizations AS authorization
-		  ON authorization.transfer_id = action.transfer_id
-		 AND authorization.id = $5
+		JOIN wb.transfer_live_authorizations AS live_auth
+		  ON live_auth.transfer_id = action.transfer_id
+		 AND live_auth.id = $5
 		JOIN wb.publication_action_members AS media_member
 		  ON media_member.transfer_id = action.transfer_id
 		 AND media_member.action_id = action.id
@@ -426,7 +425,7 @@ func (repository *Repository) LockMediaAction(
 				 AND identity.active_action_id IS NULL)
 				OR
 				(action.state = 'dispatching'
-				 AND action.authorization_id = authorization.id
+				 AND action.authorization_id = live_auth.id
 				 AND identity.active_transfer_id = action.transfer_id
 				 AND identity.active_action_id = action.id)
 			)
@@ -437,7 +436,7 @@ func (repository *Repository) LockMediaAction(
 		requestDigest, memberDigest, mediaRoot []byte
 		sellerKey, generation                  []byte
 		preflightID                            pgtype.Int8
-		attemptID, baselineID, recheckID       pgtype.Int8
+		attemptID, recheckID                   pgtype.Int8
 		attemptRequestDigest                   []byte
 		attemptRequestPayload                  []byte
 		attemptStartedAt                       pgtype.Timestamptz
@@ -475,7 +474,6 @@ func (repository *Repository) LockMediaAction(
 		&action.NMID,
 		&action.IdentityRevision,
 		&attemptID,
-		&baselineID,
 		&recheckID,
 		&attemptRequestDigest,
 		&attemptRequestPayload,
@@ -511,9 +509,6 @@ func (repository *Repository) LockMediaAction(
 	if attemptID.Valid {
 		action.AttemptID = attemptID.Int64
 	}
-	if baselineID.Valid {
-		action.ErrorBaselineID = baselineID.Int64
-	}
 	if recheckID.Valid {
 		action.RecheckObservationID = recheckID.Int64
 	}
@@ -545,6 +540,7 @@ func (repository *Repository) BeginMediaAttempt(
 	if tx == nil || action.State != "planned" || action.AttemptID != 0 ||
 		command.Authorization.AuthorizationID != action.AuthorizationID ||
 		command.Authorization.Revision != action.AuthorizationRevision ||
+		command.Baseline.Validate() != nil ||
 		command.Baseline.TransferID != action.TransferID ||
 		command.Baseline.ActionID != action.ActionID ||
 		command.Baseline.CabinetID != action.CabinetID ||
@@ -649,18 +645,19 @@ func (repository *Repository) BeginMediaAttempt(
 	}
 	const insertAttempt = `
 		INSERT INTO wb.publication_attempts (
-			transfer_id, action_id, authorization_id, error_baseline_id,
-			recheck_observation_id, request_digest, request_payload,
+			transfer_id, action_id, authorization_id, recheck_observation_id,
+			baseline_cabinet_id, baseline_cursor_revision,
+			baseline_cursor_updated_at, baseline_cursor_batch_uuid,
+			baseline_captured_at, request_digest, request_payload,
 			attribution_id
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING id, started_at;
 	`
 	attempt := cardpublication_service.MediaAttempt{
 		TransferID:           action.TransferID,
 		ActionID:             action.ActionID,
 		AuthorizationID:      action.AuthorizationID,
-		ErrorBaselineID:      command.Baseline.ID,
 		RecheckObservationID: command.RecheckObservationID,
 		AttributionID:        action.AttributionID,
 		RequestDigest:        command.RequestDigest,
@@ -672,8 +669,12 @@ func (repository *Repository) BeginMediaAttempt(
 		action.TransferID,
 		action.ActionID,
 		action.AuthorizationID,
-		command.Baseline.ID,
 		command.RecheckObservationID,
+		command.Baseline.CabinetID,
+		command.Baseline.CursorRevision,
+		nullableTime(command.Baseline.CursorUpdatedAt),
+		command.Baseline.CursorBatchUUID,
+		command.Baseline.CapturedAt,
 		command.RequestDigest[:],
 		command.RequestPayload,
 		action.AttributionID,

@@ -58,7 +58,6 @@ type CaptureErrorBaselineCommand struct {
 }
 
 type ErrorBaseline struct {
-	ID              int64
 	TransferID      transfer_service.TransferID
 	ActionID        int64
 	CabinetID       CabinetID
@@ -66,6 +65,15 @@ type ErrorBaseline struct {
 	CursorUpdatedAt time.Time
 	CursorBatchUUID string
 	CapturedAt      time.Time
+}
+
+func (baseline ErrorBaseline) Validate() error {
+	if baseline.TransferID <= 0 || baseline.ActionID <= 0 || baseline.CabinetID == "" ||
+		baseline.CursorRevision < 0 || baseline.CapturedAt.IsZero() ||
+		(baseline.CursorUpdatedAt.IsZero() && baseline.CursorBatchUUID != "") {
+		return errors.New("Cards Error List baseline is invalid")
+	}
+	return nil
 }
 
 type ErrorFeed struct {

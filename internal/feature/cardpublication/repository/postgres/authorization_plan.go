@@ -97,11 +97,11 @@ func (repository *Repository) ListAuthorizationPlans(
 			)
 			AND NOT EXISTS (
 				SELECT 1
-				FROM wb.transfer_live_authorizations AS authorization
-				WHERE authorization.transfer_id = transfer.id
-				  AND authorization.plan_digest = plan.plan_digest
-				  AND authorization.state = 'authorized'
-				  AND authorization.expires_at > CURRENT_TIMESTAMP
+				FROM wb.transfer_live_authorizations AS live_auth
+				WHERE live_auth.transfer_id = transfer.id
+				  AND live_auth.plan_digest = plan.plan_digest
+				  AND live_auth.state = 'authorized'
+				  AND live_auth.expires_at > CURRENT_TIMESTAMP
 			)
 		ORDER BY transfer.id
 		LIMIT $2;

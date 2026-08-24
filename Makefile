@@ -54,9 +54,15 @@ env-port-close:
 
 env-cleanup:
 	@read -p "Очистить файлы PostgreSQL? Возможна потеря данных. [y/N]: " ans; \
-	if [ "$$ans" = "y" ]; then \
+	if [ "$$ans" = "y" ] || [ "$$ans" = "Y" ]; then \
+		set -eu; \
+		test -n "$(PROJECT_ROOT)"; \
 		docker compose down; \
-		rm -rf "$(PROJECT_ROOT)/.runtime/pgdata"; \
+		docker run --rm --user 0:0 \
+			-v "$(PROJECT_ROOT)/.runtime:/workspace-runtime" \
+			postgres:18.1-bookworm \
+			sh -eu -c 'rm -rf -- /workspace-runtime/pgdata'; \
+		test ! -e "$(PROJECT_ROOT)/.runtime/pgdata"; \
 		echo "Файлы окружения очищены"; \
 	else \
 		echo "Очистка окружения отменена"; \

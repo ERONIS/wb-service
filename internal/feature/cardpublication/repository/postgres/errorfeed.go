@@ -8,8 +8,6 @@ import (
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
-
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -151,21 +149,6 @@ func (repository *Repository) CaptureErrorBaseline(
 			"capture publication error baseline: DBTX is nil",
 		)
 	}
-	existing, err := loadErrorBaseline(
-		ctx,
-		tx,
-		command.TransferID,
-		command.ActionID,
-	)
-	if err == nil {
-		return existing, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return cardpublication_service.ErrorBaseline{}, fmt.Errorf(
-			"load publication error baseline: %w",
-			err,
-		)
-	}
 	if err := ensureErrorCursor(ctx, tx, command.CabinetID); err != nil {
 		return cardpublication_service.ErrorBaseline{}, err
 	}
@@ -173,65 +156,41 @@ func (repository *Repository) CaptureErrorBaseline(
 	if err != nil {
 		return cardpublication_service.ErrorBaseline{}, err
 	}
-	var cursorUpdatedAt any
-	if !cursor.UpdatedAt.IsZero() {
-		cursorUpdatedAt = cursor.UpdatedAt
-	}
-	const insert = `
-		INSERT INTO wb.publication_error_baselines (
-			transfer_id,
-			action_id,
-			cabinet_id,
-			cursor_revision,
-			cursor_updated_at,
-			cursor_batch_uuid
-		)
-		SELECT $1, $2, $3, $4, $5, $6
-		WHERE EXISTS (
-			SELECT 1
-			FROM wb.publication_actions AS action
-			JOIN wb.transfer_targets AS target
-			  ON target.transfer_id = action.transfer_id
-			 AND target.id = action.target_id
-			WHERE action.transfer_id = $1
-			  AND action.id = $2
-			  AND action.state = 'planned'
-			  AND target.cabinet_id = $3
-		)
-		ON CONFLICT (transfer_id, action_id) DO NOTHING
-		RETURNING
-			id, transfer_id, action_id, cabinet_id, cursor_revision,
-			cursor_updated_at, cursor_batch_uuid, captured_at;
+	const validateAction = `
+		SELECT CURRENT_TIMESTAMP
+		FROM wb.publication_actions AS action
+		JOIN wb.transfer_targets AS target
+		  ON target.transfer_id = action.transfer_id
+		 AND target.id = action.target_id
+		WHERE action.transfer_id = $1
+		  AND action.id = $2
+		  AND action.state = 'planned'
+		  AND target.cabinet_id = $3;
 	`
-	baseline, err := scanErrorBaseline(tx.QueryRow(
+	var capturedAt time.Time
+	if err := tx.QueryRow(
 		ctx,
-		insert,
+		validateAction,
 		command.TransferID,
 		command.ActionID,
 		command.CabinetID,
-		cursor.Revision,
-		cursorUpdatedAt,
-		cursor.BatchUUID,
-	))
-	if errors.Is(err, pgx.ErrNoRows) {
-		baseline, err = loadErrorBaseline(ctx, tx, command.TransferID, command.ActionID)
-		if err == nil {
-			return baseline, nil
-		}
-	}
-	if err != nil {
+	).Scan(&capturedAt); err != nil {
 		return cardpublication_service.ErrorBaseline{}, fmt.Errorf(
-			"insert publication error baseline: %w",
+			"validate publication error baseline action: %w",
 			err,
 		)
 	}
-	if baseline.CabinetID != command.CabinetID ||
-		baseline.CursorRevision != cursor.Revision ||
-		!baseline.CursorUpdatedAt.Equal(cursor.UpdatedAt) ||
-		baseline.CursorBatchUUID != cursor.BatchUUID {
-		return cardpublication_service.ErrorBaseline{}, errors.New(
-			"publication error baseline conflicts with current cursor",
-		)
+	baseline := cardpublication_service.ErrorBaseline{
+		TransferID:      command.TransferID,
+		ActionID:        command.ActionID,
+		CabinetID:       command.CabinetID,
+		CursorRevision:  cursor.Revision,
+		CursorUpdatedAt: cursor.UpdatedAt,
+		CursorBatchUUID: cursor.BatchUUID,
+		CapturedAt:      capturedAt.UTC(),
+	}
+	if err := baseline.Validate(); err != nil {
+		return cardpublication_service.ErrorBaseline{}, err
 	}
 	return baseline, nil
 }
@@ -297,55 +256,18 @@ func scanErrorCursor(row interface{ Scan(...any) error }) (
 	return cursor, nil
 }
 
-func loadErrorBaseline(
-	ctx context.Context,
-	tx core_postgres_transaction.DBTX,
-	transferID transfer_service.TransferID,
-	actionID int64,
-) (cardpublication_service.ErrorBaseline, error) {
-	const query = `
-		SELECT
-			id, transfer_id, action_id, cabinet_id, cursor_revision,
-			cursor_updated_at, cursor_batch_uuid, captured_at
-		FROM wb.publication_error_baselines
-		WHERE transfer_id = $1 AND action_id = $2
-		FOR UPDATE;
-	`
-	return scanErrorBaseline(tx.QueryRow(ctx, query, transferID, actionID))
-}
-
-func scanErrorBaseline(row interface{ Scan(...any) error }) (
-	cardpublication_service.ErrorBaseline,
-	error,
-) {
-	var baseline cardpublication_service.ErrorBaseline
-	var transferID int64
-	var updatedAt pgtype.Timestamptz
-	if err := row.Scan(
-		&baseline.ID,
-		&transferID,
-		&baseline.ActionID,
-		&baseline.CabinetID,
-		&baseline.CursorRevision,
-		&updatedAt,
-		&baseline.CursorBatchUUID,
-		&baseline.CapturedAt,
-	); err != nil {
-		return cardpublication_service.ErrorBaseline{}, err
-	}
-	baseline.TransferID = transfer_service.TransferID(transferID)
-	if updatedAt.Valid {
-		baseline.CursorUpdatedAt = updatedAt.Time.UTC()
-	}
-	baseline.CapturedAt = baseline.CapturedAt.UTC()
-	return baseline, nil
-}
-
 func cursorAfterStored(leftTime time.Time, leftUUID string, rightTime time.Time, rightUUID string) bool {
 	if leftTime.After(rightTime) {
 		return true
 	}
 	return leftTime.Equal(rightTime) && leftUUID > rightUUID
+}
+
+func nullableTime(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return value
 }
 
 var _ cardpublication_service.ErrorFeedRepository = (*Repository)(nil)

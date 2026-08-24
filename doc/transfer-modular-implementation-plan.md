@@ -162,7 +162,7 @@ Finalize → Start → Initialize → cardprepare → immutable publication plan
 Новых обязательных business use cases до Stage 8 не запланировано. Оставшиеся
 примерно **5%** — проверка уже написанной реализации:
 
-- ручной fresh PostgreSQL цикл `000001 up → down → up`;
+- ручной fresh PostgreSQL цикл полного набора `up → down → up`;
 - canary с реальными WB envelopes для create, add, Error List и media;
 - подтверждение фактического появления фотографий после
   `MEDIA_REQUEST_ACCEPTED`;
@@ -217,8 +217,7 @@ scope и не уменьшают указанную готовность transfe
 - `go build ./...` проходит;
 - `git diff --check` проходит;
 - новые test files не создавались, тесты не запускались;
-- новая numbered migration не создавалась: изменяется только pre-release
-  `000001_init.up.sql`/`000001_init.down.sql`;
+- pre-release schema разделена на доменные миграции `000001`–`000008`;
 - official WB OpenAPI на 2026-08-21 сверена для `Upload`, `UploadAdd`,
   `Cards Error List` и `SaveMediaByLinks`; request/response DTO и актуальная
   cursor pagination совпадают, а media `200/error=false` теперь явно означает
@@ -248,10 +247,9 @@ scope и не уменьшают указанную готовность transfe
   одному transfer на batch и выполняет одну атомарную initialization. Это не
   generic runtime, outbox или очередь;
 - repository находится до первого production release, поэтому полная целевая
-  schema этой feature собирается в `migration/000001_init.*.sql`; новая
-  migration для transfer flow в рамках этого плана не создаётся;
-- после первого production применения `000001` она замораживается, но этот
-  post-release migration policy находится за границей текущей реализации;
+  schema собирается в доменных миграциях `migration/000001_*`–`000008_*`;
+- после первого production применения набор `000001`–`000008` замораживается,
+  но этот post-release migration policy находится за границей текущей реализации;
 - баркоды в import payload опциональны: если они не заданы, `Upload`/`UploadAdd`
   не передают пользовательские SKU и WB генерирует их автоматически;
 - v1 не создаёт global barcode identity/claim и не сериализует transfers по
@@ -508,10 +506,9 @@ Gate закрыт, когда:
 
 Gate сейчас считается открытым. До его закрытия нельзя merge-ить Stage 1
 `transfer` code. Изменения `card_batches`, `card_batch_items`, optional barcodes
-и Finalize вносятся в текущую pre-release `000001_init` migration.
-Соответствие реально развёрнутой локальной schema этой версии проверяется
-ручным циклом fresh database `000001 up → down → up`; новый numbered migration
-не создаётся.
+и Finalize входят в pre-release `000002_card_import` migration.
+Соответствие реально развёрнутой локальной schema проверяется ручным циклом
+полного набора миграций `up → down → up` на fresh database.
 
 `Finalize` является единственной границей создания batch:
 
@@ -582,6 +579,30 @@ commit-ится первой и попадает в batch, либо после F
 `core` не является business module и не владеет transfer/card semantics. Он
 предоставляет только общие transaction и transport primitives.
 
+### 5.1. Размер схемы v1
+
+Набор `000001`–`000008` содержит 31 прикладную таблицу и 6 read-only statistics
+views.
+Служебная `schema_migrations`, которую создаёт migrator, в это число не входит.
+Таблицы распределены так: 2 общие, 6 `cardimport`, 8 `transfer` с live
+authorization journal, 4 `cardprepare` и 11 `cardpublication`.
+
+Перед первым release схема намеренно упрощена без дополнительных delta
+migrations:
+
+- file content хранится в `card_import_files.content`; отдельной blob table нет;
+- принадлежность item группе задаёт `transfer_items.source_group_id`; отдельной
+  membership table нет;
+- metadata snapshot и exact request объединены в один immutable
+  `card_preparation_artifacts` row на preparation group;
+- Error List baseline хранится непосредственно в immutable identity полях
+  `publication_attempts` и создаётся атомарно вместе с attempt.
+
+Дальнейшее сокращение числа таблиц не является целью v1: action/member/attempt,
+remote observations и error correlations остаются раздельными, чтобы
+reconciliation и статистика читали факты напрямую, без восстановления истории
+из mutable JSON или текущих status-полей.
+
 ## 6. Модуль `transfer`
 
 ### 6.1. Ответственность
@@ -607,7 +628,6 @@ wb.transfers
 wb.transfer_targets
 wb.transfer_items
 wb.transfer_groups
-wb.transfer_group_members
 wb.transfer_group_targets
 wb.transfer_item_targets
 wb.transfer_live_authorizations
@@ -656,7 +676,7 @@ Group и target принадлежат тому же transfer. Каждый `tra
 Для composite FK parent tables имеют `UNIQUE(transfer_id, id)`.
 `transfer_item_targets` хранит также `source_group_id`; FK
 `(transfer_id, source_group_id, transfer_item_id)` ведёт в
-`transfer_group_members`, а `(transfer_id, source_group_id, group_target_id)` —
+`transfer_items`, а `(transfer_id, source_group_id, group_target_id)` —
 в `transfer_group_targets`. Так membership того же source group обеспечивается
 БД, не application-only проверкой.
 
@@ -868,18 +888,18 @@ operation, повторно проверяет phase и выполняет:
 
 ```text
 insert transfer items
-→ insert source groups/members
+→ insert source groups; каждый item ссылается на свою source group
 → insert group-target rows for every group × target cabinet
 → create item-target rows referencing group-target
 → validate persisted counts and matrix cardinality
 → phase initializing → preparing
 ```
 
-Пять materialized tables имеют простое назначение:
+Четыре materialized tables имеют простое назначение:
 
-- `transfer_items` — копия каждой исходной карточки внутри операции;
+- `transfer_items` — копия каждой исходной карточки внутри операции и её
+  `source_group_id`;
 - `transfer_groups` — логические группы исходных карточек;
-- `transfer_group_members` — какие карточки входят в каждую группу;
 - `transfer_group_targets` — одна задача на каждую пару `group × cabinet`;
 - `transfer_item_targets` — отдельный результат каждой карточки в каждом
   кабинете.
@@ -1112,8 +1132,7 @@ read не кэшируется. Изменение лимита между prepa
 wb.card_preparations
 wb.card_preparation_groups
 wb.card_preparation_items
-wb.card_preparation_payloads
-wb.card_metadata_snapshots
+wb.card_preparation_artifacts
 ```
 
 Cross-transfer metadata cache не входит в v1: сначала сохраняется immutable
@@ -1129,7 +1148,7 @@ TargetID/CabinetID
 SourceGroupID
 Batch schema/normalization version
 WB operation/catalog version
-MetadataSnapshotID
+PreparationArtifactID = PreparationGroupID
 Input revision
 ```
 
@@ -1535,8 +1554,12 @@ type SubmissionResult struct {
 AttemptID
 ActionID                 // UNIQUE, NOT NULL
 AuthorizationID
-ErrorBaselineID
 RecheckObservationID
+BaselineCabinetID
+BaselineCursorRevision
+BaselineCursorUpdatedAt
+BaselineCursorBatchUUID
+BaselineCapturedAt
 RequestDigest
 RequestPayload             // exact bytes actually sent
 AttributionID              // nullable; required by media attempt
@@ -1650,7 +1673,7 @@ PlanDigest
 AttemptID
 PreflightObservationID
 PostObservationID
-ErrorBaselineID
+Error cursor baseline fields внутри PublicationAttempt
 DirectCorrelationID
 Level                 // direct | observed_after_attempt | ambiguous
 SafeReasonCode
@@ -1673,7 +1696,6 @@ wb.publication_observations
 wb.publication_attributions
 wb.publication_error_cursors
 wb.publication_error_batches
-wb.publication_error_baselines
 wb.publication_error_correlations
 wb.publication_manual_resolutions
 ```
@@ -1698,6 +1720,10 @@ outcome; `publication_manual_resolutions` хранит неизменяемую 
 revision и ссылку на выбранное доказательство. Исходная
 attempt/response/observation evidence остаётся immutable.
 `transfer_item_targets` хранит только current межмодульную projection.
+`publication_attempts` одновременно хранит request/delivery и exact Error List
+cursor baseline (`cabinet`, `revision`, `updated_at`, `batch_uuid`,
+`captured_at`). Baseline сначала читается под lock, а затем вставляется вместе с
+attempt в той же transaction; отдельного partially committed baseline нет.
 
 ## 9. Media-подсистема внутри `cardpublication`
 
@@ -2090,14 +2116,16 @@ internal/core/
 
 ### 13.1. Pre-release schema policy
 
-- Все новые tables, columns, indexes и constraints этого плана входят в
-  `migration/000001_init.up.sql`.
-- `migration/000001_init.down.sql` удаляет их в обратном dependency order.
-- `000002` до первого production release не создаётся.
-- Fresh-database rollout использует цикл `000001 up → down → up`.
-- Локальная БД, где была применена промежуточная версия `000001`, не изменяется
-  скрыто: разработчик явно пересоздаёт disposable database/volume. Production
-  data этим процессом не удаляются.
+- Целевая schema разделена по domain/dependency boundaries на миграции
+  `migration/000001_*`–`000008_*`.
+- Каждая `down` migration самостоятельно отменяет соответствующую `up`
+  migration; полный откат выполняется в обратном dependency order.
+- После первого production rollout применённый набор миграций не изменяется;
+  дальнейшие schema changes получают новые номера.
+- Fresh-database rollout использует цикл полного набора `up → down → up`.
+- Локальная БД, где была применена промежуточная pre-release schema, не
+  изменяется скрыто: разработчик явно пересоздаёт disposable database/volume.
+  Production data этим процессом не удаляются.
 
 ## 14. Последовательность реализации
 
@@ -2250,8 +2278,8 @@ Exit:
 ### Stage 6. Product dispatch и reconciliation
 
 Статус: кодовый slice реализован, включая manual evidence resolver без retry.
-Осталась ручная проверка `000001 up → down → up` на fresh PostgreSQL и сверка
-реальных WB envelopes перед production rollout.
+Осталась ручная проверка полного цикла `up → down → up` на fresh PostgreSQL и
+сверка реальных WB envelopes перед production rollout.
 
 - `Upload`/`UploadAdd` feature transport;
 - mapping raw WB envelope/`additionalErrors` на bounded dispositions;
@@ -2360,9 +2388,9 @@ Exit:
 Каждый PR сохраняет mutations disabled, пока не закрыты все предыдущие safety
 gates.
 
-Все schema changes этих PR до первого release синхронно обновляют только
-`000001_init.up.sql` и `000001_init.down.sql`; отдельный numbered migration не
-создаётся.
+Все schema changes этих PR до первого release обновляют соответствующую
+доменную миграцию `000001`–`000008`. После первого release используются только
+новые номера миграций.
 
 ## 16. Ограничения на структуру и проверки
 
@@ -2504,7 +2532,7 @@ gates.
 - pinned client generation survives rotation without seller/client TOCTOU;
 - graceful shutdown;
 - DB loss fail-closed;
-- ручной fresh database цикл `000001 up → down → up`;
+- ручной fresh database цикл полного набора `up → down → up`;
 - ручная проверка schema подтверждает отсутствие legacy `card_import_handoffs` и
   `card_batches.authorization`;
 - one/multiple cabinets;
@@ -2549,7 +2577,7 @@ fixtures не создаются.
 - `transfer_group_targets` и `transfer_item_targets` являются только current
   projections и не дублируют raw mutation journal.
 - Связанные owner-state changes используют caller-owned transaction владельца.
-- Fresh `000001 up/down/up` проходит без `000002`.
+- Fresh цикл полного набора `up/down/up` проходит последовательно до `000008`.
 - Every item × target имеет persisted explainable result.
 - Recovery nonterminal workflows и защита от второго instance явно отложены до
   отдельного решения после `transfer` и `statistics`; до него live rollout

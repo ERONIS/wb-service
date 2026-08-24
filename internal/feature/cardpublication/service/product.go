@@ -72,7 +72,6 @@ type ProductAction struct {
 	PreflightObservationID int64
 	Members                []ProductActionMember
 	AttemptID              int64
-	ErrorBaselineID        int64
 	RecheckObservationID   int64
 	AttemptStartedAt       time.Time
 }
@@ -268,7 +267,6 @@ type ProductAttempt struct {
 	TransferID           transfer_service.TransferID
 	ActionID             int64
 	AuthorizationID      transfer_service.LiveAuthorizationID
-	ErrorBaselineID      int64
 	RecheckObservationID int64
 	RequestDigest        Digest
 	StartedAt            time.Time

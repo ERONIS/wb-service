@@ -16,24 +16,24 @@ import (
 )
 
 const liveAuthorizationColumns = `
-	authorization.id,
-	authorization.transfer_id,
-	authorization.plan_id,
-	authorization.plan_digest,
-	authorization.target_set_root,
-	authorization.revision,
-	authorization.state,
-	authorization.trusted_actor_id,
-	authorization.trusted_actor_digest,
-	authorization.trusted_actor_name,
-	authorization.requested_at,
-	authorization.approved_at,
-	authorization.expires_at,
-	authorization.revoked_at,
-	authorization.closed_at,
-	COALESCE(authorization.safe_reason_code, ''),
-	authorization.created_at,
-	authorization.updated_at
+	live_auth.id,
+	live_auth.transfer_id,
+	live_auth.plan_id,
+	live_auth.plan_digest,
+	live_auth.target_set_root,
+	live_auth.revision,
+	live_auth.state,
+	live_auth.trusted_actor_id,
+	live_auth.trusted_actor_digest,
+	live_auth.trusted_actor_name,
+	live_auth.requested_at,
+	live_auth.approved_at,
+	live_auth.expires_at,
+	live_auth.revoked_at,
+	live_auth.closed_at,
+	COALESCE(live_auth.safe_reason_code, ''),
+	live_auth.created_at,
+	live_auth.updated_at
 `
 
 func (repository *Repository) RequestLive(
@@ -89,7 +89,7 @@ func (repository *Repository) RequestLive(
 	}
 
 	const insert = `
-		INSERT INTO wb.transfer_live_authorizations AS authorization (
+		INSERT INTO wb.transfer_live_authorizations AS live_auth (
 			transfer_id,
 			plan_id,
 			plan_digest,
@@ -177,14 +177,14 @@ func (repository *Repository) ApproveLive(
 	}
 
 	const approve = `
-		UPDATE wb.transfer_live_authorizations AS authorization
+		UPDATE wb.transfer_live_authorizations AS live_auth
 		SET state = 'authorized',
 		    approved_at = $2,
-		    revision = authorization.revision + 1,
+		    revision = live_auth.revision + 1,
 		    updated_at = $2
-		WHERE authorization.id = $1
-			AND authorization.state = 'requested'
-			AND authorization.revision = $3
+		WHERE live_auth.id = $1
+			AND live_auth.state = 'requested'
+			AND live_auth.revision = $3
 		RETURNING ` + liveAuthorizationColumns + `;
 	`
 	authorization, err = scanLiveAuthorization(tx.QueryRow(
@@ -255,15 +255,15 @@ func (repository *Repository) RevokeLive(
 	}
 
 	const revoke = `
-		UPDATE wb.transfer_live_authorizations AS authorization
+		UPDATE wb.transfer_live_authorizations AS live_auth
 		SET state = 'revoked',
 		    revoked_at = $2,
 		    safe_reason_code = $3,
-		    revision = authorization.revision + 1,
+		    revision = live_auth.revision + 1,
 		    updated_at = $2
-		WHERE authorization.id = $1
-			AND authorization.revision = $4
-			AND authorization.state IN ('requested', 'authorized')
+		WHERE live_auth.id = $1
+			AND live_auth.revision = $4
+			AND live_auth.state IN ('requested', 'authorized')
 		RETURNING ` + liveAuthorizationColumns + `;
 	`
 	authorization, err = scanLiveAuthorization(tx.QueryRow(
@@ -355,30 +355,30 @@ func (repository *Repository) ChangeLiveState(
 	}
 
 	const change = `
-		UPDATE wb.transfer_live_authorizations AS authorization
+		UPDATE wb.transfer_live_authorizations AS live_auth
 		SET state = $2,
 		    closed_at = $3,
 		    safe_reason_code = $4,
-		    revision = authorization.revision + 1,
+		    revision = live_auth.revision + 1,
 		    updated_at = $3
-		WHERE authorization.id = $1
-			AND authorization.revision = $5
-			AND authorization.state = ANY($6::text[])
+		WHERE live_auth.id = $1
+			AND live_auth.revision = $5
+			AND live_auth.state = ANY($6::text[])
 			AND (
 				($2 = 'superseded' AND NOT EXISTS (
 					SELECT 1
 					FROM wb.publication_actions AS action
 					JOIN wb.publication_attempts AS attempt
 					  ON attempt.action_id = action.id
-					WHERE action.transfer_id = authorization.transfer_id
-					  AND action.plan_id = authorization.plan_id
+					WHERE action.transfer_id = live_auth.transfer_id
+					  AND action.plan_id = live_auth.plan_id
 				))
 				OR
 				($2 = 'closed' AND NOT EXISTS (
 					SELECT 1
 					FROM wb.publication_actions AS action
-					WHERE action.transfer_id = authorization.transfer_id
-					  AND action.plan_id = authorization.plan_id
+					WHERE action.transfer_id = live_auth.transfer_id
+					  AND action.plan_id = live_auth.plan_id
 					  AND action.state NOT IN ('terminal', 'superseded')
 				))
 			)
@@ -572,10 +572,10 @@ func loadLiveCommandReplay(
 			command.command_digest,
 			` + liveAuthorizationColumns + `
 		FROM wb.transfer_live_authorization_commands AS command
-		JOIN wb.transfer_live_authorizations AS authorization
-		  ON authorization.id = command.authorization_id
+		JOIN wb.transfer_live_authorizations AS live_auth
+		  ON live_auth.id = command.authorization_id
 		WHERE command.idempotency_key = $1
-		FOR UPDATE OF authorization;
+		FOR UPDATE OF live_auth;
 	`
 	var storedKind string
 	var storedActorDigest, storedCommandDigest []byte
@@ -645,8 +645,8 @@ func lockLiveAuthorization(
 ) (transfer_service.LiveAuthorization, error) {
 	query := `
 		SELECT ` + liveAuthorizationColumns + `
-		FROM wb.transfer_live_authorizations AS authorization
-		WHERE authorization.id = $1
+		FROM wb.transfer_live_authorizations AS live_auth
+		WHERE live_auth.id = $1
 		FOR UPDATE;
 	`
 	authorization, err := scanLiveAuthorization(tx.QueryRow(ctx, query, authorizationID))
@@ -669,9 +669,9 @@ func lockOpenLiveAuthorization(
 ) (transfer_service.LiveAuthorization, bool, error) {
 	query := `
 		SELECT ` + liveAuthorizationColumns + `
-		FROM wb.transfer_live_authorizations AS authorization
-		WHERE authorization.transfer_id = $1
-			AND authorization.state IN ('requested', 'authorized')
+		FROM wb.transfer_live_authorizations AS live_auth
+		WHERE live_auth.transfer_id = $1
+			AND live_auth.state IN ('requested', 'authorized')
 		FOR UPDATE;
 	`
 	authorization, err := scanLiveAuthorization(tx.QueryRow(ctx, query, transferID))
@@ -699,13 +699,13 @@ func expireLiveAuthorization(
 		return authorization, false, nil
 	}
 	const expire = `
-		UPDATE wb.transfer_live_authorizations AS authorization
+		UPDATE wb.transfer_live_authorizations AS live_auth
 		SET state = 'expired',
 		    safe_reason_code = 'authorization_ttl_expired',
-		    revision = authorization.revision + 1,
+		    revision = live_auth.revision + 1,
 		    updated_at = $2
-		WHERE authorization.id = $1
-			AND authorization.state IN ('requested', 'authorized')
+		WHERE live_auth.id = $1
+			AND live_auth.state IN ('requested', 'authorized')
 		RETURNING ` + liveAuthorizationColumns + `;
 	`
 	expired, err := scanLiveAuthorization(tx.QueryRow(ctx, expire, authorization.ID, now))
