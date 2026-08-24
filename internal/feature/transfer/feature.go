@@ -7,11 +7,15 @@ import (
 
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
+	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
 	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
 	transfer_postgres_repository "github.com/ERONIS/wb-service/internal/feature/transfer/repository/postgres"
+	transfer_server "github.com/ERONIS/wb-service/internal/feature/transfer/server"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 	transfer_config_transport "github.com/ERONIS/wb-service/internal/feature/transfer/transport/config"
-	transfer_polling_transport "github.com/ERONIS/wb-service/internal/feature/transfer/transport/polling"
+	transfer_telegram_transport "github.com/ERONIS/wb-service/internal/feature/transfer/transport/telegram"
+
+	tele "gopkg.in/telebot.v3"
 )
 
 type Mode = transfer_config_transport.Mode
@@ -33,9 +37,16 @@ func NewConfigMust() Config {
 }
 
 type Feature struct {
-	service                  *transfer_service.Service
-	preparationResultApplier *transfer_service.PreparationResultApplier
-	pollingInterval          time.Duration
+	service                     *transfer_service.Service
+	preparationResultApplier    *transfer_service.PreparationResultApplier
+	publicationResultApplier    *transfer_service.PublicationPlanResultApplier
+	publicationExecutionApplier *transfer_service.PublicationExecutionResultApplier
+	repository                  *transfer_postgres_repository.Repository
+	uow                         core_postgres_transaction.UnitOfWork
+	liveMode                    bool
+	authorizationTTL            time.Duration
+	liveAuthorization           *transfer_service.LiveAuthorizationService
+	pollingInterval             time.Duration
 }
 
 func New(
@@ -62,7 +73,6 @@ func New(
 	repository := transfer_postgres_repository.New(postgresPool, uow)
 	targets := transfer_service.NewMutationTargetRegistry(
 		targetTransport,
-		repository,
 		config.CohortName,
 	)
 	if err := targets.VerifyAtStartup(ctx); err != nil {
@@ -81,8 +91,45 @@ func New(
 			repository,
 			uow,
 		),
-		pollingInterval: config.PollInterval,
+		publicationResultApplier: transfer_service.NewPublicationPlanResultApplier(
+			repository,
+		),
+		publicationExecutionApplier: transfer_service.NewPublicationExecutionResultApplier(
+			repository,
+		),
+		repository:       repository,
+		uow:              uow,
+		liveMode:         config.Mode == ModeLive,
+		authorizationTTL: config.AuthorizationTTL,
+		pollingInterval:  config.PollInterval,
 	}, nil
+}
+
+func (feature *Feature) ConfigureLiveAuthorization(
+	ctx context.Context,
+	bot *tele.Bot,
+	menu *core_transport_telegram.Handler,
+	plans transfer_service.LivePlanSource,
+) {
+	if feature.liveAuthorization != nil {
+		panic("transfer live authorization is already configured")
+	}
+	service := transfer_service.NewLiveAuthorizationService(
+		feature.repository,
+		plans,
+		feature.uow,
+		feature.liveMode,
+		feature.authorizationTTL,
+	)
+	transfer_telegram_transport.New(ctx, bot, service, plans).Register(menu)
+	feature.liveAuthorization = service
+}
+
+func (feature *Feature) LiveAuthorizationVerifier() *transfer_service.LiveAuthorizationService {
+	if feature.liveAuthorization == nil {
+		panic("transfer live authorization is not configured")
+	}
+	return feature.liveAuthorization
 }
 
 func (feature *Feature) Service() *transfer_service.Service {
@@ -93,19 +140,27 @@ func (feature *Feature) PreparationResultApplier() *transfer_service.Preparation
 	return feature.preparationResultApplier
 }
 
+func (feature *Feature) PublicationResultApplier() *transfer_service.PublicationPlanResultApplier {
+	return feature.publicationResultApplier
+}
+
+func (feature *Feature) PublicationExecutionResultApplier() *transfer_service.PublicationExecutionResultApplier {
+	return feature.publicationExecutionApplier
+}
+
 func (feature *Feature) RunPolling(
 	ctx context.Context,
-	onError transfer_polling_transport.ErrorHandler,
-	afterTransfer ...transfer_polling_transport.Processor,
+	onError transfer_server.ErrorHandler,
+	afterTransfer ...transfer_server.Processor,
 ) error {
 	processors := make(
-		[]transfer_polling_transport.Processor,
+		[]transfer_server.Processor,
 		0,
 		1+len(afterTransfer),
 	)
 	processors = append(processors, feature.service)
 	processors = append(processors, afterTransfer...)
-	return transfer_polling_transport.New(
+	return transfer_server.NewPolling(
 		feature.pollingInterval,
 		processors...,
 	).Run(ctx, onError)
