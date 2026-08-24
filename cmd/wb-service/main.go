@@ -10,6 +10,7 @@ import (
 	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
+	core_wb_identity_postgres "github.com/ERONIS/wb-service/internal/core/repository/postgres/wbidentity"
 	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
 	telegram_server "github.com/ERONIS/wb-service/internal/core/transport/telegram/server"
 	core_wb "github.com/ERONIS/wb-service/internal/core/transport/wb"
@@ -17,6 +18,8 @@ import (
 	cardimport "github.com/ERONIS/wb-service/internal/feature/cardimport"
 	cardprepare "github.com/ERONIS/wb-service/internal/feature/cardprepare"
 	cardprepare_wb_transport "github.com/ERONIS/wb-service/internal/feature/cardprepare/transport/wb"
+	cardpublication "github.com/ERONIS/wb-service/internal/feature/cardpublication"
+	cardpublication_wb_transport "github.com/ERONIS/wb-service/internal/feature/cardpublication/transport/wb"
 	transfer "github.com/ERONIS/wb-service/internal/feature/transfer"
 	transfer_wb_transport "github.com/ERONIS/wb-service/internal/feature/transfer/transport/wb"
 	users "github.com/ERONIS/wb-service/internal/feature/users"
@@ -59,7 +62,13 @@ func main() {
 	// Wildberries.
 
 	wbConfig := core_wb_config.NewConfigMust()
-	wbClientset, err := core_wb.NewForConfig(ctx, &wbConfig, logger.Logger)
+	wbIdentityStore := core_wb_identity_postgres.New(uow)
+	wbClientset, err := core_wb.NewForConfig(
+		ctx,
+		&wbConfig,
+		wbIdentityStore,
+		logger.Logger,
+	)
 	if err != nil {
 		panic(fmt.Errorf("create WB clientset: %w", err))
 	}
@@ -105,18 +114,17 @@ func main() {
 		transferFeature.Service(),
 		transferFeature.PreparationResultApplier(),
 	)
-	go func() {
-		if err := transferFeature.RunPolling(
-			ctx,
-			func(err error) {
-				logger.Logger.Error("process pending transfers", zap.Error(err))
-			},
-			cardprepareFeature.Processor(),
-		); err != nil && ctx.Err() == nil {
-			logger.Logger.Error("run transfer polling", zap.Error(err))
-			cancel()
-		}
-	}()
+	cardpublicationFeature := cardpublication.New(
+		postgresPool,
+		uow,
+		cardpublication_wb_transport.NewCatalogTransport(wbClientset),
+		transferFeature.Service(),
+		transferFeature.PublicationResultApplier(),
+		transferFeature.PublicationExecutionResultApplier(),
+		cardprepareFeature.ProposalReader(),
+		cardpublication.NewConfigMust(),
+	)
+
 	// Telegram commands.
 
 	telegramHandler := core_transport_telegram.Register(
@@ -126,6 +134,32 @@ func main() {
 	)
 	usersFeature.RegisterTelegram(telegramHandler)
 	cardimportFeature.RegisterTelegram(telegramHandler)
+	transferFeature.ConfigureLiveAuthorization(
+		ctx,
+		bot,
+		telegramHandler,
+		cardpublicationFeature.LivePlanSource(),
+	)
+	cardpublicationFeature.ConfigureProductDispatch(
+		transferFeature.LiveAuthorizationVerifier(),
+	)
+
+	go func() {
+		if err := transferFeature.RunPolling(
+			ctx,
+			func(err error) {
+				logger.Logger.Error("process pending transfers", zap.Error(err))
+			},
+			cardprepareFeature.Processor(),
+			cardpublicationFeature.Processor(),
+			cardpublicationFeature.ErrorFeed(),
+			cardpublicationFeature.ProductDispatcher(),
+			cardpublicationFeature.MediaDispatcher(),
+		); err != nil && ctx.Err() == nil {
+			logger.Logger.Error("run transfer polling", zap.Error(err))
+			cancel()
+		}
+	}()
 
 	if err := telegramServer.Run(ctx); err != nil {
 		panic(fmt.Errorf("run Telegram server: %w", err))
