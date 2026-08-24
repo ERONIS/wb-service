@@ -2,13 +2,22 @@ package cardprepare_service
 
 import (
 	"errors"
+	"fmt"
 
+	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 )
 
-var ErrPreparationMismatch = errors.New("card preparation identity mismatch")
-var ErrProposalNotFound = errors.New("card preparation proposal not found")
+var ErrPreparationMismatch = fmt.Errorf(
+	"card preparation identity mismatch: %w",
+	core_errors.ErrConflict,
+)
+
+var ErrProposalNotFound = fmt.Errorf(
+	"card preparation proposal: %w",
+	core_errors.ErrNotFound,
+)
 
 type PreparationID int64
 type PreparationGroupID int64

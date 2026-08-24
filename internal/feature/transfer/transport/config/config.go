@@ -19,14 +19,15 @@ const (
 )
 
 type Config struct {
-	Mode            Mode          `envconfig:"MODE" default:"disabled"`
-	CohortName      string        `envconfig:"COHORT_NAME" default:"production"`
-	PollInterval    time.Duration `envconfig:"POLL_INTERVAL" default:"3s"`
-	MaxItems        int64         `envconfig:"MAX_ITEMS" default:"50000"`
-	MaxGroups       int64         `envconfig:"MAX_GROUPS" default:"50000"`
-	MaxTargets      int64         `envconfig:"MAX_TARGETS" default:"20"`
-	MaxItemTargets  int64         `envconfig:"MAX_ITEM_TARGETS" default:"1000000"`
-	MaxGroupTargets int64         `envconfig:"MAX_GROUP_TARGETS" default:"1000000"`
+	Mode             Mode          `envconfig:"MODE" default:"disabled"`
+	CohortName       string        `envconfig:"COHORT_NAME" default:"production"`
+	PollInterval     time.Duration `envconfig:"POLL_INTERVAL" default:"3s"`
+	AuthorizationTTL time.Duration `envconfig:"AUTHORIZATION_TTL" default:"1h"`
+	MaxItems         int64         `envconfig:"MAX_ITEMS" default:"50000"`
+	MaxGroups        int64         `envconfig:"MAX_GROUPS" default:"50000"`
+	MaxTargets       int64         `envconfig:"MAX_TARGETS" default:"20"`
+	MaxItemTargets   int64         `envconfig:"MAX_ITEM_TARGETS" default:"1000000"`
+	MaxGroupTargets  int64         `envconfig:"MAX_GROUP_TARGETS" default:"1000000"`
 }
 
 func New() (Config, error) {
@@ -61,6 +62,9 @@ func (config Config) Validate() error {
 	}
 	if config.PollInterval <= 0 {
 		return fmt.Errorf("poll interval must be positive")
+	}
+	if config.AuthorizationTTL <= 0 || config.AuthorizationTTL > 24*time.Hour {
+		return fmt.Errorf("authorization TTL must be between zero and 24 hours")
 	}
 	return config.CapacityPolicy().Validate()
 }

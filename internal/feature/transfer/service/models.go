@@ -103,20 +103,21 @@ const (
 )
 
 type ItemTargetProjection struct {
-	ID             int64
-	TransferID     TransferID
-	GroupTargetID  int64
-	TransferItemID int64
-	Revision       int64
-	State          ItemTargetState
-	OutcomeClass   ResultClass
-	OutcomeCode    string
-	NMID           int64
-	SourceActionID int64
-	CreatedAt      time.Time
-	StartedAt      *time.Time
-	FinishedAt     *time.Time
-	UpdatedAt      time.Time
+	ID                int64
+	TransferID        TransferID
+	GroupTargetID     int64
+	TransferItemID    int64
+	Revision          int64
+	State             ItemTargetState
+	OutcomeClass      ResultClass
+	OutcomeCode       string
+	NMID              int64
+	SourceActionID    int64
+	AttentionClosedAt *time.Time
+	CreatedAt         time.Time
+	StartedAt         *time.Time
+	FinishedAt        *time.Time
+	UpdatedAt         time.Time
 }
 
 func (projection ItemTargetProjection) Validate() error {
@@ -134,18 +135,25 @@ func (projection ItemTargetProjection) Validate() error {
 	case ItemTargetPending:
 		if projection.OutcomeClass != "" || projection.OutcomeCode != "" ||
 			projection.NMID != 0 || projection.SourceActionID != 0 ||
-			projection.StartedAt != nil || projection.FinishedAt != nil {
+			projection.AttentionClosedAt != nil || projection.StartedAt != nil ||
+			projection.FinishedAt != nil {
 			return invalidTransfer("pending item-target has result")
 		}
 	case ItemTargetRunning:
 		if projection.OutcomeClass != "" || projection.OutcomeCode != "" ||
-			projection.StartedAt == nil || projection.FinishedAt != nil {
+			projection.AttentionClosedAt != nil || projection.StartedAt == nil ||
+			projection.FinishedAt != nil {
 			return invalidTransfer("running item-target has invalid result")
 		}
 	case ItemTargetTerminal:
 		if !projection.OutcomeClass.IsValid() || projection.OutcomeCode == "" ||
 			projection.StartedAt == nil || projection.FinishedAt == nil {
 			return invalidTransfer("terminal item-target has incomplete result")
+		}
+		if projection.AttentionClosedAt != nil &&
+			projection.OutcomeClass != ResultUnresolved &&
+			projection.OutcomeClass != ResultInternalError {
+			return invalidTransfer("resolved item-target has closed attention")
 		}
 	default:
 		return invalidTransfer("item-target state is invalid")
@@ -157,6 +165,10 @@ func (projection ItemTargetProjection) Validate() error {
 	if projection.FinishedAt != nil && projection.StartedAt != nil &&
 		projection.FinishedAt.Before(*projection.StartedAt) {
 		return invalidTransfer("item-target finished before start")
+	}
+	if projection.AttentionClosedAt != nil && projection.FinishedAt != nil &&
+		projection.AttentionClosedAt.Before(*projection.FinishedAt) {
+		return invalidTransfer("item-target attention closed before finish")
 	}
 	return nil
 }
@@ -234,7 +246,7 @@ func (transfer Transfer) Validate() error {
 		return invalidTransfer("active transfer has terminal outcome")
 	case transfer.Outcome == OutcomeRunning && transfer.AttentionCode != "":
 		return invalidTransfer("running transfer requires no operator attention")
-	case (transfer.Outcome == OutcomeFailed || transfer.Outcome == OutcomeUnresolved) &&
+	case transfer.Outcome == OutcomeFailed &&
 		transfer.AttentionCode == "":
 		return invalidTransfer("attention outcome has no attention code")
 	case transfer.Phase == PhaseFinished && transfer.FinishedAt == nil:
@@ -271,6 +283,7 @@ type MutationTarget struct {
 	Position            int
 	CabinetID           CabinetID
 	SellerKey           Digest
+	ClientGeneration    ClientGeneration
 	BindingRevision     int64
 	CapabilityRevision  int64
 	ContentRead         bool
@@ -304,6 +317,8 @@ func (snapshot MutationTargetSnapshot) Validate(now time.Time) error {
 			return invalidTargetSnapshot("cabinet ID is invalid")
 		case isZeroDigest(target.SellerKey):
 			return invalidTargetSnapshot("seller key is empty")
+		case target.ClientGeneration == (ClientGeneration{}):
+			return invalidTargetSnapshot("client generation is empty")
 		case target.BindingRevision <= 0:
 			return invalidTargetSnapshot("binding revision must be positive")
 		case target.CapabilityRevision <= 0:

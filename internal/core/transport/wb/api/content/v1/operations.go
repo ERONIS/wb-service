@@ -9,6 +9,7 @@ import (
 )
 
 const (
+	operationIDPing                   policy.OperationID = "content.ping"
 	operationIDParentCategories       policy.OperationID = "content.object.parent-all"
 	operationIDSubjects               policy.OperationID = "content.object.all"
 	operationIDSubjectCharacteristics policy.OperationID = "content.object.characteristics"
@@ -29,6 +30,7 @@ const (
 )
 
 const (
+	bucketIDContentPing          policy.BucketID = "content_ping"
 	bucketIDContentCommon        policy.BucketID = "content_common"
 	bucketIDBrands               policy.BucketID = "content_brands"
 	bucketIDCharacteristics      policy.BucketID = "content_characteristics"
@@ -40,6 +42,20 @@ const (
 )
 
 var (
+	pingOperation = mustOperation(policy.OperationSpec{
+		ID:               operationIDPing,
+		Method:           http.MethodGet,
+		Path:             "/ping",
+		BucketID:         bucketIDContentPing,
+		Kind:             policy.OperationKindRead,
+		RetryMode:        policy.RetryModeReadSafe,
+		SuccessStatuses:  []int{http.StatusOK},
+		RequestMode:      policy.BodyModeNone,
+		ResponseMode:     policy.BodyModeJSON,
+		MaxRequestBytes:  0,
+		MaxResponseBytes: 16 * 1024,
+	})
+
 	parentCategoriesOperation = mustOperation(policy.OperationSpec{
 		ID:               operationIDParentCategories,
 		Method:           http.MethodGet,
@@ -264,6 +280,10 @@ var (
 		MaxResponseBytes: maxMutationResponseBytes,
 	})
 )
+
+func PingOperation() policy.Operation {
+	return pingOperation
+}
 
 func ParentCategoriesOperation() policy.Operation {
 	return parentCategoriesOperation

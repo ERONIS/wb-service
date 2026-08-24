@@ -2,10 +2,8 @@ package transfer_service
 
 import (
 	"context"
-	"time"
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
 )
 
@@ -37,23 +35,10 @@ type TargetRegistry interface {
 	MutationSnapshot(ctx context.Context) (MutationTargetSnapshot, error)
 }
 
-// TargetTransport exposes one raw WB operation per method. The service owns
-// cohort validation and the multi-cabinet verification sequence.
+// TargetTransport exposes the WB Core verified identity snapshot. The
+// transfer feature only applies its own read/write cohort requirements.
 type TargetTransport interface {
-	Credentials(now time.Time) ([]TargetCredential, error)
-	ProbeCardsList(
-		ctx context.Context,
-		cabinetID CabinetID,
-		generation ClientGeneration,
-	) (contentapi.CardsListResponse, error)
-}
-
-type TargetBindingStore interface {
-	SyncTargetBindings(
-		ctx context.Context,
-		verifiedAt time.Time,
-		targets []VerifiedTarget,
-	) ([]TargetBinding, error)
+	Credentials() ([]TargetCredential, error)
 }
 
 type CreateTransfer struct {
@@ -92,6 +77,12 @@ type Repository interface {
 		limit int,
 	) ([]Transfer, error)
 
+	ListAwaitingAuthorization(
+		ctx context.Context,
+		afterID TransferID,
+		limit int,
+	) ([]Transfer, error)
+
 	Initialize(
 		ctx context.Context,
 		tx core_postgres_transaction.DBTX,
@@ -116,6 +107,11 @@ type Repository interface {
 		transferID TransferID,
 		groupTargetID int64,
 	) (PreparationSource, error)
+
+	LoadPublicationPlanningSource(
+		ctx context.Context,
+		transferID TransferID,
+	) (PublicationPlanningSource, error)
 }
 
 type PreparationResultRepository interface {
@@ -123,5 +119,13 @@ type PreparationResultRepository interface {
 		ctx context.Context,
 		tx core_postgres_transaction.DBTX,
 		command ApplyPreparationResultCommand,
+	) error
+}
+
+type PublicationPlanResultRepository interface {
+	ApplyPublicationPlanResult(
+		ctx context.Context,
+		tx core_postgres_transaction.DBTX,
+		command ApplyPublicationPlanResultCommand,
 	) error
 }

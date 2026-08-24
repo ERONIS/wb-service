@@ -18,8 +18,14 @@ const (
 )
 
 var (
-	ErrInitializationInvalid  = errors.New("transfer initialization input is invalid")
-	ErrInitializationConflict = errors.New("transfer initialization conflicts with stored state")
+	ErrInitializationInvalid = fmt.Errorf(
+		"transfer initialization input is invalid: %w",
+		core_errors.ErrInvalidArgument,
+	)
+	ErrInitializationConflict = fmt.Errorf(
+		"transfer initialization conflicts with stored state: %w",
+		core_errors.ErrConflict,
+	)
 )
 
 type InitializationGroup struct {

@@ -8,7 +8,7 @@ import (
 
 func TargetSetRoot(snapshot MutationTargetSnapshot) Digest {
 	hasher := sha256.New()
-	writeString(hasher, "transfer-target-set:v1")
+	writeString(hasher, "transfer-target-set:v2")
 	writeString(hasher, snapshot.CohortName)
 	writeBytes(hasher, snapshot.Revision[:])
 	writeInt64(hasher, int64(len(snapshot.Targets)))
@@ -16,6 +16,8 @@ func TargetSetRoot(snapshot MutationTargetSnapshot) Digest {
 		writeInt64(hasher, int64(target.Position))
 		writeString(hasher, string(target.CabinetID))
 		writeBytes(hasher, target.SellerKey[:])
+		writeBytes(hasher, target.ClientGeneration[:])
+		writeInt64(hasher, target.CredentialExpiresAt.UTC().UnixNano())
 		writeInt64(hasher, target.BindingRevision)
 		writeInt64(hasher, target.CapabilityRevision)
 		writeBool(hasher, target.ContentRead)

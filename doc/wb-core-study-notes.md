@@ -193,9 +193,13 @@ main
   → transport.NewSharedTransport()
   → buildClientset(...)
     → один CabinetClient на каждый кабинет
-  → verifyCredentialsAtStartup(...)
-    → CredentialSnapshot(...)
-    → POST Cards List с limit=1 для каждого кабинета
+  → identity.Registry.VerifyAtStartup(...)
+    → строгий разбор JWT claims
+    → GET Content /ping
+    → GET General /api/v1/seller-info
+    → сравнение JWT sid с подтверждённым WB sid
+    → проверка duplicate seller
+    → identity.Store.SyncBindings(...)
 → только проверенный Clientset возвращается вызывающему коду
 ```
 
@@ -442,13 +446,16 @@ var _ client.Executor = (*CabinetClient)(nil)
 
 ### 7. CredentialSnapshot
 
-`CredentialSnapshot(now)` не возвращает raw token или raw seller ID. Он
-декодирует только payload compact JWT и формирует:
+Локальный разбор JWT и общий registry находятся в отдельном пакете
+`core/transport/wb/identity`. Во время создания `Clientset` registry формирует
+проверенный credential, а PostgreSQL store добавляет постоянные revisions:
 
 ```go
-type CredentialIdentity struct {
+type Binding struct {
 	CabinetID           config.CabinetID
 	SellerKey           SellerKey
+	BindingRevision     int64
+	CapabilityRevision  int64
 	ContentRead         bool
 	ContentWrite        bool
 	CredentialExpiresAt time.Time
@@ -467,27 +474,29 @@ type CredentialIdentity struct {
 7. читает unsigned integer claims `s` и `exp`;
 8. отклоняет истёкший token.
 
-Подпись JWT локально не проверяется. Поэтому сразу после snapshot конструктор
-выполняет удалённую проверку каждого credential:
+Подпись JWT локально не проверяется. Поэтому конструктор выполняет удалённую
+проверку exact token, привязанную к его `ClientGeneration`:
 
 ```text
 wb.NewForConfig(ctx, ...)
 → buildClientset(...)
-→ verifyCredentialsAtStartup(ctx, now)
-  → CredentialSnapshot(now)
+→ identity.Registry.VerifyAtStartup(ctx, now, credentials)
+  → decodeCredentialToken(token, now)
   → PinnedExecutor(cabinetID, generation)
-  → client.ExecuteResponse[CardsListResponse](CardsListOperation)
-  → POST /content/v2/get/cards/list с limit=1
+  → GET https://content-api.wildberries.ru/ping
+  → pinnedCommonExecutor(cabinetID, generation)
+  → GET https://common-api.wildberries.ru/api/v1/seller-info
+  → claims.sid == sellerInfo.sid
+  → Store.SyncBindings(...)
 ```
 
-До сети WB Core требует установленный Content capability bit. Удалённый Cards
-List probe подтверждает, что WB принимает сам token и разрешает ему безопасную
-read-операцию Content API. Дополнительно проверяется базовая целостность raw
-response: неотрицательный `cursor.total` и не более одной карточки при `limit=1`.
-
-Специальный `/ping` для этого не используется: официальная документация
-ограничивает его тремя запросами за 30 секунд и предупреждает, что
-автоматизированное использование будет временно блокироваться.
+До сети Core требует установленный Content capability bit. Content `/ping`
+подтверждает, что token принимается Content API; проверяются `Status == "OK"` и
+RFC3339 timestamp. General seller-info возвращает seller identity, которую WB
+аутентифицировал этим же token. Core канонизирует `sid` и требует точного
+совпадения с `sid` из JWT. Для обоих endpoint заданы отдельные rate buckets.
+Актуальный wire contract находится в
+[официальной документации WB API](https://dev.wildberries.ru/docs/openapi/api-information).
 
 Следовательно, ни один из публичных конструкторов `Clientset` не возвращает
 непроверенный credential-bound client. Оба конструктора теперь принимают
@@ -498,28 +507,37 @@ token может истечь или быть отозван. Возможнос
 аутентифицированного claim `s`, но специально выполнять mutation ради проверки
 write-доступа нельзя.
 
-### Что отдельно проверяет transfer
+После успешной сетевой проверки Core запрещает duplicate `SellerKey` и через
+`identity.Store` синхронизирует общую таблицу bindings. Только затем registry
+замораживает snapshot. `CredentialSnapshot()` возвращает его копию без нового
+разбора token, HTTP-запросов и DB-записей.
 
-Проверка Core отвечает на вопрос «credential принимается Content API».
-`transfer` решает другой вопрос: «безопасно ли использовать этот кабинет как
-цель мутации».
-
-`CredentialSnapshot` передаёт без raw secrets:
+Snapshot передаёт без raw secrets:
 
 - `CabinetID`;
 - `SellerKey` — digest seller ID;
 - `ContentRead` и `ContentWrite`;
 - время истечения;
-- `ClientGeneration` — digest token.
+- `ClientGeneration` — digest token;
+- `BindingRevision` и `CapabilityRevision`.
 
-`validateTargetCredential` требует корректный ID, непустые digests,
-неистёкший credential и одновременно `ContentRead == true` и
+### Что отдельно проверяет transfer
+
+Core отвечает на общий вопрос: «какому seller принадлежит credential, принят ли
+он WB и согласован ли с постоянным binding». `transfer` не повторяет HTTP-probe,
+seller uniqueness или DB sync. Он добавляет только своё feature-правило:
+«можно ли включить этот уже проверенный кабинет в mutation cohort».
+
+`MutationTargetSnapshot.Validate` проверяет корректность уже построенного
+feature snapshot и требует одновременно `ContentRead == true` и
 `ContentWrite == true`. Поэтому валидный read-only token принимается Core для
 read-сценариев, но отклоняется `transfer`, которому нужны mutation-права.
 
-Registry запрещает дубликаты `CabinetID` и `SellerKey`. Второе условие не
-позволяет дважды включить одного продавца под разными локальными именами
-кабинетов.
+Core registry запрещает дубликаты `CabinetID` и `SellerKey`. Второе условие не
+позволяет дважды настроить одного продавца под разными локальными именами
+кабинетов. Domain-валидация transfer snapshot также защищает чтение его
+сохранённого состояния, но не декодирует token, не обращается к WB и не владеет
+identity registry.
 
 Binding — сохранённая в PostgreSQL связь:
 
@@ -530,8 +548,10 @@ CabinetID → SellerKey
 При первом запуске она создаётся. При следующих startup строка блокируется
 через `FOR UPDATE` и сравнивается с новым snapshot. Если прежний `CabinetID`
 внезапно указывает на другого продавца, binding получает статус
-`identity_mismatch`, а startup `transfer` завершается ошибкой. Это защищает от
-случайной подмены token между кабинетами.
+`identity_mismatch`, а startup WB Core завершается ошибкой. Это защищает от
+случайной подмены token между кабинетами. Сам `SellerKey` не перезаписывается:
+возврат token исходного seller снова активирует прежний binding, а rebind к
+другому seller текущий код не выполняет.
 
 `binding_revision` имеет начальное значение `1` и представляет версию identity
 binding; текущий код не разрешает автоматическую смену seller, поэтому сам его
@@ -577,8 +597,10 @@ workflow от незаметной смены credential.
 - Caller-owned config и `http.Client` не изменяются.
 - Порядок кабинетов deterministic благодаря сортировке по ID.
 - Частично собранный `Clientset` не публикуется.
-- `Clientset` публикуется только после локальной проверки claims и успешного
-  Content API Cards List probe каждого кабинета.
+- `Clientset` публикуется только после локальной проверки claims, Content ping,
+  General seller-info, совпадения seller и успешной синхронизации bindings.
+- `CredentialSnapshot()` не выполняет повторную проверку и возвращает копию
+  immutable startup snapshot.
 - Feature не получает raw token и raw seller ID.
 - Все клиенты кабинетов используют один shared connection pool.
 
@@ -591,6 +613,11 @@ workflow от незаметной смены credential.
 - `internal/core/transport/wb/clientset.go`
 - `internal/core/transport/wb/cabinet.go`
 - `internal/core/transport/wb/credentials.go`
+- `internal/core/transport/wb/identity/token.go`
+- `internal/core/transport/wb/identity/registry.go`
+- `internal/core/transport/wb/api/content/v1/ping.go`
+- `internal/core/transport/wb/api/general/v1/operations.go`
+- `internal/core/repository/postgres/wbidentity/store.go`
 
 ### Самопроверка
 

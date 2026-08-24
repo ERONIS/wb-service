@@ -17,9 +17,12 @@ modules внутри одного приложения.
   карточек.
 
 Дата первого среза: 2026-08-13.
-Текущая ревизия: 2026-08-21.
+Текущая ревизия: 2026-08-24.
 
-Текущий реализованный срез Stage 3 foundation:
+Текущий реализованный срез: Stages 0–7 — полный transfer flow от immutable batch
+до product/media publication, reconciliation и manual evidence resolver без
+повторного WB mutation. Stage 8 `statistics` отложен отдельным решением и в
+текущей итерации не реализуется:
 
 - startup один раз проверяет все configured WB cabinets и замораживает target
   snapshot до остановки процесса;
@@ -53,12 +56,174 @@ modules внутри одного приложения.
 - `transfer_group_targets` является stage projection, а
   `transfer_item_targets` хранит current item×target state, bounded result и
   nullable source action;
-- в `000001` определён единый future publication journal
+- в `000001` определён единый publication journal
   `publication_plans/actions/action_members/attempts` для create/add/media;
+- `cardpublication` после `cardprepare` читает immutable proposal только через
+  typed `ProposalReader`, а подготовленные matrix IDs/media links — только через
+  typed transfer source;
+- `cardpublication/transport/wb` выполняет одну raw Cards List или Trash List
+  operation; service владеет полной cursor pagination, проверкой изменившихся
+  страниц и canonical observation;
+- normal/trash observation сохраняется immutable, после чего deterministic
+  decision различает create, add, compatible/different existing, trash,
+  subject/group/capacity и duplicate identity conflicts;
+- один product action v1 содержит ровно одну complete source group; exact
+  Upload/UploadAdd bytes, ordered members, request/member digests и ActionKey
+  сохраняются до authorization;
+- для каждого реально создаваемого member с photo/video URLs заранее создаётся
+  potential media action: сохраняются исходный порядок links и
+  `MediaLinkSetRoot`; Stage 7 dispatcher допускает его только после persisted
+  attribution нового `nmID` по уникальной паре `CabinetID + vendorCode`;
+- `PublicationPlan`, product/media actions, action members, observations и
+  product identity projection сохраняются одной transaction с typed update
+  transfer current projection;
+- read-only existing/conflict results сразу завершают item-target; если mutation
+  actions нет вообще, fixed reducer завершает transfer без authorization;
 - statistics foundation состоит из read-only transfer/item/action/attempt views
   без summary counters и собственных business tables;
-- Stage 3 foundation всё ещё выполняет только WB reads. Product и media
-  mutations отсутствуют.
+- planning по-прежнему выполняет только WB reads; product и media mutations
+  вызываются отдельными dispatchers только после exact live authorization;
+- immutable target snapshot теперь фиксирует также exact
+  `ClientGeneration` и expiration credentials; authorization verifier
+  fail-closed сверяет их в caller-owned transaction;
+- admin Telegram UI показывает только планы автора batch,
+  создаёт request и требует отдельную кнопку «Отправить в WB»;
+  callback не содержит actor или `PlanDigest`, они читаются из
+  trusted context и PostgreSQL;
+- authorization привязана к exact `PlanDigest`/`TargetSetRoot`, имеет
+  revision и TTL, может быть отозвана из Telegram; expiry, revoke,
+  supersede и close сохраняются в append-only command journal;
+- истёкшая authorization не скрывает plan: новое открытие
+  атомарно фиксирует `expired` и создаёт новую authorization
+  на тот же неизменный plan;
+- `cardpublication` читает Cards Error List для frozen targets не
+  чаще одного раза в 30 секунд: service владеет pagination,
+  five-minute overlap, normalization и deduplication, а repository —
+  per-cabinet watermark/cursor и immutable safe evidence; первый poll
+  начинается с current time minus overlap, а не со всей истории WB;
+- polling вызывает каждый feature processor на каждом tick: ошибка
+  одного processor логируется, но не лишает Error List и остальные
+  независимые processors своего цикла;
+- непосредственно перед attempt в одной DB transaction фиксируются targeted
+  recheck, exact Error List baseline, identity binding, authorization evidence
+  и единственный `publication_attempts` row;
+- statistics foundation дополнена authorization и Error List facts, а
+  attempt facts ссылаются на exact baseline и recheck observation;
+- после commit attempt dispatcher выполняет ровно один raw `Upload` либо
+  `UploadAdd`; success envelope считается только принятым submission, а не
+  доказательством созданной карточки;
+- process interruption после committed attempt переводится в
+  `unknown_delivery` и никогда не создаёт второй WB call;
+- accepted/uncertain submission проходит normal/trash/Error List
+  reconciliation; если после подтверждённого отсутствия до attempt появилась
+  ровно одна normal card с тем же уникальным `vendorCode` и ожидаемой группой,
+  она завершается как `CREATED_CONFIRMED_BY_VENDOR_CODE`, сохраняет `nmID` и
+  разрешает media action;
+- незавершённая reconciliation сохраняет immutable post-submission observation
+  и повторяется не чаще `CARDPUBLICATION_RECONCILIATION_DELAY`; по
+  `CARDPUBLICATION_RECONCILIATION_TIMEOUT` результат становится unresolved;
+- terminal product result одной transaction обновляет owner journal, identity,
+  typed transfer item/group/operation projections и закрывает ещё активную live
+  authorization после terminal всего plan;
+- manual resolver принимает только exact persisted post-submission observation
+  либо Error List batch после attempt baseline; третья команда закрывает
+  attention без изменения unresolved result и без повторного WB call;
+- каждая manual command использует trusted actor, idempotency key, expected
+  action/item revisions и append-only `publication_manual_resolutions`; owner
+  action/plan, product identity и typed transfer projection меняются одной
+  caller-owned transaction;
+- закрытый unresolved item хранит `attention_closed_at`; появившееся позже
+  persisted evidence может отдельной revision исправить его в success/rejected,
+  но никогда не создаёт новый attempt;
+- Stage 7 media dispatcher использует тот же live authorization и common
+  action/member/attempt journal, сохраняет exact final request с attributed
+  `nmID` и выполняет не более одного `SaveMediaByLinks`;
+- `CARDPUBLICATION_MEDIA_AUTO_DISPATCH=true` включает готовый media flow по
+  умолчанию; флаг можно выставить в `false` как kill gate. Без точной
+  vendor-code attribution media action завершается объяснимым skipped result,
+  а unknown media delivery становится unresolved и не повторяется;
+- automatic product/media results и исходная attempt evidence не
+  переписываются retry.
+
+### 1.1. Оценка готовности без `statistics`
+
+На 2026-08-24 функциональный кодовый scope transfer flow без Stage 8
+`statistics` реализован. Готовность к production оценивается примерно в
+**95%**: это release-readiness, а не процент недописанных use cases.
+
+Реализована полная цепочка:
+
+```text
+Finalize → Start → Initialize → cardprepare → immutable publication plan
+→ Telegram live authorization → Upload/UploadAdd → reconciliation
+→ unique vendor-code attribution → SaveMediaByLinks → terminal projection
+```
+
+Новых обязательных business use cases до Stage 8 не запланировано. Оставшиеся
+примерно **5%** — проверка уже написанной реализации:
+
+- ручной fresh PostgreSQL цикл `000001 up → down → up`;
+- canary с реальными WB envelopes для create, add, Error List и media;
+- подтверждение фактического появления фотографий после
+  `MEDIA_REQUEST_ACCEPTED`;
+- restart/unknown-delivery/authorization-expiry и финальный single-instance
+  integration audit;
+- rollout checklist, monitoring и recovery runbook.
+
+Stage 8 `statistics`, statistics Telegram presentation, notification UI и
+Telegram callbacks manual resolver намеренно отложены. Они не входят в текущий
+scope и не уменьшают указанную готовность transfer flow.
+
+Завершённый кодовый срез Stage 6–7 дополнительно фиксирует:
+
+- не более одного dispatchable product action на один target в одном polling
+  проходе; следующий action того же кабинета ждёт terminal предыдущего;
+- pinned `ClientGeneration` для mutation call после authorization-bound commit;
+- full raw `Upload`/`UploadAdd` DTO в feature transport и versioned
+  classification только в service;
+- terminal `rejected_proven` только при полном уникальном member mapping;
+  неполный `additionalErrors`, non-2xx/malformed response и transport ambiguity
+  становятся `uncertain`;
+- immutable Error List evidence хранит rejected vendor codes и только bounded
+  SHA-256 error codes без raw WB error text;
+- exact Error List correlation связывает member, attempt, baseline и batch;
+- повторная незавершённая reconciliation throttled через action timestamp и
+  сохраняет post-submission observation;
+- terminal всего publication plan закрывает ещё active authorization; поздний
+  revoke/expiry не откатывает уже полученный WB result;
+- manual correction не принимает произвольные `nmID`/ошибки от оператора:
+  remote IDs извлекаются из immutable observation, rejection — из exact Error
+  List batch, выбранного после baseline;
+- exact replay одного manual idempotency key возвращает прежний результат, а
+  другой actor/payload, stale action revision, item revision или identity
+  binding дают conflict;
+- `close_unresolved_no_retry` не меняет product identity
+  `blocked_uncertain` и оставляет возможность применить позднее evidence;
+- media action остаётся planned только при exact attribution того же
+  plan/member/item по уникальному `CabinetID + vendorCode`; template ссылок
+  остаётся immutable, а attempt хранит exact
+  финальный `SaveMediaByLinks{nmID,data}` body/digest и AttributionID;
+- перед media attempt выполняется catalog recheck exact vendor→`nmID`, identity
+  CAS и повторная live authorization verification; один committed attempt
+  физически блокирует второй WB call;
+- выключенный media capability gate завершает eligible action как skipped без
+  attempt; expired authorization можно запросить заново для remaining planned
+  actions того же immutable plan;
+- `core/transport/wb` не расширялся для Stage 6; ранее созданные test files
+  внутри `core/transport/wb` удалены согласно project rule.
+
+Текущий verification status:
+
+- `go build ./...` проходит;
+- `git diff --check` проходит;
+- новые test files не создавались, тесты не запускались;
+- новая numbered migration не создавалась: изменяется только pre-release
+  `000001_init.up.sql`/`000001_init.down.sql`;
+- official WB OpenAPI на 2026-08-21 сверена для `Upload`, `UploadAdd`,
+  `Cards Error List` и `SaveMediaByLinks`; request/response DTO и актуальная
+  cursor pagination совпадают, а media `200/error=false` теперь явно означает
+  только `MEDIA_REQUEST_ACCEPTED`;
+- выполнение migration на реальной fresh PostgreSQL ещё не подтверждено.
 
 Актуальные архитектурные решения:
 
@@ -72,8 +237,9 @@ modules внутри одного приложения.
   очереди межмодульной доставки;
 - текущая межмодульная orchestration выполняется явными прямыми service calls.
   Она намеренно не обещает recovery после process crash и защиту от двух
-  одновременно запущенных экземпляров; live WB mutations до возврата к этому
-  архитектурному решению остаются выключенными;
+  одновременно запущенных экземпляров; product dispatcher доступен только при
+  `TRANSFER_MODE=live` плюс persisted Telegram approval, а production rollout
+  до возврата к singleton/runtime решению запрещён runbook-ом;
 - `cardimport` заканчивает работу на `Finalize`: кнопка «Готово» только
   валидирует данные и атомарно сохраняет immutable batch. Она не вызывает и не
   импортирует `transfer`;
@@ -126,7 +292,7 @@ modules внутри одного приложения.
 | 1. Dry-run | `transfer` + `cardprepare` + `cardpublication` | startup target snapshot, proposals, immutable publication actions и `PlanDigest` | любые WB mutations |
 | 2. Live approval | `transfer` | exact persisted authorization trusted actor-а | полагаться только на ENV |
 | 3. Product dispatch | `cardpublication` | journal, один call, reconciliation/attribution | retry unknown delivery |
-| 4. Media dispatch | `cardpublication` | direct attribution + та же live authorization + common action journal | media для existing/unattributed card |
+| 4. Media dispatch | `cardpublication` | unique vendor-code attribution + та же live authorization + common action journal | media для existing/неоднозначной card |
 
 Каждый следующий gate зависит только от immutable IDs/digests предыдущего.
 Изменение ещё не отправленного plan создаёт новый immutable plan и требует нового
@@ -189,15 +355,16 @@ core → transaction и shared transports
 - HTTP `200` от async WB mutation не означает created/accepted: сначала
   проверяется application envelope; успешный envelope означает только submission.
 - Unknown или ambiguous mutation delivery не разрешает слепой повтор.
-- В текущем development scope автоматическое восстановление WB mutation flow
-  после restart не реализуется. Единственное локальное восстановление — повтор
-  полностью откатившейся initialization на следующем polling tick.
+- В текущем development scope нет durable redelivery worker. После restart
+  committed незавершённый attempt консервативно становится `unknown_delivery`
+  и идёт только в reconciliation; второй WB mutation call не выполняется.
+  Полностью откатившаяся initialization повторяется на следующем polling tick.
 - Tokens и raw Authorization не сохраняются в business tables и не выводятся в
   application logs.
 - `TRANSFER_MODE=disabled|dry-run|live`, default `disabled`.
-- `CARDPUBLICATION_MEDIA_AUTO_DISPATCH=false` by default; startup не разрешает
-  `true`, пока WB
-  gateway contract capability не подтверждает direct member→`nmID` correlation.
+- `CARDPUBLICATION_MEDIA_AUTO_DISPATCH=true` by default; `false` служит kill
+  gate. Dispatcher всегда требует persisted member→`nmID` attribution по
+  уникальной паре `CabinetID + vendorCode` и без неё выполняет zero media calls.
 - Смена ENV `dry-run → live` не авторизует существующие operations.
 - Любой WB dispatch требует persisted authorization, связанной с exact
   `PlanDigest`, `TargetSetRoot` и seller bindings; ENV является
@@ -529,6 +696,7 @@ OutcomeClass   // nullable: success | skipped | rejected | unresolved | internal
 OutcomeCode    // nullable bounded feature code
 NMID           // nullable
 SourceActionID // nullable typed external reference
+AttentionClosedAt // nullable; только manual close unresolved/internal_error
 StartedAt      // nullable
 FinishedAt     // nullable
 ```
@@ -591,12 +759,14 @@ type MutationTarget struct {
 ```
 
 При startup WB Core безопасно декодирует credential metadata из JWT claims
-`sid`, Content capability, read-only bit и expiry. `transfer/transport/wb`
-ровно один раз подтверждает каждый token безопасным authenticated WB read и
-возвращает raw response DTO вместе с safe credential metadata. Persistent
-`CabinetID ↔ SellerKey` binding создаётся/обновляется только после успешного
-startup probe; raw `sid` и token не покидают WB Core. Partial cohort запрещён:
-ошибка любого target останавливает startup до запуска Telegram.
+`sid`, Content capability, read-only bit и expiry. Затем он проверяет exact
+token через Content `/ping`, получает authenticated seller identity через
+General `/api/v1/seller-info` и требует совпадения обоих `sid`.
+`transfer/transport/wb` не делает повторных WB-запросов: он только преобразует
+immutable Core snapshot в feature port. Persistent `CabinetID ↔ SellerKey`
+binding создаётся/обновляется WB Core только после успешной проверки; raw `sid`
+и token не покидают Core. Partial registry запрещён: ошибка любого credential
+останавливает startup до запуска Telegram.
 Ротация token того же seller сохраняет binding; другой seller под тем же
 `CabinetID` делает cohort unavailable. Display name и raw token в snapshot/digest
 не входят.
@@ -608,12 +778,13 @@ seller rebind, `CapabilityRevision` — при verified capability/read-only cha
 считается по canonical ordered cohort, CabinetID, SellerKey, обеим revisions и
 required capabilities.
 
-Модуль `transfer` владеет `wb.mutation_target_bindings` с unique `CabinetID`,
-`SellerKey`, binding/capability revisions, capability snapshot и
+WB Core identity registry владеет `wb.cabinet_identity_bindings` с unique
+`CabinetID`, `SellerKey`, binding/capability revisions, capability snapshot и
 verified-at/status. Mismatch никогда не перезаписывает binding автоматически:
-он переводит запись в
-`identity_mismatch` до явного administrative resolution. Это не transfer
-business state и credentials там не сохраняются.
+он переводит запись в `identity_mismatch` и останавливает startup. Возврат token
+исходного seller снова активирует прежний binding; автоматического rebind к
+другому seller нет. Это не transfer business state и credentials там не
+сохраняются.
 
 Startup snapshot сохраняет ordered `Position`, `ContentRead=true`,
 `ContentWrite=true` и expiry/probe evidence revision и остаётся immutable весь
@@ -622,14 +793,12 @@ CabinetID/SellerKey и любой non-readable/non-writable/expired target не 
 приложению запуститься. Если token или cabinet state меняется после startup,
 новый snapshot появляется только после controlled restart.
 
-В v1 WB Core декодирует только документированные JWT claims `id`, `sid`, `s`,
-`exp`, проверяет их форму/expiry и выдаёт feature только domain-separated
-`SellerKey`, capabilities, expiry и `ClientGeneration`. Затем
-`transfer/transport/wb` при startup тем же pinned executor выполняет bounded
-authenticated Cards List read с limit 1 и отдаёт service полный response DTO.
-Декодированные claims без successful startup read не считаются trusted.
-Persistent transfer registry хранит только digests, capabilities, revisions,
-expiry, verified time и `ClientGeneration`; raw token и raw `sid` не
+В v1 WB Core декодирует документированные JWT claims `id`, `sid`, `s`, `exp`,
+проверяет их форму/expiry и выдаёт feature только domain-separated `SellerKey`,
+capabilities, expiry, revisions и `ClientGeneration`. Декодированные claims без
+successful Content ping, seller-info comparison и binding sync не считаются
+trusted. Persistent Core registry хранит только digests, capabilities,
+revisions, expiry, verified time и `ClientGeneration`; raw token и raw `sid` не
 сохраняются. Clientset и verified snapshot immutable на время process lifetime,
 hot reload credentials в v1 отсутствует.
 
@@ -663,7 +832,9 @@ context. Интервал v1 фиксирован конфигурацией с�
    идемпотентные методы делают повторный просмотр уже обработанных batches
    безопасным.
 
-Polling не создаёт event/outbox/job rows и не выполняет WB mutations. В текущем
+Transfer foundation processor не создаёт event/outbox/job rows и сам не вызывает
+WB mutations. Composition root последовательно запускает в том же polling loop
+подготовку и authorization-gated product/media dispatch. В текущем
 поддерживаемом one-instance deployment одного последовательного loop достаточно.
 
 Capacity policy задаётся конфигурацией и как минимум ограничивает
@@ -745,8 +916,9 @@ attention_code:
 
 - `phase` отвечает только на вопрос «что сейчас выполняется»;
 - `outcome=running` действует до `phase=finished`;
-- `manual_review` не является phase или отдельным status:
-  это `outcome=unresolved` и обязательный `attention_code`;
+- `manual_review` не является phase или отдельным status: новый unresolved
+  result получает `attention_code`, а очистить его можно только append-only
+  `close_unresolved_no_retry`; сам outcome при этом остаётся unresolved;
 - initialization error даёт `phase=finished, outcome=failed`;
 - полностью успешная операция даёт `phase=finished, outcome=succeeded`;
 - смешанные terminal item results дают `phase=finished, outcome=partial`;
@@ -783,7 +955,8 @@ PlanDigest = hash(
 
 В digest входят как product actions, так и заранее известные potential media
 actions с immutable member/link binding. `nmID` для media может появиться позже,
-но action не становится dispatchable без direct attribution.
+но action не становится dispatchable без persisted attribution по уникальному
+`CabinetID + vendorCode`.
 
 `transfer_live_authorizations` хранит:
 
@@ -801,14 +974,19 @@ ExpiresAt
 RevokedAt
 ClosedAt
 SafeReasonCode
-IdempotencyKey
-CommandDigest
 ```
+
+Каждая `request/approve/revoke/expire/supersede/close` дополнительно
+сохраняется как immutable row в
+`transfer_live_authorization_commands`: `IdempotencyKey`, actor/command digests,
+result state/revision. Одна authorization может иметь несколько
+commands; idempotency относится к команде, а не к lifecycle row.
 
 State machine ограничена:
 
 ```text
 requested → authorized → revoked | expired | superseded | closed
+    └→ revoked | expired | superseded
 ```
 
 Минимальные commands:
@@ -879,13 +1057,16 @@ type LiveAuthorizationVerifier interface {
 
 `LiveAuthorizationCheck` содержит `TransferID`, `ActionID`,
 `LiveAuthorizationID`, expected authorization revision, exact `PlanDigest`,
-`TargetSetRoot`, `CabinetID`, `SellerKey` и pinned `ClientGeneration`.
+`TargetSetRoot`, `TargetID`, `CabinetID`, `SellerKey` и pinned
+`ClientGeneration`.
 В одной caller-owned transaction:
 
 1. `cardpublication` lock-ит свой action и identities;
 2. verifier lock-ит transfer-owned authorization;
 3. verifier проверяет `TRANSFER_MODE=live`, `authorized`, TTL, exact plan и
-   startup-frozen target/seller/client binding;
+   startup-frozen target/seller/client binding, а также что `ActionID`
+   действительно принадлежит этому plan/target, остаётся `planned`
+   и ещё не привязан к authorization;
 4. verifier возвращает immutable authorization evidence, не изменяя таблицы
    `cardpublication`;
 5. `cardpublication` создаёт единственную attempt и переводит action в
@@ -1208,14 +1389,25 @@ target
 
 - source group не режется между create requests;
 - один add action относится к одному target `imtID`;
-- create action может содержать несколько complete groups;
+- в v1 один create action содержит ровно одну complete source group. Это
+  намеренно убирает межгрупповой packing и делает action/result attribution
+  прямым; объединение нескольких groups остаётся возможной будущей
+  оптимизацией;
 - учитываются documented group/variant и serialized-byte limits;
 - exact request bytes и ordered membership сохраняются до approval.
 
 Каждый mutating request становится одним `PublicationAction`. Для каждого
 prepared member с photo URLs заранее создаётся potential `upload_media` action,
 связанный с product member и immutable `MediaLinkSetRoot`. Такой action остаётся
-не dispatchable, пока не появится direct attribution exact нового `nmID`.
+не dispatchable, пока reconciliation не свяжет exact новый `nmID` с member по
+уникальной паре `CabinetID + vendorCode` и ожидаемой WB-группе.
+
+До attribution media action хранит не готовый HTTP request, а immutable template
+`{links}`: его `RequestDigest` фиксирует exact ordered links, а
+`MediaLinkSetRoot` связывает authorization с ними. После persisted attribution
+attempt сохраняет отдельный exact digest фактического
+`SaveMediaByLinks{nmID, links}` request; template и link root при этом не
+изменяются.
 
 `publication_actions` хранит:
 
@@ -1343,7 +1535,11 @@ type SubmissionResult struct {
 AttemptID
 ActionID                 // UNIQUE, NOT NULL
 AuthorizationID
+ErrorBaselineID
+RecheckObservationID
 RequestDigest
+RequestPayload             // exact bytes actually sent
+AttributionID              // nullable; required by media attempt
 DeliveryState
 HTTPStatus
 ResponseDisposition
@@ -1355,14 +1551,16 @@ StartedAt
 FinishedAt
 ```
 
-Request/member response evidence хранится immutable. Common attempt table
+Request/member response evidence хранится immutable. Для product attempt payload
+совпадает с action request; для media action остаётся immutable `{links}`
+template, а attempt фиксирует final body с attributed `nmID`. Common attempt table
 используется для product и media, поэтому статистике не нужен `UNION` разных
 journal-моделей.
 
 Action transition:
 
 ```text
-planned → authorized → dispatching
+planned → dispatching
 dispatching → reconciling | terminal
 reconciling → terminal
 ```
@@ -1388,8 +1586,7 @@ Safe result codes включают:
 ```text
 already_present_compatible
 already_present_different_untouched
-created_attributed
-created_observed_unattributed
+created_confirmed_by_vendor_code
 rejected
 partial_remote
 remote_conflict
@@ -1403,24 +1600,39 @@ Deadline без доказательства remote effect даёт `outcome_cla
 
 Manual resolution принимает только persisted evidence:
 
-- `mark_remote_present` требует exact remote observation;
-- `mark_rejected` требует correlated terminal evidence;
+- `mark_remote_present` требует exact post-submission observation после attempt,
+  ровно одну normal card с тем же vendor code, отсутствие такой card в trash и
+  совпадение `subjectID` для create либо `imtID` для add;
+- `mark_rejected` требует exact Error List batch после зафиксированного baseline
+  с тем же vendor code и непустыми bounded error codes;
 - `close_unresolved_no_retry` закрывает attention, но сохраняет identity
   `blocked_uncertain`.
 
-Команды «повторить тот же action» нет.
+Все три команды требуют trusted actor, idempotency key и expected action
+revision. Результат сохраняется в append-only
+`publication_manual_resolutions`; action/plan current result, product identity и
+`transfer_item_targets` меняются в одной transaction. Exact replay возвращает
+тот же journal result. Stale revision/binding/evidence отклоняются. После
+`close_unresolved_no_retry` позднее доказательство можно применить новой
+revision: `attention_closed_at` очищается, но нового attempt/WB call не
+появляется. Команды «повторить тот же action» нет.
 
 ### 8.9. Attribution boundary
 
 Текущий Upload contract не возвращает universal request/member → `nmID`
-correlation. Поэтому card, появившаяся после dispatch, не обязательно создана
-этим action.
+correlation. В v1 применяется более простая domain policy: WB не допускает две
+карточки с одинаковым `vendorCode` в одном кабинете. Если targeted recheck прямо
+перед attempt подтвердил отсутствие карточки, а после единственного committed
+attempt появилась ровно одна normal card с тем же `vendorCode` и ожидаемым
+`subjectID`/`imtID`, она считается результатом этого action. Это осознанно
+принимает небольшой риск конкурентной записи внешним WB-клиентом между recheck
+и observation; неоднозначные или конфликтующие evidence остаются fail-closed.
 
 | Evidence | Product result | Automatic media |
 |---|---|---|
 | exact card существовала до action | `already_present_*` | запрещена |
 | protocol-level exact member → `nmID` correlation | `created_attributed` | разрешена |
-| card появилась после dispatch без direct correlation | `created_observed_unattributed` + attention | запрещена |
+| absent до attempt + одна matching card после attempt | `created_confirmed_by_vendor_code` | разрешена |
 | correlated rejection | `rejected` | запрещена |
 | conflicting/partial evidence | `unresolved`/`partial_remote` | запрещена |
 
@@ -1444,9 +1656,10 @@ Level                 // direct | observed_after_attempt | ambiguous
 SafeReasonCode
 ```
 
-Стабильные повторные observations повышают confidence remote state, но не
-становятся ownership proof. Media action становится dispatchable только при
-`Level=direct`.
+`Level=observed_after_attempt` является достаточным attribution evidence только
+при выполнении описанной выше unique-vendor policy и строгой проверке ожидаемой
+группы. `Level=direct` также поддерживается, если WB позже даст прямую
+correlation. В остальных случаях media action не становится dispatchable.
 
 ### 8.10. Данные и ownership
 
@@ -1460,6 +1673,9 @@ wb.publication_observations
 wb.publication_attributions
 wb.publication_error_cursors
 wb.publication_error_batches
+wb.publication_error_baselines
+wb.publication_error_correlations
+wb.publication_manual_resolutions
 ```
 
 Не создаются:
@@ -1478,7 +1694,9 @@ wb.publication_remote_group_claims
 Action является intent, exact request и dispatch identity одновременно.
 `publication_action_members` хранит immutable ordered request membership и
 current member outcome. Evidence-based correction меняет только bounded current
-outcome; исходная attempt/response/observation evidence остаётся immutable.
+outcome; `publication_manual_resolutions` хранит неизменяемую команду, actor,
+revision и ссылку на выбранное доказательство. Исходная
+attempt/response/observation evidence остаётся immutable.
 `transfer_item_targets` хранит только current межмодульную projection.
 
 ## 9. Media-подсистема внутри `cardpublication`
@@ -1513,12 +1731,13 @@ type SaveMediaCommand struct {
 Media action требует одновременно:
 
 - exact member/product action binding;
-- `created_attributed` с direct `nmID`;
+- terminal successful product result и persisted `nmID` attribution уровня
+  `direct` либо `observed_after_attempt`;
 - matching immutable link-set root;
 - действующую authorization exact `PlanDigest`;
 - отсутствие attempt для этого ActionID.
 
-Existing и `created_observed_unattributed` card media action не получают.
+Existing, rejected, unresolved и неоднозначные card media action не получают.
 
 ### 9.2. Dispatch и result
 
@@ -1529,11 +1748,19 @@ Dispatch использует общий алгоритм §8.7:
 3. создаётся common `publication_attempts` row;
 4. после commit выполняется один `SaveMediaByLinks`;
 5. raw response классифицируется и сохраняется common action outcome-ом;
-6. unknown delivery не повторяется и получает reconciliation/operator attention.
+6. accepted envelope завершает media как success с bounded code
+   `MEDIA_REQUEST_ACCEPTED`: это подтверждает принятие запроса WB, но без
+   отложенной проверки ссылок не доказывает фактическое появление файлов;
+   application error даёт rejected, а ambiguous/unknown delivery —
+   unresolved/operator attention;
+7. unknown delivery не повторяется: Cards List не позволяет доказать применение
+   исходных ссылок после преобразования их в WB CDN URLs.
 
-При текущем WB contract automatic media dispatch остаётся capability-gated.
-Недоступный direct correlation оставляет media action terminal
-`outcome_class=skipped`, `outcome_code=direct_attribution_unavailable`.
+Automatic media dispatch включён по умолчанию, но остаётся capability-gated:
+`CARDPUBLICATION_MEDIA_AUTO_DISPATCH=false` выключает его без изменения плана.
+Недоступная vendor-code attribution оставляет media action terminal
+`outcome_class=skipped`,
+`outcome_code=VENDOR_CODE_ATTRIBUTION_UNAVAILABLE`.
 
 ### 9.3. Отложено
 
@@ -1549,6 +1776,11 @@ Dispatch использует общий алгоритм §8.7:
 - retention и garbage collection.
 
 ## 10. Модуль `statistics`
+
+Статус на 2026-08-24: **отложен** до отдельной команды на продолжение. В
+текущем repository сохранён только foundation из read-only SQL views. Package
+`internal/feature/statistics`, repository/service, Telegram presentation,
+notifications и composition-root wiring пока не создаются.
 
 `statistics` является отдельной read-only feature:
 
@@ -1732,14 +1964,17 @@ singleton lock, process epoch и fencing в текущей реализации 
 них нет Go packages, generic transport adapters, environment config, tables или
 columns в `000001`. Единственное исключение — простой последовательный
 трёхсекундный polling loop внутри `transfer`; он не является общей delivery
-инфраструктурой и не выполняет WB calls.
+инфраструктурой, но последовательно вызывает feature-owned processors, включая
+capability-gated product dispatcher `cardpublication`.
 
 До завершения `transfer` и `statistics` composition root запускает обычные
 server components и polling loop `transfer`; downstream use cases вызываются
 явными service calls. Запуск двух экземпляров приложения против одной БД
 считается неподдерживаемым deployment mode, но приложение технически не
-блокирует его. Live WB mutations остаются disabled, поэтому отсутствие
-crash-safe delivery и singleton fencing не принимается как production guarantee.
+блокирует его. Default mode оставляет WB mutations disabled; включение
+`TRANSFER_MODE=live` предназначено только для контролируемого single-instance
+development/canary, а отсутствие crash-safe delivery и singleton fencing не
+принимается как production guarantee.
 
 После завершения двух модулей вопрос рассматривается заново отдельным design
 decision. Тогда выбирается конкретный вариант recovery/delivery; старый outbox
@@ -1791,7 +2026,7 @@ cardpublication → PublicationResult(group/item results, SourceActionID)
 transfer → applies current group/item projections
 
 cardpublication upload_media action
-  → waits for direct attribution
+  → waits for unique vendor-code attribution
   → uses the same DispatchAction/Attempt mechanism
 
 statistics
@@ -1811,7 +2046,7 @@ persisted `TransferID + GroupTargetID`. Member result дополнительно
 Product и media — разные `ActionKind`, но один aggregate/journal owner
 `cardpublication`. Transfer не знает raw WB response и не создаёт mutation
 attempt. Duplicate typed result является idempotent; media action не
-dispatch-ится до persisted direct attribution.
+dispatch-ится до persisted unique vendor-code attribution.
 
 ## 13. Package structure
 
@@ -1824,6 +2059,7 @@ internal/feature/
 │   └── transport/
 ├── transfer/
 │   ├── feature.go
+│   ├── server/              # process-lifecycle polling, без business rules
 │   ├── service/
 │   ├── repository/postgres/
 │   └── transport/
@@ -1840,7 +2076,7 @@ internal/feature/
 │   ├── service/              # product + internal media use cases
 │   ├── repository/postgres/  # common publication plan/action/attempt tables
 │   └── transport/wb/         # Upload, UploadAdd, Error List, SaveMediaByLinks
-└── statistics/
+└── statistics/               # planned, Stage 8 отложен
     ├── feature.go
     ├── service/
     ├── repository/
@@ -1877,6 +2113,8 @@ Deliverables:
   transport classification; `ResponseMeta` interpretation остаётся feature;
 - validated config/docs для mode, named cohort, authorization TTL и capacity;
 - `TRANSFER_MODE`, default `disabled`.
+- `TRANSFER_AUTHORIZATION_TTL`, default `1h`, допустимый диапазон
+  `(0, 24h]`.
 
 Exit:
 
@@ -1969,6 +2207,11 @@ Exit:
 - product и potential media actions;
 - attribution evidence model.
 
+Статус: planning slice реализован. Stage 6–7 dispatch использует sequential
+mutation lane: один polling loop и feature-level mutex последовательно выполняют
+WB calls; до возврата runtime/singleton coordination запуск второго application
+instance запрещён.
+
 Exit:
 
 - repeated preflight даёт deterministic plan/action keys;
@@ -1979,12 +2222,20 @@ Exit:
 
 ### Stage 5. Simple live authorization, Error feed и journal foundation
 
+Статус: реализован. Этап намеренно заканчивается до
+begin-attempt transaction и не выполняет WB mutations.
+
 - одна authorization row на exact `PlanDigest`;
 - trusted actor, TTL, revoke/supersede/close;
 - `LiveAuthorizationVerifier` с shared DBTX/row lock;
 - Error List cursor/overlap/dedup и baseline;
-- common immutable action/member/attempt repositories;
+- common immutable action/member repository и attempt schema; единый
+  begin-attempt repository command создаётся в Stage 6 вместе с targeted
+  recheck, authorization lock, baseline и identity binding, чтобы не
+  появился опасный partial API;
 - `UNIQUE(publication_attempts.action_id)`;
+- authorization/error-batch statistics facts и baseline dimensions в attempt
+  facts;
 - zero mutation calls.
 
 Exit:
@@ -1998,15 +2249,20 @@ Exit:
 
 ### Stage 6. Product dispatch и reconciliation
 
+Статус: кодовый slice реализован, включая manual evidence resolver без retry.
+Осталась ручная проверка `000001 up → down → up` на fresh PostgreSQL и сверка
+реальных WB envelopes перед production rollout.
+
 - `Upload`/`UploadAdd` feature transport;
 - mapping raw WB envelope/`additionalErrors` на bounded dispositions;
 - authorization-bound attempt commit и один post-commit call;
 - identity row lock и active action binding;
 - targeted pre-dispatch recheck;
 - accepted/uncertain/rejected reconciliation;
-- attributed/unattributed evidence boundary;
+- unique vendor-code attribution/fail-closed evidence boundary;
 - member/item current projection;
-- manual evidence resolver без retry.
+- manual evidence resolver, append-only command journal и explicit attention
+  close без retry.
 
 Exit:
 
@@ -2014,25 +2270,41 @@ Exit:
 - `ResponseMeta.Error=true` не означает accepted;
 - UnknownDelivery не retry-ится;
 - каждый real call имеет ровно один ActionID/AttemptID/AuthorizationID;
-- unattributed observed card получает unresolved attention и zero media call;
+- matching unique card получает persisted `nmID`, а конфликтующее evidence —
+  unresolved attention и zero media call;
 - outcomes возвращаются transfer typed service command-ом.
 
 ### Stage 7. Common media action dispatch (capability-gated)
 
+Статус: кодовый slice реализован и подключён к polling. Default capability gate
+включён; WB call возможен только при persisted unique vendor-code attribution и
+exact live authorization. Значение `false` остаётся kill gate.
+
 - `upload_media` action использует common plan/action/member/attempt journal;
 - authorization/attribution/member/`nmID` verification;
 - direct passthrough original photo URLs без download/validation/storage;
-- `SaveMediaByLinks` raw response classification и reconciliation.
+- exact final request payload/digest + AttributionID в common attempt;
+- один `SaveMediaByLinks` и bounded terminal response classification;
+- `200/error=false` сохраняется как `MEDIA_REQUEST_ACCEPTED`, а не как ложное
+  доказательство фактической загрузки файлов;
+- media group и transfer projection reducer;
+- restart после attempt commit даёт unknown delivery без retry.
 
 Exit:
 
-- при текущем Upload contract `CARDPUBLICATION_MEDIA_AUTO_DISPATCH=false`;
-- existing и `created_observed_unattributed` cards media не получают;
+- `CARDPUBLICATION_MEDIA_AUTO_DISPATCH=true` по умолчанию;
+- existing, rejected, unresolved и неоднозначные cards media не получают;
 - revoked/expired authorization даёт zero call;
 - common `UNIQUE(action_id)` запрещает второй media call;
-- отсутствие direct attribution сохраняется как объяснимый skipped result.
+- отсутствие vendor-code attribution сохраняется как объяснимый skipped result.
 
 ### Stage 8. Statistics, Telegram и notifications
+
+Статус на 2026-08-24: **отложен**. Не приступать без отдельного решения о
+возврате к Stage 8. Он не входит в оценку 95% готовности transfer flow из
+раздела 1.1. SQL fact views уже существуют как foundation, а feature package
+отсутствует. Manual resolver доступен как service `cardpublication`; Telegram
+presentation и callback wiring его команд остаются частью этого этапа.
 
 - current operation/group/item queries;
 - transfer/item/action/attempt aggregates;
@@ -2061,8 +2333,8 @@ Exit:
 5. Сверить seller-bound targets/groups/proposals/media link sets.
 6. В canary-configured deployment (или отдельном DB environment) явно
    авторизовать live operation; второй process к той же DB не запускать.
-7. Проверить create/add/error/unattributed/restart; media проверять только при
-   наличии direct attributable evidence.
+7. Проверить create/add/error/conflict/restart и media после unique vendor-code
+   attribution.
 8. Включить заранее утверждённый полный production cohort.
 
 ## 15. Reviewable PR sequence
@@ -2098,9 +2370,11 @@ gates.
 - Все `*_test.go` из `internal/core/transport/wb` удаляются; новые тестовые
   файлы в замороженном WB Core запрещены.
 - В корне каждого `internal/feature/<module>` разрешён только `feature.go` и
-  каталоги `service/`, `repository/`, `transport/`. Environment config adapters
-  находятся в transport; delivery/event adapters в текущем плане не создаются.
-  Отдельные root-level handler/config/worker/test files запрещены.
+  каталоги `server/`, `service/`, `repository/`, `transport/`. `server/` содержит
+  только lifecycle drivers вроде polling и не содержит business rules.
+  Environment config adapters находятся в transport; delivery/event adapters в
+  текущем плане не создаются. Отдельные root-level handler/config/worker/test
+  files запрещены.
 - HTTP, Telegram и WB adapters хранятся в `transport/`.
 - Следующий список является ручным checklist инвариантов, а не планом создания
   test files.
@@ -2197,16 +2471,18 @@ gates.
 - malformed/unknown response после dispatch не разрешает retry;
 - accepted/rejected/partial/unknown/late evidence сохраняют bounded outcomes;
 - каждый attempt хранит ActionID, authorization ID и request digest;
-- external writer between baseline and observation gives unattributed attention;
+- external writer between targeted recheck and observation остаётся принятым
+  v1 risk unique-vendor policy; binding mismatch/conflict даёт attention;
 - targeted recheck before attempt detects create↔add/already/trash/capacity change;
 - stale plan до первого begun action supersedes whole plan с zero call;
 - stale plan после begun action не пересобирает begun/unknown actions;
 - manual resolution accepts only matching persisted evidence and cannot retry;
 - supplied barcode remote rejection is not blindly retried;
-- no direct correlation means media action is skipped/not dispatchable;
+- no unique vendor-code attribution means media action is skipped/not
+  dispatchable;
 - original photo URL order is passed to WB unchanged;
 - media action performs zero preliminary HTTP fetches and has no local storage;
-- existing и observed-but-unattributed cards never receive media;
+- existing, rejected, unresolved и ambiguous cards never receive media;
 - revoked/expired/wrong-plan authorization never creates attempt;
 - crash после product/media dispatch не создаёт второй attempt.
 
@@ -2244,6 +2520,10 @@ fixtures не создаются.
 
 ## 17. Definition of Done
 
+Текущий DoD относится к Stages 0–7. Пункты `statistics` вынесены ниже и не
+блокируют текущую итерацию; production rollout по-прежнему требует ручных
+проверок из §1.1.
+
 - Modules имеют однозначное владение tables/state machines.
 - Ни один module не изменяет таблицы другого module напрямую.
 - Межмодульные прямые команды имеют явный typed contract и не меняют чужие
@@ -2252,15 +2532,16 @@ fixtures не создаются.
 - Cardprepare не имеет mutation imports/calls.
 - Только `cardpublication` вызывает product и media mutations:
   `Upload`, `UploadAdd`, `SaveMediaByLinks`.
-- Statistics не вызывает WB.
 - Unknown mutation outcome не получает автоматический повтор.
 - Каждый mutation attempt связан с exact non-revoked-at-commit live
   authorization, PlanDigest, ActionID и seller binding.
 - Каждый publication action имеет максимум один committed attempt независимо от
   expiry/revoke/reauthorization; product и media используют один journal.
-- New remote card без direct ownership evidence не получает media.
-- При текущем Upload contract обычный created observation остаётся unattributed;
-  автоматический media dispatch остаётся выключен до direct WB correlation.
+- New remote card получает media только после targeted pre-attempt absence и
+  exact post-attempt match по `CabinetID + vendorCode + subjectID/imtID`.
+- Одна matching created observation сохраняется как
+  `CREATED_CONFIRMED_BY_VENDOR_CODE`; automatic media dispatch включён по
+  умолчанию и всё равно требует live authorization.
 - Empty barcode omits `skus`; supplied barcode сохраняется и отправляется exact.
 - `CARDIMPORT-DONE` закрыт immutable batch.
 - `transfer_group_targets` материализован с exact group×target cardinality.
@@ -2270,10 +2551,16 @@ fixtures не создаются.
 - Связанные owner-state changes используют caller-owned transaction владельца.
 - Fresh `000001 up/down/up` проходит без `000002`.
 - Every item × target имеет persisted explainable result.
-- Statistics читает current projections и immutable action/attempt facts без
-  manually maintained counters, raw logs и WB calls.
 - Recovery nonterminal workflows и защита от второго instance явно отложены до
   отдельного решения после `transfer` и `statistics`; до него live rollout
   запрещён.
 - Existing cards и media остаются untouched.
 - Dry-run и canary gates пройдены до production live.
+
+### 17.1. Отложенный DoD Stage 8
+
+- `statistics` не вызывает WB и не изменяет business facts.
+- `statistics` читает current projections и immutable action/attempt facts без
+  manually maintained counters, raw logs и WB calls.
+- Telegram statistics, notifications и manual-resolution callbacks читают
+  только typed service/query contracts и корректно отклоняют stale callbacks.
