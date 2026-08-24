@@ -1,4 +1,4 @@
-package transfer_polling_transport
+package transfer_server
 
 import (
 	"context"
@@ -12,12 +12,12 @@ type Processor interface {
 
 type ErrorHandler func(error)
 
-type Server struct {
+type Polling struct {
 	interval   time.Duration
 	processors []Processor
 }
 
-func New(interval time.Duration, processors ...Processor) *Server {
+func NewPolling(interval time.Duration, processors ...Processor) *Polling {
 	if interval <= 0 {
 		panic("transfer polling interval must be positive")
 	}
@@ -30,26 +30,25 @@ func New(interval time.Duration, processors ...Processor) *Server {
 			panic("transfer polling processor is nil")
 		}
 	}
-	return &Server{interval: interval, processors: clone}
+	return &Polling{interval: interval, processors: clone}
 }
 
-func (server *Server) Run(ctx context.Context, onError ErrorHandler) error {
+func (polling *Polling) Run(ctx context.Context, onError ErrorHandler) error {
 	if ctx == nil {
 		return errors.New("run transfer polling: context is nil")
 	}
 	process := func() {
-		for _, processor := range server.processors {
+		for _, processor := range polling.processors {
 			if err := processor.ProcessPending(ctx); err != nil {
 				if ctx.Err() == nil && onError != nil {
 					onError(err)
 				}
-				return
 			}
 		}
 	}
 
 	process()
-	ticker := time.NewTicker(server.interval)
+	ticker := time.NewTicker(polling.interval)
 	defer ticker.Stop()
 	for {
 		select {

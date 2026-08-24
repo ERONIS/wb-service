@@ -11,27 +11,9 @@ import (
 	"time"
 )
 
-var ErrTargetIdentityMismatch = errors.New(
-	"WB mutation target identity mismatch",
-)
-var ErrDuplicateTargetSeller = errors.New(
-	"WB mutation target seller is duplicated",
-)
-
 type ClientGeneration [sha256.Size]byte
 
 type TargetCredential struct {
-	CabinetID           CabinetID
-	SellerKey           Digest
-	ContentRead         bool
-	ContentWrite        bool
-	CredentialExpiresAt time.Time
-	ClientGeneration    ClientGeneration
-}
-
-type VerifiedTarget TargetCredential
-
-type TargetBinding struct {
 	CabinetID           CabinetID
 	SellerKey           Digest
 	BindingRevision     int64
@@ -44,7 +26,6 @@ type TargetBinding struct {
 
 type MutationTargetRegistry struct {
 	transport  TargetTransport
-	store      TargetBindingStore
 	cohortName string
 	now        func() time.Time
 	snapshot   *MutationTargetSnapshot
@@ -52,14 +33,10 @@ type MutationTargetRegistry struct {
 
 func NewMutationTargetRegistry(
 	transport TargetTransport,
-	store TargetBindingStore,
 	cohortName string,
 ) *MutationTargetRegistry {
 	if transport == nil {
 		panic("transfer WB target transport is nil")
-	}
-	if store == nil {
-		panic("transfer target binding store is nil")
 	}
 	if strings.TrimSpace(cohortName) != cohortName || cohortName == "" ||
 		len(cohortName) > 128 {
@@ -67,7 +44,6 @@ func NewMutationTargetRegistry(
 	}
 	return &MutationTargetRegistry{
 		transport:  transport,
-		store:      store,
 		cohortName: cohortName,
 		now:        time.Now,
 	}
@@ -113,7 +89,7 @@ func (registry *MutationTargetRegistry) verifySnapshot(
 		)
 	}
 	now := registry.now().UTC()
-	credentials, err := registry.transport.Credentials(now)
+	credentials, err := registry.transport.Credentials()
 	if err != nil {
 		return MutationTargetSnapshot{}, fmt.Errorf(
 			"read WB target credentials: %w",
@@ -126,104 +102,24 @@ func (registry *MutationTargetRegistry) verifySnapshot(
 		)
 	}
 
-	seenCabinets := make(map[CabinetID]struct{}, len(credentials))
-	seenSellers := make(map[Digest]struct{}, len(credentials))
+	targets := make([]MutationTarget, len(credentials))
 	for index, credential := range credentials {
-		if err := validateTargetCredential(credential, now); err != nil {
-			return MutationTargetSnapshot{}, fmt.Errorf(
-				"target at position %d: %w",
-				index+1,
-				err,
-			)
-		}
-		if _, exists := seenCabinets[credential.CabinetID]; exists {
-			return MutationTargetSnapshot{}, fmt.Errorf(
-				"cabinet %q is duplicated",
-				credential.CabinetID,
-			)
-		}
-		seenCabinets[credential.CabinetID] = struct{}{}
-		if _, exists := seenSellers[credential.SellerKey]; exists {
-			return MutationTargetSnapshot{}, fmt.Errorf(
-				"seller at position %d: %w",
-				index+1,
-				ErrDuplicateTargetSeller,
-			)
-		}
-		seenSellers[credential.SellerKey] = struct{}{}
-	}
-
-	verified := make([]VerifiedTarget, len(credentials))
-	for index, credential := range credentials {
-		response, err := registry.transport.ProbeCardsList(
-			ctx,
-			credential.CabinetID,
-			credential.ClientGeneration,
-		)
-		if err != nil {
-			return MutationTargetSnapshot{}, fmt.Errorf(
-				"probe target %q with Cards List: %w",
-				credential.CabinetID,
-				err,
-			)
-		}
-		if response.Cursor.Total < 0 ||
-			len(response.Cards) > 1 {
-			return MutationTargetSnapshot{}, fmt.Errorf(
-				"probe target %q returned invalid raw Cards List DTO",
-				credential.CabinetID,
-			)
-		}
-		verified[index] = VerifiedTarget(credential)
-	}
-
-	bindings, err := registry.store.SyncTargetBindings(ctx, now, verified)
-	if err != nil {
-		return MutationTargetSnapshot{}, fmt.Errorf(
-			"sync mutation target bindings: %w",
-			err,
-		)
-	}
-	if len(bindings) != len(verified) {
-		return MutationTargetSnapshot{}, fmt.Errorf(
-			"binding count %d differs from verified count %d",
-			len(bindings),
-			len(verified),
-		)
-	}
-
-	targets := make([]MutationTarget, len(bindings))
-	for index, binding := range bindings {
-		if err := validateTargetBinding(binding, now); err != nil {
-			return MutationTargetSnapshot{}, fmt.Errorf(
-				"binding at position %d: %w",
-				index+1,
-				err,
-			)
-		}
-		if binding.CabinetID != verified[index].CabinetID ||
-			binding.SellerKey != verified[index].SellerKey ||
-			binding.ClientGeneration != verified[index].ClientGeneration {
-			return MutationTargetSnapshot{}, fmt.Errorf(
-				"binding at position %d differs from verified target",
-				index+1,
-			)
-		}
 		targets[index] = MutationTarget{
 			Position:            index + 1,
-			CabinetID:           binding.CabinetID,
-			SellerKey:           binding.SellerKey,
-			BindingRevision:     binding.BindingRevision,
-			CapabilityRevision:  binding.CapabilityRevision,
-			ContentRead:         binding.ContentRead,
-			ContentWrite:        binding.ContentWrite,
-			CredentialExpiresAt: binding.CredentialExpiresAt,
+			CabinetID:           credential.CabinetID,
+			SellerKey:           credential.SellerKey,
+			ClientGeneration:    credential.ClientGeneration,
+			BindingRevision:     credential.BindingRevision,
+			CapabilityRevision:  credential.CapabilityRevision,
+			ContentRead:         credential.ContentRead,
+			ContentWrite:        credential.ContentWrite,
+			CredentialExpiresAt: credential.CredentialExpiresAt,
 		}
 	}
 
 	snapshot := MutationTargetSnapshot{
 		CohortName: registry.cohortName,
-		Revision:   targetSnapshotRevision(registry.cohortName, bindings),
+		Revision:   targetSnapshotRevision(registry.cohortName, credentials),
 		Targets:    targets,
 	}
 	if err := snapshot.Validate(now); err != nil {
@@ -243,64 +139,23 @@ func cloneMutationTargetSnapshot(
 	return clone
 }
 
-func validateTargetCredential(
-	credential TargetCredential,
-	now time.Time,
-) error {
-	switch {
-	case strings.TrimSpace(string(credential.CabinetID)) !=
-		string(credential.CabinetID) ||
-		credential.CabinetID == "" || len(credential.CabinetID) > 128:
-		return errors.New("cabinet ID is invalid")
-	case credential.SellerKey == (Digest{}):
-		return errors.New("seller key is empty")
-	case !credential.ContentRead || !credential.ContentWrite:
-		return errors.New("Content read/write capability is required")
-	case credential.CredentialExpiresAt.IsZero() ||
-		!credential.CredentialExpiresAt.After(now):
-		return errors.New("credential is expired")
-	case credential.ClientGeneration == (ClientGeneration{}):
-		return errors.New("client generation is empty")
-	default:
-		return nil
-	}
-}
-
-func validateTargetBinding(binding TargetBinding, now time.Time) error {
-	if err := validateTargetCredential(TargetCredential{
-		CabinetID:           binding.CabinetID,
-		SellerKey:           binding.SellerKey,
-		ContentRead:         binding.ContentRead,
-		ContentWrite:        binding.ContentWrite,
-		CredentialExpiresAt: binding.CredentialExpiresAt,
-		ClientGeneration:    binding.ClientGeneration,
-	}, now); err != nil {
-		return err
-	}
-	if binding.BindingRevision <= 0 {
-		return errors.New("binding revision is not positive")
-	}
-	if binding.CapabilityRevision <= 0 {
-		return errors.New("capability revision is not positive")
-	}
-	return nil
-}
-
 func targetSnapshotRevision(
 	cohortName string,
-	bindings []TargetBinding,
+	credentials []TargetCredential,
 ) Digest {
 	hasher := sha256.New()
-	targetRegistryWriteString(hasher, "transfer-target-snapshot:v1")
+	targetRegistryWriteString(hasher, "transfer-target-snapshot:v2")
 	targetRegistryWriteString(hasher, cohortName)
-	targetRegistryWriteInt64(hasher, int64(len(bindings)))
-	for _, binding := range bindings {
-		targetRegistryWriteString(hasher, string(binding.CabinetID))
-		targetRegistryWriteBytes(hasher, binding.SellerKey[:])
-		targetRegistryWriteInt64(hasher, binding.BindingRevision)
-		targetRegistryWriteInt64(hasher, binding.CapabilityRevision)
-		targetRegistryWriteBool(hasher, binding.ContentRead)
-		targetRegistryWriteBool(hasher, binding.ContentWrite)
+	targetRegistryWriteInt64(hasher, int64(len(credentials)))
+	for _, credential := range credentials {
+		targetRegistryWriteString(hasher, string(credential.CabinetID))
+		targetRegistryWriteBytes(hasher, credential.SellerKey[:])
+		targetRegistryWriteBytes(hasher, credential.ClientGeneration[:])
+		targetRegistryWriteInt64(hasher, credential.CredentialExpiresAt.UTC().UnixNano())
+		targetRegistryWriteInt64(hasher, credential.BindingRevision)
+		targetRegistryWriteInt64(hasher, credential.CapabilityRevision)
+		targetRegistryWriteBool(hasher, credential.ContentRead)
+		targetRegistryWriteBool(hasher, credential.ContentWrite)
 	}
 	var result Digest
 	copy(result[:], hasher.Sum(nil))

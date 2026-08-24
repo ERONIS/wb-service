@@ -20,7 +20,7 @@ CREATE TABLE wb.users (
 );
 
 
-CREATE TABLE wb.mutation_target_bindings (
+CREATE TABLE wb.cabinet_identity_bindings (
     cabinet_id              VARCHAR(128) PRIMARY KEY
                             CHECK (char_length(cabinet_id) > 0),
     seller_key              BYTEA NOT NULL UNIQUE
@@ -476,10 +476,8 @@ CREATE TABLE wb.transfers (
     ),
     CHECK (
         (outcome = 'running' AND attention_code IS NULL)
-        OR (
-            outcome IN ('failed', 'unresolved')
-            AND attention_code IS NOT NULL
-        )
+        OR (outcome = 'failed' AND attention_code IS NOT NULL)
+        OR outcome = 'unresolved'
         OR outcome IN (
             'succeeded', 'partial', 'rejected', 'cancelled'
         )
@@ -505,6 +503,9 @@ CREATE TABLE wb.transfer_targets (
                             CHECK (char_length(cabinet_id) > 0),
     seller_key              BYTEA NOT NULL
                             CHECK (octet_length(seller_key) = 32),
+    client_generation       BYTEA NOT NULL
+                            CHECK (octet_length(client_generation) = 32),
+    credential_expires_at   TIMESTAMPTZ NOT NULL,
     binding_revision        BIGINT NOT NULL
                             CHECK (binding_revision > 0),
     capability_revision     BIGINT NOT NULL
@@ -519,7 +520,8 @@ CREATE TABLE wb.transfer_targets (
     UNIQUE (transfer_id, cabinet_id),
     UNIQUE (transfer_id, seller_key),
 
-    CHECK (content_read AND content_write)
+    CHECK (content_read AND content_write),
+    CHECK (credential_expires_at > created_at)
 );
 
 
@@ -697,7 +699,6 @@ CREATE TABLE wb.transfer_group_targets (
         )
         OR (
             overall_outcome IN ('unresolved', 'internal_error')
-            AND attention_code IS NOT NULL
             AND finished_at IS NOT NULL
         )
         OR (
@@ -748,6 +749,7 @@ CREATE TABLE wb.transfer_item_targets (
                                 source_action_id IS NULL
                                 OR source_action_id > 0
                             ),
+    attention_closed_at     TIMESTAMPTZ,
 
     created_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     started_at              TIMESTAMPTZ,
@@ -778,6 +780,7 @@ CREATE TABLE wb.transfer_item_targets (
             AND outcome_code IS NULL
             AND nm_id IS NULL
             AND source_action_id IS NULL
+            AND attention_closed_at IS NULL
             AND started_at IS NULL
             AND finished_at IS NULL
         )
@@ -785,6 +788,7 @@ CREATE TABLE wb.transfer_item_targets (
             state = 'running'
             AND outcome_class IS NULL
             AND outcome_code IS NULL
+            AND attention_closed_at IS NULL
             AND finished_at IS NULL
             AND started_at IS NOT NULL
         )
@@ -794,6 +798,14 @@ CREATE TABLE wb.transfer_item_targets (
             AND outcome_code IS NOT NULL
             AND started_at IS NOT NULL
             AND finished_at IS NOT NULL
+        )
+    ),
+    CHECK (
+        attention_closed_at IS NULL
+        OR (
+            state = 'terminal'
+            AND outcome_class IN ('unresolved', 'internal_error')
+            AND attention_closed_at >= finished_at
         )
     ),
     CHECK (started_at IS NULL OR started_at >= created_at),
@@ -1319,6 +1331,44 @@ BEFORE INSERT ON wb.transfer_targets
 FOR EACH ROW EXECUTE FUNCTION wb.reject_activated_transfer_derived_mutation();
 
 
+CREATE TABLE wb.publication_observations (
+    id                      BIGSERIAL PRIMARY KEY,
+
+    transfer_id             BIGINT NOT NULL,
+    target_id               BIGINT NOT NULL,
+    cabinet_id              VARCHAR(128) NOT NULL
+                            CHECK (char_length(cabinet_id) > 0),
+    kind                    TEXT NOT NULL
+                            CHECK (kind IN (
+                                'normal_trash_preflight',
+                                'targeted_recheck',
+                                'post_submission'
+                            )),
+    observation_digest      BYTEA NOT NULL
+                            CHECK (octet_length(observation_digest) = 32),
+    normal_count            INTEGER NOT NULL
+                            CHECK (normal_count >= 0),
+    trash_count             INTEGER NOT NULL
+                            CHECK (trash_count >= 0),
+    snapshot                JSONB NOT NULL
+                            CHECK (jsonb_typeof(snapshot) = 'object'),
+    observed_at             TIMESTAMPTZ NOT NULL,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (transfer_id, id),
+    UNIQUE (transfer_id, target_id, id),
+    UNIQUE (transfer_id, target_id, kind, observation_digest),
+
+    FOREIGN KEY (transfer_id, target_id)
+        REFERENCES wb.transfer_targets (transfer_id, id),
+
+    CHECK (observed_at <= created_at + INTERVAL '5 minutes')
+);
+
+CREATE INDEX publication_observations_target_observed_idx
+ON wb.publication_observations (transfer_id, target_id, observed_at, id);
+
+
 CREATE TABLE wb.publication_plans (
     id                      BIGSERIAL PRIMARY KEY,
 
@@ -1443,6 +1493,7 @@ CREATE TABLE wb.publication_actions (
     UNIQUE (transfer_id, id),
     UNIQUE (transfer_id, target_id, id),
     UNIQUE (transfer_id, plan_id, id),
+    UNIQUE (transfer_id, id, authorization_id),
     UNIQUE (transfer_id, plan_id, action_key),
 
     FOREIGN KEY (transfer_id, plan_id)
@@ -1481,6 +1532,263 @@ ON wb.publication_actions (state, id);
 
 CREATE INDEX publication_actions_target_state_id_idx
 ON wb.publication_actions (transfer_id, target_id, state, id);
+
+
+CREATE TABLE wb.product_identities (
+    id                      BIGSERIAL PRIMARY KEY,
+
+    cabinet_id              VARCHAR(128) NOT NULL
+                            CHECK (char_length(cabinet_id) > 0),
+    vendor_code_key         TEXT COLLATE "C" NOT NULL
+                            CHECK (char_length(vendor_code_key) > 0),
+    normalization_version   INTEGER NOT NULL
+                            CHECK (normalization_version > 0),
+    state                   TEXT NOT NULL DEFAULT 'unknown'
+                            CHECK (state IN (
+                                'unknown', 'mutation_pending',
+                                'remote_present', 'rejected',
+                                'blocked_uncertain', 'remote_missing',
+                                'remote_conflict'
+                            )),
+    nm_id                   BIGINT
+                            CHECK (nm_id IS NULL OR nm_id > 0),
+    imt_id                  BIGINT
+                            CHECK (imt_id IS NULL OR imt_id > 0),
+    subject_id              BIGINT
+                            CHECK (subject_id IS NULL OR subject_id > 0),
+    observation_digest      BYTEA
+                            CHECK (
+                                observation_digest IS NULL
+                                OR octet_length(observation_digest) = 32
+                            ),
+    active_transfer_id      BIGINT,
+    active_action_id        BIGINT,
+    revision                BIGINT NOT NULL DEFAULT 0
+                            CHECK (revision >= 0),
+
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (cabinet_id, vendor_code_key),
+
+    FOREIGN KEY (active_transfer_id, active_action_id)
+        REFERENCES wb.publication_actions (transfer_id, id),
+
+    CHECK (
+        (active_transfer_id IS NULL AND active_action_id IS NULL)
+        OR (active_transfer_id IS NOT NULL AND active_action_id IS NOT NULL)
+    ),
+    CHECK (
+        (state = 'mutation_pending' AND active_action_id IS NOT NULL)
+        OR (state <> 'mutation_pending')
+    ),
+    CHECK (updated_at >= created_at)
+);
+
+CREATE INDEX product_identities_active_action_idx
+ON wb.product_identities (active_transfer_id, active_action_id)
+WHERE active_action_id IS NOT NULL;
+
+
+CREATE TABLE wb.transfer_live_authorizations (
+    id                      BIGSERIAL PRIMARY KEY,
+
+    transfer_id             BIGINT NOT NULL,
+    plan_id                 BIGINT NOT NULL,
+    plan_digest             BYTEA NOT NULL
+                            CHECK (octet_length(plan_digest) = 32),
+    target_set_root         BYTEA NOT NULL
+                            CHECK (octet_length(target_set_root) = 32),
+    revision                BIGINT NOT NULL DEFAULT 0
+                            CHECK (revision >= 0),
+    state                   TEXT NOT NULL DEFAULT 'requested'
+                            CHECK (state IN (
+                                'requested', 'authorized', 'revoked',
+                                'expired', 'superseded', 'closed'
+                            )),
+    trusted_actor_id        BIGINT NOT NULL
+                            CHECK (trusted_actor_id > 0),
+    trusted_actor_digest    BYTEA NOT NULL
+                            CHECK (octet_length(trusted_actor_digest) = 32),
+    trusted_actor_name      VARCHAR(256) NOT NULL
+                            CHECK (char_length(trusted_actor_name) > 0),
+    requested_at            TIMESTAMPTZ NOT NULL,
+    approved_at             TIMESTAMPTZ,
+    expires_at              TIMESTAMPTZ NOT NULL,
+    revoked_at              TIMESTAMPTZ,
+    closed_at               TIMESTAMPTZ,
+    safe_reason_code        VARCHAR(128)
+                            CHECK (
+                                safe_reason_code IS NULL
+                                OR char_length(safe_reason_code) > 0
+                            ),
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (transfer_id, id),
+    UNIQUE (transfer_id, plan_id, id),
+
+    FOREIGN KEY (transfer_id, plan_id)
+        REFERENCES wb.publication_plans (transfer_id, id),
+
+    CHECK (expires_at > requested_at),
+    CHECK (updated_at >= created_at),
+    CHECK (
+        (state = 'requested'
+            AND approved_at IS NULL
+            AND revoked_at IS NULL
+            AND closed_at IS NULL
+            AND safe_reason_code IS NULL)
+        OR (state = 'authorized'
+            AND approved_at IS NOT NULL
+            AND revoked_at IS NULL
+            AND closed_at IS NULL
+            AND safe_reason_code IS NULL)
+        OR (state = 'revoked'
+            AND revoked_at IS NOT NULL
+            AND closed_at IS NULL
+            AND safe_reason_code IS NOT NULL)
+        OR (state = 'expired'
+            AND revoked_at IS NULL
+            AND closed_at IS NULL
+            AND safe_reason_code IS NOT NULL)
+        OR (state IN ('superseded', 'closed')
+            AND revoked_at IS NULL
+            AND closed_at IS NOT NULL
+            AND safe_reason_code IS NOT NULL)
+    ),
+    CHECK (approved_at IS NULL OR approved_at >= requested_at),
+    CHECK (revoked_at IS NULL OR revoked_at >= requested_at),
+    CHECK (closed_at IS NULL OR closed_at >= requested_at)
+);
+
+CREATE UNIQUE INDEX transfer_live_authorizations_one_open_idx
+ON wb.transfer_live_authorizations (transfer_id)
+WHERE state IN ('requested', 'authorized');
+
+CREATE INDEX transfer_live_authorizations_plan_state_idx
+ON wb.transfer_live_authorizations (transfer_id, plan_id, state, id);
+
+
+CREATE TABLE wb.transfer_live_authorization_commands (
+    id                      BIGSERIAL PRIMARY KEY,
+
+    transfer_id             BIGINT NOT NULL,
+    authorization_id        BIGINT NOT NULL,
+    kind                    TEXT NOT NULL
+                            CHECK (kind IN (
+                                'request', 'approve', 'revoke', 'expire',
+                                'supersede', 'close'
+                            )),
+    idempotency_key         VARCHAR(160) NOT NULL
+                            CHECK (char_length(idempotency_key) > 0),
+    actor_digest            BYTEA NOT NULL
+                            CHECK (octet_length(actor_digest) = 32),
+    command_digest          BYTEA NOT NULL
+                            CHECK (octet_length(command_digest) = 32),
+    result_state            TEXT NOT NULL
+                            CHECK (result_state IN (
+                                'requested', 'authorized', 'revoked',
+                                'expired', 'superseded', 'closed'
+                            )),
+    result_revision         BIGINT NOT NULL
+                            CHECK (result_revision >= 0),
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (idempotency_key),
+
+    FOREIGN KEY (transfer_id, authorization_id)
+        REFERENCES wb.transfer_live_authorizations (transfer_id, id)
+);
+
+
+ALTER TABLE wb.publication_actions
+ADD CONSTRAINT publication_actions_live_authorization_fk
+FOREIGN KEY (transfer_id, authorization_id)
+REFERENCES wb.transfer_live_authorizations (transfer_id, id);
+
+
+CREATE TABLE wb.publication_error_cursors (
+    cabinet_id              VARCHAR(128) PRIMARY KEY
+                            CHECK (char_length(cabinet_id) > 0),
+    cursor_updated_at       TIMESTAMPTZ,
+    cursor_batch_uuid       VARCHAR(128) NOT NULL DEFAULT '',
+    revision                BIGINT NOT NULL DEFAULT 0
+                            CHECK (revision >= 0),
+    polled_at               TIMESTAMPTZ,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CHECK (
+        (cursor_updated_at IS NULL AND cursor_batch_uuid = '')
+        OR cursor_updated_at IS NOT NULL
+    ),
+    CHECK (updated_at >= created_at)
+);
+
+
+CREATE TABLE wb.publication_error_batches (
+    id                      BIGSERIAL PRIMARY KEY,
+
+    cabinet_id              VARCHAR(128) NOT NULL
+                            CHECK (char_length(cabinet_id) > 0),
+    batch_uuid              VARCHAR(128) NOT NULL
+                            CHECK (char_length(batch_uuid) > 0),
+    batch_updated_at        TIMESTAMPTZ NOT NULL,
+    source_digest           BYTEA NOT NULL
+                            CHECK (octet_length(source_digest) = 32),
+    vendor_codes            TEXT[] NOT NULL,
+    rejected_vendor_codes   TEXT[] NOT NULL,
+    error_codes             TEXT[] NOT NULL
+                            CHECK (cardinality(error_codes) > 0),
+    observed_at             TIMESTAMPTZ NOT NULL,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (cabinet_id, batch_uuid, source_digest),
+
+    FOREIGN KEY (cabinet_id)
+        REFERENCES wb.publication_error_cursors (cabinet_id),
+
+    CHECK (observed_at <= created_at + INTERVAL '5 minutes')
+);
+
+CREATE INDEX publication_error_batches_correlation_idx
+ON wb.publication_error_batches (
+    cabinet_id,
+    batch_updated_at,
+    id
+);
+
+CREATE INDEX publication_error_batches_rejected_vendor_codes_idx
+ON wb.publication_error_batches USING GIN (rejected_vendor_codes);
+
+
+CREATE TABLE wb.publication_error_baselines (
+    id                      BIGSERIAL PRIMARY KEY,
+
+    transfer_id             BIGINT NOT NULL,
+    action_id               BIGINT NOT NULL,
+    cabinet_id              VARCHAR(128) NOT NULL
+                            CHECK (char_length(cabinet_id) > 0),
+    cursor_revision         BIGINT NOT NULL
+                            CHECK (cursor_revision >= 0),
+    cursor_updated_at       TIMESTAMPTZ,
+    cursor_batch_uuid       VARCHAR(128) NOT NULL DEFAULT '',
+    captured_at             TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (transfer_id, id),
+    UNIQUE (transfer_id, action_id),
+
+    FOREIGN KEY (transfer_id, action_id)
+        REFERENCES wb.publication_actions (transfer_id, id),
+    FOREIGN KEY (cabinet_id)
+        REFERENCES wb.publication_error_cursors (cabinet_id),
+
+    CHECK (
+        (cursor_updated_at IS NULL AND cursor_batch_uuid = '')
+        OR cursor_updated_at IS NOT NULL
+    )
+);
 
 
 ALTER TABLE wb.transfer_group_targets
@@ -1564,8 +1872,22 @@ CREATE TABLE wb.publication_attempts (
     action_id               BIGINT NOT NULL,
     authorization_id        BIGINT NOT NULL
                             CHECK (authorization_id > 0),
+    error_baseline_id       BIGINT NOT NULL
+                            CHECK (error_baseline_id > 0),
+    recheck_observation_id  BIGINT NOT NULL
+                            CHECK (recheck_observation_id > 0),
     request_digest          BYTEA NOT NULL
                             CHECK (octet_length(request_digest) = 32),
+    request_payload         BYTEA NOT NULL
+                            CHECK (
+                                octet_length(request_payload) > 0
+                                AND octet_length(request_payload) <= 10000000
+                            ),
+    attribution_id          BIGINT
+                            CHECK (
+                                attribution_id IS NULL
+                                OR attribution_id > 0
+                            ),
     delivery_state          TEXT NOT NULL DEFAULT 'not_dispatched'
                             CHECK (delivery_state IN (
                                 'not_dispatched', 'response_received',
@@ -1608,19 +1930,32 @@ CREATE TABLE wb.publication_attempts (
     UNIQUE (action_id),
     UNIQUE (transfer_id, action_id),
 
-    FOREIGN KEY (transfer_id, action_id)
-        REFERENCES wb.publication_actions (transfer_id, id),
+    FOREIGN KEY (transfer_id, action_id, authorization_id)
+        REFERENCES wb.publication_actions (
+            transfer_id,
+            id,
+            authorization_id
+        ),
+    FOREIGN KEY (transfer_id, error_baseline_id)
+        REFERENCES wb.publication_error_baselines (transfer_id, id),
+    FOREIGN KEY (transfer_id, recheck_observation_id)
+        REFERENCES wb.publication_observations (transfer_id, id),
 
     CHECK (
         (
             delivery_state = 'not_dispatched'
             AND http_status IS NULL
-            AND response_disposition IS NULL
-            AND finished_at IS NULL
+            AND (
+                (response_disposition IS NULL AND finished_at IS NULL)
+                OR (
+                    response_disposition = 'rejected_proven'
+                    AND classifier_version IS NOT NULL
+                    AND finished_at IS NOT NULL
+                )
+            )
         )
         OR (
             delivery_state = 'response_received'
-            AND http_status IS NOT NULL
             AND response_disposition IS NOT NULL
             AND classifier_version IS NOT NULL
             AND finished_at IS NOT NULL
@@ -1635,6 +1970,194 @@ CREATE TABLE wb.publication_attempts (
     ),
     CHECK (finished_at IS NULL OR finished_at >= started_at)
 );
+
+
+CREATE TABLE wb.publication_error_correlations (
+    id                      BIGSERIAL PRIMARY KEY,
+
+    transfer_id             BIGINT NOT NULL,
+    action_id               BIGINT NOT NULL,
+    action_member_id        BIGINT NOT NULL,
+    attempt_id              BIGINT NOT NULL,
+    error_batch_id          BIGINT NOT NULL,
+    safe_result_code        VARCHAR(128) NOT NULL
+                            CHECK (char_length(safe_result_code) > 0),
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (transfer_id, id),
+    UNIQUE (transfer_id, action_member_id, error_batch_id),
+
+    FOREIGN KEY (transfer_id, action_id, action_member_id)
+        REFERENCES wb.publication_action_members (
+            transfer_id,
+            action_id,
+            id
+        ),
+    FOREIGN KEY (transfer_id, attempt_id)
+        REFERENCES wb.publication_attempts (transfer_id, id),
+    FOREIGN KEY (error_batch_id)
+        REFERENCES wb.publication_error_batches (id)
+);
+
+
+CREATE TABLE wb.publication_attributions (
+    id                      BIGSERIAL PRIMARY KEY,
+
+    transfer_id             BIGINT NOT NULL,
+    group_target_id         BIGINT NOT NULL,
+    action_id               BIGINT NOT NULL,
+    action_member_id        BIGINT NOT NULL,
+    cabinet_id              VARCHAR(128) NOT NULL
+                            CHECK (char_length(cabinet_id) > 0),
+    nm_id                   BIGINT NOT NULL
+                            CHECK (nm_id > 0),
+    plan_digest             BYTEA NOT NULL
+                            CHECK (octet_length(plan_digest) = 32),
+    attempt_id              BIGINT,
+    preflight_observation_id BIGINT NOT NULL,
+    post_observation_id     BIGINT,
+    level                   TEXT NOT NULL
+                            CHECK (level IN (
+                                'direct', 'observed_after_attempt', 'ambiguous'
+                            )),
+    direct_correlation_key  VARCHAR(256)
+                            CHECK (
+                                direct_correlation_key IS NULL
+                                OR char_length(direct_correlation_key) > 0
+                            ),
+    safe_reason_code        VARCHAR(128) NOT NULL
+                            CHECK (char_length(safe_reason_code) > 0),
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (transfer_id, id),
+    UNIQUE (transfer_id, action_member_id),
+
+    FOREIGN KEY (transfer_id, action_id, action_member_id)
+        REFERENCES wb.publication_action_members (
+            transfer_id,
+            action_id,
+            id
+        ),
+    FOREIGN KEY (transfer_id, group_target_id)
+        REFERENCES wb.transfer_group_targets (transfer_id, id),
+    FOREIGN KEY (transfer_id, attempt_id)
+        REFERENCES wb.publication_attempts (transfer_id, id),
+    FOREIGN KEY (transfer_id, preflight_observation_id)
+        REFERENCES wb.publication_observations (transfer_id, id),
+    FOREIGN KEY (transfer_id, post_observation_id)
+        REFERENCES wb.publication_observations (transfer_id, id),
+
+    CHECK (
+        (level = 'direct' AND direct_correlation_key IS NOT NULL)
+        OR (level <> 'direct' AND direct_correlation_key IS NULL)
+    )
+);
+
+
+CREATE TABLE wb.publication_manual_resolutions (
+    id                      BIGSERIAL PRIMARY KEY,
+
+    transfer_id             BIGINT NOT NULL,
+    action_id               BIGINT NOT NULL,
+    action_member_id        BIGINT NOT NULL,
+    kind                    TEXT NOT NULL
+                            CHECK (kind IN (
+                                'mark_remote_present',
+                                'mark_rejected',
+                                'close_unresolved_no_retry'
+                            )),
+    idempotency_key         VARCHAR(160) NOT NULL
+                            CHECK (char_length(idempotency_key) > 0),
+    command_digest          BYTEA NOT NULL
+                            CHECK (octet_length(command_digest) = 32),
+    actor_id                BIGINT NOT NULL
+                            CHECK (actor_id > 0),
+    actor_digest            BYTEA NOT NULL
+                            CHECK (octet_length(actor_digest) = 32),
+    actor_name              VARCHAR(256) NOT NULL
+                            CHECK (char_length(actor_name) > 0),
+    expected_action_revision BIGINT NOT NULL
+                            CHECK (expected_action_revision >= 0),
+    result_action_revision  BIGINT NOT NULL
+                            CHECK (
+                                result_action_revision
+                                = expected_action_revision + 1
+                            ),
+    evidence_observation_id BIGINT,
+    evidence_error_batch_id BIGINT,
+    result_outcome_class    TEXT NOT NULL
+                            CHECK (result_outcome_class IN (
+                                'success', 'rejected', 'unresolved',
+                                'internal_error'
+                            )),
+    result_outcome_code     VARCHAR(128) NOT NULL
+                            CHECK (char_length(result_outcome_code) > 0),
+    nm_id                   BIGINT
+                            CHECK (nm_id IS NULL OR nm_id > 0),
+    imt_id                  BIGINT
+                            CHECK (imt_id IS NULL OR imt_id > 0),
+    subject_id              BIGINT
+                            CHECK (subject_id IS NULL OR subject_id > 0),
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (transfer_id, id),
+    UNIQUE (idempotency_key),
+
+    FOREIGN KEY (transfer_id, action_id, action_member_id)
+        REFERENCES wb.publication_action_members (
+            transfer_id,
+            action_id,
+            id
+        ),
+    FOREIGN KEY (transfer_id, evidence_observation_id)
+        REFERENCES wb.publication_observations (transfer_id, id),
+    FOREIGN KEY (evidence_error_batch_id)
+        REFERENCES wb.publication_error_batches (id),
+
+    CHECK (
+        (
+            kind = 'mark_remote_present'
+            AND evidence_observation_id IS NOT NULL
+            AND evidence_error_batch_id IS NULL
+            AND result_outcome_class = 'success'
+            AND nm_id IS NOT NULL
+            AND imt_id IS NOT NULL
+            AND subject_id IS NOT NULL
+        )
+        OR (
+            kind = 'mark_rejected'
+            AND evidence_observation_id IS NULL
+            AND evidence_error_batch_id IS NOT NULL
+            AND result_outcome_class = 'rejected'
+            AND nm_id IS NULL
+            AND imt_id IS NULL
+            AND subject_id IS NULL
+        )
+        OR (
+            kind = 'close_unresolved_no_retry'
+            AND evidence_observation_id IS NULL
+            AND evidence_error_batch_id IS NULL
+            AND result_outcome_class IN ('unresolved', 'internal_error')
+            AND nm_id IS NULL
+            AND imt_id IS NULL
+            AND subject_id IS NULL
+        )
+    )
+);
+
+CREATE INDEX publication_manual_resolutions_member_idx
+ON wb.publication_manual_resolutions (
+    transfer_id,
+    action_id,
+    action_member_id,
+    id
+);
+
+
+ALTER TABLE wb.publication_attempts
+ADD CONSTRAINT publication_attempts_attribution_fk
+FOREIGN KEY (transfer_id, attribution_id)
+REFERENCES wb.publication_attributions (transfer_id, id);
 
 
 ALTER TABLE wb.transfer_item_targets
@@ -1670,6 +2193,120 @@ $$;
 CREATE TRIGGER publication_plans_protect_identity
 BEFORE UPDATE ON wb.publication_plans
 FOR EACH ROW EXECUTE FUNCTION wb.protect_publication_plan_identity();
+
+
+CREATE FUNCTION wb.protect_publication_observation_identity()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NEW IS DISTINCT FROM OLD THEN
+        RAISE EXCEPTION 'publication observation is immutable'
+            USING ERRCODE = '55000';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER publication_observations_protect_identity
+BEFORE UPDATE ON wb.publication_observations
+FOR EACH ROW EXECUTE FUNCTION wb.protect_publication_observation_identity();
+
+
+CREATE FUNCTION wb.protect_live_authorization_identity()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF ROW(
+        NEW.transfer_id,
+        NEW.plan_id,
+        NEW.plan_digest,
+        NEW.target_set_root,
+        NEW.trusted_actor_id,
+        NEW.trusted_actor_digest,
+        NEW.trusted_actor_name,
+        NEW.requested_at,
+        NEW.expires_at,
+        NEW.created_at
+    ) IS DISTINCT FROM ROW(
+        OLD.transfer_id,
+        OLD.plan_id,
+        OLD.plan_digest,
+        OLD.target_set_root,
+        OLD.trusted_actor_id,
+        OLD.trusted_actor_digest,
+        OLD.trusted_actor_name,
+        OLD.requested_at,
+        OLD.expires_at,
+        OLD.created_at
+    ) THEN
+        RAISE EXCEPTION 'live authorization identity is immutable'
+            USING ERRCODE = '55000';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER transfer_live_authorizations_protect_identity
+BEFORE UPDATE ON wb.transfer_live_authorizations
+FOR EACH ROW EXECUTE FUNCTION wb.protect_live_authorization_identity();
+
+
+CREATE FUNCTION wb.reject_live_authorization_command_mutation()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RAISE EXCEPTION 'live authorization command is immutable'
+        USING ERRCODE = '55000';
+END;
+$$;
+
+CREATE TRIGGER transfer_live_authorization_commands_reject_mutation
+BEFORE UPDATE OR DELETE ON wb.transfer_live_authorization_commands
+FOR EACH ROW EXECUTE FUNCTION wb.reject_live_authorization_command_mutation();
+
+
+CREATE FUNCTION wb.protect_publication_error_cursor_identity()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NEW.cabinet_id IS DISTINCT FROM OLD.cabinet_id
+       OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+        RAISE EXCEPTION 'publication error cursor identity is immutable'
+            USING ERRCODE = '55000';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER publication_error_cursors_protect_identity
+BEFORE UPDATE ON wb.publication_error_cursors
+FOR EACH ROW EXECUTE FUNCTION wb.protect_publication_error_cursor_identity();
+
+
+CREATE FUNCTION wb.reject_publication_error_fact_mutation()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RAISE EXCEPTION 'publication error evidence is immutable'
+        USING ERRCODE = '55000';
+END;
+$$;
+
+CREATE TRIGGER publication_error_batches_reject_mutation
+BEFORE UPDATE OR DELETE ON wb.publication_error_batches
+FOR EACH ROW EXECUTE FUNCTION wb.reject_publication_error_fact_mutation();
+
+CREATE TRIGGER publication_error_baselines_reject_mutation
+BEFORE UPDATE OR DELETE ON wb.publication_error_baselines
+FOR EACH ROW EXECUTE FUNCTION wb.reject_publication_error_fact_mutation();
 
 
 CREATE FUNCTION wb.protect_publication_action_identity()
@@ -1759,16 +2396,29 @@ BEGIN
         NEW.transfer_id,
         NEW.action_id,
         NEW.authorization_id,
+        NEW.error_baseline_id,
+        NEW.recheck_observation_id,
         NEW.request_digest,
+        NEW.request_payload,
+        NEW.attribution_id,
         NEW.started_at
     ) IS DISTINCT FROM ROW(
         OLD.transfer_id,
         OLD.action_id,
         OLD.authorization_id,
+        OLD.error_baseline_id,
+        OLD.recheck_observation_id,
         OLD.request_digest,
+        OLD.request_payload,
+        OLD.attribution_id,
         OLD.started_at
     ) THEN
         RAISE EXCEPTION 'publication attempt identity is immutable'
+            USING ERRCODE = '55000';
+    END IF;
+
+    IF OLD.finished_at IS NOT NULL AND NEW IS DISTINCT FROM OLD THEN
+        RAISE EXCEPTION 'finished publication attempt is immutable'
             USING ERRCODE = '55000';
     END IF;
 
@@ -1779,6 +2429,25 @@ $$;
 CREATE TRIGGER publication_attempts_protect_identity
 BEFORE UPDATE ON wb.publication_attempts
 FOR EACH ROW EXECUTE FUNCTION wb.protect_publication_attempt_identity();
+
+
+CREATE FUNCTION wb.protect_publication_attribution_identity()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NEW IS DISTINCT FROM OLD THEN
+        RAISE EXCEPTION 'publication attribution is immutable'
+            USING ERRCODE = '55000';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER publication_attributions_protect_identity
+BEFORE UPDATE ON wb.publication_attributions
+FOR EACH ROW EXECUTE FUNCTION wb.protect_publication_attribution_identity();
 
 
 CREATE FUNCTION wb.reject_publication_fact_delete()
@@ -1795,6 +2464,14 @@ CREATE TRIGGER publication_plans_reject_delete
 BEFORE DELETE ON wb.publication_plans
 FOR EACH ROW EXECUTE FUNCTION wb.reject_publication_fact_delete();
 
+CREATE TRIGGER publication_observations_reject_delete
+BEFORE DELETE ON wb.publication_observations
+FOR EACH ROW EXECUTE FUNCTION wb.reject_publication_fact_delete();
+
+CREATE TRIGGER transfer_live_authorizations_reject_delete
+BEFORE DELETE ON wb.transfer_live_authorizations
+FOR EACH ROW EXECUTE FUNCTION wb.reject_publication_fact_delete();
+
 CREATE TRIGGER publication_actions_reject_delete
 BEFORE DELETE ON wb.publication_actions
 FOR EACH ROW EXECUTE FUNCTION wb.reject_publication_fact_delete();
@@ -1805,6 +2482,18 @@ FOR EACH ROW EXECUTE FUNCTION wb.reject_publication_fact_delete();
 
 CREATE TRIGGER publication_attempts_reject_delete
 BEFORE DELETE ON wb.publication_attempts
+FOR EACH ROW EXECUTE FUNCTION wb.reject_publication_fact_delete();
+
+CREATE TRIGGER publication_attributions_reject_delete
+BEFORE DELETE ON wb.publication_attributions
+FOR EACH ROW EXECUTE FUNCTION wb.reject_publication_fact_delete();
+
+CREATE TRIGGER publication_error_correlations_reject_mutation
+BEFORE UPDATE OR DELETE ON wb.publication_error_correlations
+FOR EACH ROW EXECUTE FUNCTION wb.reject_publication_fact_delete();
+
+CREATE TRIGGER publication_manual_resolutions_reject_mutation
+BEFORE UPDATE OR DELETE ON wb.publication_manual_resolutions
 FOR EACH ROW EXECUTE FUNCTION wb.reject_publication_fact_delete();
 
 
@@ -1843,6 +2532,7 @@ SELECT
     item_target.outcome_code,
     item_target.nm_id,
     item_target.source_action_id,
+    item_target.attention_closed_at,
     item_target.created_at,
     item_target.started_at,
     item_target.finished_at
@@ -1885,6 +2575,10 @@ SELECT
     attempt.transfer_id,
     attempt.id AS attempt_id,
     attempt.action_id,
+    attempt.authorization_id,
+    attempt.error_baseline_id,
+    attempt.recheck_observation_id,
+    attempt.attribution_id,
     action.plan_id,
     action.target_id,
     target.position AS target_position,
@@ -1896,6 +2590,9 @@ SELECT
     attempt.classifier_version,
     attempt.safe_error_code,
     attempt.unmatched_count,
+    baseline.cursor_revision AS error_cursor_revision,
+    baseline.cursor_updated_at AS error_cursor_updated_at,
+    baseline.cursor_batch_uuid AS error_cursor_batch_uuid,
     attempt.started_at,
     attempt.finished_at
 FROM wb.publication_attempts AS attempt
@@ -1904,4 +2601,43 @@ JOIN wb.publication_actions AS action
  AND action.id = attempt.action_id
 JOIN wb.transfer_targets AS target
   ON target.transfer_id = action.transfer_id
- AND target.id = action.target_id;
+ AND target.id = action.target_id
+JOIN wb.publication_error_baselines AS baseline
+  ON baseline.transfer_id = attempt.transfer_id
+ AND baseline.id = attempt.error_baseline_id;
+
+
+CREATE VIEW wb.statistics_authorization_facts AS
+SELECT
+    authorization.transfer_id,
+    authorization.id AS authorization_id,
+    authorization.plan_id,
+    authorization.plan_digest,
+    authorization.target_set_root,
+    authorization.revision,
+    authorization.state,
+    authorization.trusted_actor_digest,
+    authorization.requested_at,
+    authorization.approved_at,
+    authorization.expires_at,
+    authorization.revoked_at,
+    authorization.closed_at,
+    authorization.safe_reason_code,
+    authorization.created_at,
+    authorization.updated_at
+FROM wb.transfer_live_authorizations AS authorization;
+
+
+CREATE VIEW wb.statistics_error_batch_facts AS
+SELECT
+    batch.id AS error_batch_id,
+    batch.cabinet_id,
+    batch.batch_uuid,
+    batch.batch_updated_at,
+    batch.source_digest,
+    cardinality(batch.vendor_codes) AS vendor_codes_count,
+    cardinality(batch.rejected_vendor_codes) AS rejected_vendor_codes_count,
+    batch.error_codes,
+    batch.observed_at,
+    batch.created_at
+FROM wb.publication_error_batches AS batch;

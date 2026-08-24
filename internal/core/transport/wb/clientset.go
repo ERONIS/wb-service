@@ -10,15 +10,19 @@ import (
 	"time"
 
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
+	generalapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/general/v1"
 	client "github.com/ERONIS/wb-service/internal/core/transport/wb/client"
 	config "github.com/ERONIS/wb-service/internal/core/transport/wb/config"
 	flowcontrol "github.com/ERONIS/wb-service/internal/core/transport/wb/flowcontrol"
+	identity "github.com/ERONIS/wb-service/internal/core/transport/wb/identity"
 	transport "github.com/ERONIS/wb-service/internal/core/transport/wb/transport"
 	"go.uber.org/zap"
 )
 
 const (
 	contentAPIHost         = "content-api.wildberries.ru"
+	commonAPIHost          = "common-api.wildberries.ru"
+	commonAPIBaseURL       = "https://common-api.wildberries.ru"
 	defaultRetryBaseDelay  = 500 * time.Millisecond
 	defaultMaxReadAttempts = 3
 )
@@ -28,14 +32,18 @@ type Clientset struct {
 	cabinets         map[config.CabinetID]*CabinetClient
 	cabinetInfos     []CabinetInfo
 	credentialTokens map[config.CabinetID]string
+	commonExecutors  map[config.CabinetID]client.Executor
+	identityRegistry *identity.Registry
 	sharedTransport  *transport.SharedTransport
 }
 
 // NewForConfig создаёт Clientset поверх принадлежащей WB Core копии
-// http.DefaultTransport и до возврата проверяет credentials через Content API.
+// http.DefaultTransport и до возврата проверяет credentials через WB Content
+// and General APIs, then persists the verified identity bindings.
 func NewForConfig(
 	ctx context.Context,
 	configuration *config.Config,
+	identityStore identity.Store,
 	logger *zap.Logger,
 ) (*Clientset, error) {
 	if ctx == nil {
@@ -71,15 +79,16 @@ func NewForConfig(
 		return nil, err
 	}
 
-	return verifyClientsetCredentials(ctx, clientset)
+	return verifyClientsetCredentials(ctx, clientset, identityStore)
 }
 
 // NewForConfigAndHTTPClient создаёт Clientset поверх явно внедрённого base
-// HTTP client, не изменяя его, и до возврата проверяет credentials.
+// HTTP client, не изменяя его, и до возврата проверяет credentials и identity.
 func NewForConfigAndHTTPClient(
 	ctx context.Context,
 	configuration *config.Config,
 	httpClient *http.Client,
+	identityStore identity.Store,
 	logger *zap.Logger,
 ) (*Clientset, error) {
 	if ctx == nil {
@@ -126,17 +135,39 @@ func NewForConfigAndHTTPClient(
 		return nil, err
 	}
 
-	return verifyClientsetCredentials(ctx, clientset)
+	return verifyClientsetCredentials(ctx, clientset, identityStore)
 }
 
 func verifyClientsetCredentials(
 	ctx context.Context,
 	clientset *Clientset,
+	store identity.Store,
 ) (*Clientset, error) {
-	if err := clientset.verifyCredentialsAtStartup(ctx, time.Now().UTC()); err != nil {
+	registry, err := identity.NewRegistry(
+		&credentialVerifier{clientset: clientset},
+		store,
+	)
+	if err != nil {
+		clientset.CloseIdleConnections()
+		return nil, fmt.Errorf("create WB identity registry: %w", err)
+	}
+	credentials := make([]identity.Credential, 0, len(clientset.cabinetInfos))
+	for _, cabinet := range clientset.cabinetInfos {
+		token, exists := clientset.credentialTokens[cabinet.ID]
+		if !exists {
+			clientset.CloseIdleConnections()
+			return nil, fmt.Errorf("WB credential %q is unavailable", cabinet.ID)
+		}
+		credentials = append(credentials, identity.Credential{
+			CabinetID: cabinet.ID,
+			Token:     token,
+		})
+	}
+	if err := registry.VerifyAtStartup(ctx, time.Now().UTC(), credentials); err != nil {
 		clientset.CloseIdleConnections()
 		return nil, fmt.Errorf("verify WB credentials at startup: %w", err)
 	}
+	clientset.identityRegistry = registry
 
 	return clientset, nil
 }
@@ -230,6 +261,13 @@ func prepareClientsetConfig(
 }
 
 func parseProductionBaseURL(rawURL string) (*url.URL, error) {
+	return parseProductionServiceURL(rawURL, contentAPIHost)
+}
+
+func parseProductionServiceURL(
+	rawURL string,
+	allowedHost string,
+) (*url.URL, error) {
 	baseURL, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse WB API base URL: %w", err)
@@ -238,7 +276,7 @@ func parseProductionBaseURL(rawURL string) (*url.URL, error) {
 	if baseURL.Scheme != "https" {
 		return nil, fmt.Errorf("WB API base URL must use HTTPS")
 	}
-	if !strings.EqualFold(baseURL.Hostname(), contentAPIHost) {
+	if !strings.EqualFold(baseURL.Hostname(), allowedHost) {
 		return nil, fmt.Errorf("WB API base URL host is not allowed")
 	}
 	if baseURL.Port() != "" {
@@ -278,9 +316,8 @@ func buildClientset(
 		}
 	}()
 
-	rateLimiters, err := flowcontrol.NewRegistry(
-		contentapi.BucketSpecs(),
-	)
+	bucketSpecs := append(contentapi.BucketSpecs(), generalapi.BucketSpecs()...)
+	rateLimiters, err := flowcontrol.NewRegistry(bucketSpecs)
 	if err != nil {
 		return nil, fmt.Errorf(
 			"create WB rate limiter registry: %w",
@@ -301,6 +338,17 @@ func buildClientset(
 		map[config.CabinetID]string,
 		len(configuration.Cabinets),
 	)
+	commonExecutors := make(
+		map[config.CabinetID]client.Executor,
+		len(configuration.Cabinets),
+	)
+	commonBaseURL, err := parseProductionServiceURL(
+		commonAPIBaseURL,
+		commonAPIHost,
+	)
+	if err != nil {
+		return nil, err
+	}
 
 	for _, cabinetConfig := range configuration.Cabinets {
 		roundTripper := sharedTransport.RoundTripper(
@@ -337,6 +385,23 @@ func buildClientset(
 				err,
 			)
 		}
+		commonAPIClient, err := client.NewAPIClient(
+			cabinetConfig.ID,
+			cabinetConfig.Name,
+			commonBaseURL,
+			cabinetHTTPClient,
+			rateLimiters,
+			defaultRetryBaseDelay,
+			defaultMaxReadAttempts,
+			logger,
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"create WB General API client for cabinet %q: %w",
+				cabinetConfig.ID,
+				err,
+			)
+		}
 
 		cabinets[cabinetConfig.ID] = &CabinetClient{
 			id:       cabinetConfig.ID,
@@ -344,6 +409,7 @@ func buildClientset(
 			executor: apiClient,
 		}
 		credentialTokens[cabinetConfig.ID] = cabinetConfig.Token
+		commonExecutors[cabinetConfig.ID] = commonAPIClient
 		cabinetInfos = append(cabinetInfos, CabinetInfo{
 			ID:   cabinetConfig.ID,
 			Name: cabinetConfig.Name,
@@ -354,6 +420,7 @@ func buildClientset(
 		cabinets:         cabinets,
 		cabinetInfos:     cabinetInfos,
 		credentialTokens: credentialTokens,
+		commonExecutors:  commonExecutors,
 		sharedTransport:  sharedTransport,
 	}, nil
 }
