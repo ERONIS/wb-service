@@ -149,7 +149,6 @@ type ManualResolutionSubject struct {
 	MemberOutcomeCode        string
 	MemberNMID               int64
 	AttemptID                int64
-	ErrorBaselineID          int64
 	PreflightObservationID   int64
 	AttemptStartedAt         time.Time
 	AttentionClosedAt        *time.Time

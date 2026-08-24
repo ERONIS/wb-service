@@ -137,16 +137,6 @@ func (repository *Repository) Initialize(
 	); err != nil {
 		return err
 	}
-	if err := copyInitializationMembers(
-		ctx,
-		tx,
-		transfer.ID,
-		groupIDs,
-		itemIDs,
-		command.Items,
-	); err != nil {
-		return err
-	}
 	if err := copyInitializationGroupTargets(
 		ctx,
 		tx,
@@ -308,22 +298,19 @@ func ensureInitializationEmpty(
 		SELECT
 			(SELECT COUNT(*) FROM wb.transfer_groups WHERE transfer_id = $1),
 			(SELECT COUNT(*) FROM wb.transfer_items WHERE transfer_id = $1),
-			(SELECT COUNT(*) FROM wb.transfer_group_members WHERE transfer_id = $1),
 			(SELECT COUNT(*) FROM wb.transfer_group_targets WHERE transfer_id = $1),
 			(SELECT COUNT(*) FROM wb.transfer_item_targets WHERE transfer_id = $1);
 	`
-	var groups, items, members, groupTargets, itemTargets int64
+	var groups, items, groupTargets, itemTargets int64
 	if err := tx.QueryRow(ctx, query, transferID).Scan(
 		&groups,
 		&items,
-		&members,
 		&groupTargets,
 		&itemTargets,
 	); err != nil {
 		return fmt.Errorf("inspect transfer initialization state: %w", err)
 	}
-	if groups != 0 || items != 0 || members != 0 ||
-		groupTargets != 0 || itemTargets != 0 {
+	if groups != 0 || items != 0 || groupTargets != 0 || itemTargets != 0 {
 		return transfer_service.ErrInitializationConflict
 	}
 	return nil
@@ -420,29 +407,6 @@ func copyInitializationItems(
 	return exactCopied("transfer items", count, len(items), err)
 }
 
-func copyInitializationMembers(
-	ctx context.Context,
-	tx core_postgres_transaction.DBTX,
-	transferID transfer_service.TransferID,
-	groupIDs []int64,
-	itemIDs []int64,
-	items []transfer_service.InitializationItem,
-) error {
-	count, err := tx.CopyFrom(
-		ctx,
-		pgx.Identifier{"wb", "transfer_group_members"},
-		[]string{"transfer_id", "source_group_id", "transfer_item_id"},
-		pgx.CopyFromSlice(len(items), func(index int) ([]any, error) {
-			return []any{
-				transferID,
-				groupIDs[items[index].GroupPosition],
-				itemIDs[index],
-			}, nil
-		}),
-	)
-	return exactCopied("transfer group members", count, len(items), err)
-}
-
 func copyInitializationGroupTargets(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
@@ -527,15 +491,13 @@ func validateInitializationCounts(
 		SELECT
 			(SELECT COUNT(*) FROM wb.transfer_groups WHERE transfer_id = $1),
 			(SELECT COUNT(*) FROM wb.transfer_items WHERE transfer_id = $1),
-			(SELECT COUNT(*) FROM wb.transfer_group_members WHERE transfer_id = $1),
 			(SELECT COUNT(*) FROM wb.transfer_group_targets WHERE transfer_id = $1),
 			(SELECT COUNT(*) FROM wb.transfer_item_targets WHERE transfer_id = $1);
 	`
-	var groups, items, members, groupTargets, itemTargets int64
+	var groups, items, groupTargets, itemTargets int64
 	if err := tx.QueryRow(ctx, query, transfer.ID).Scan(
 		&groups,
 		&items,
-		&members,
 		&groupTargets,
 		&itemTargets,
 	); err != nil {
@@ -543,7 +505,6 @@ func validateInitializationCounts(
 	}
 	if groups != int64(transfer.GroupsCount) ||
 		items != int64(transfer.ItemsCount) ||
-		members != int64(transfer.ItemsCount) ||
 		groupTargets != transfer.GroupTargetsCount ||
 		itemTargets != transfer.ItemTargetsCount {
 		return transfer_service.ErrInitializationConflict

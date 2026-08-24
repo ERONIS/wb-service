@@ -1,0 +1,13 @@
+ALTER TABLE wb.transfer_item_targets
+    DROP CONSTRAINT transfer_item_targets_source_action_fk;
+ALTER TABLE wb.publication_attempts
+    DROP CONSTRAINT publication_attempts_attribution_fk;
+DROP TABLE wb.publication_manual_resolutions;
+DROP TABLE wb.publication_attributions;
+DROP TABLE wb.publication_error_correlations;
+DROP TABLE wb.publication_attempts;
+DROP TABLE wb.publication_error_batches;
+DROP TABLE wb.publication_error_cursors;
+DROP TABLE wb.publication_action_members;
+ALTER TABLE wb.transfer_group_targets
+    DROP CONSTRAINT transfer_group_targets_transfer_target_id_unique;

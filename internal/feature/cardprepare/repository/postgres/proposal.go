@@ -34,30 +34,25 @@ func (repository *Repository) LoadProposal(
 			work.source_group_id,
 			work.target_id,
 			work.cabinet_id,
-			payload.subject_id,
-			payload.semantic_digest,
-			payload.metadata_digest,
-			payload.proposal_root,
-			payload.request_payload,
-			payload.limits_free,
-			payload.limits_paid,
-			payload.limits_observed_at,
-			snapshot.metadata_digest,
-			snapshot.snapshot
+			artifact.subject_id,
+			artifact.semantic_digest,
+			artifact.metadata_digest,
+			artifact.proposal_root,
+			artifact.request_payload,
+			artifact.limits_free,
+			artifact.limits_paid,
+			artifact.limits_observed_at,
+			artifact.metadata_snapshot
 		FROM wb.card_preparation_groups AS work
-		JOIN wb.card_preparation_payloads AS payload
-			ON payload.transfer_id = work.transfer_id
-		   AND payload.preparation_group_id = work.id
-		JOIN wb.card_metadata_snapshots AS snapshot
-			ON snapshot.transfer_id = payload.transfer_id
-		   AND snapshot.preparation_group_id = payload.preparation_group_id
-		   AND snapshot.id = payload.metadata_snapshot_id
+		JOIN wb.card_preparation_artifacts AS artifact
+			ON artifact.transfer_id = work.transfer_id
+		   AND artifact.preparation_group_id = work.id
 		WHERE work.id = $1
 			AND work.transfer_id = $2
 			AND work.group_target_id = $3
 			AND work.status = 'prepared'
 			AND work.proposal_root = $4
-			AND payload.proposal_root = $4;
+			AND artifact.proposal_root = $4;
 	`
 	stored := cardprepare_service.StoredProposal{
 		PreparationGroupID: query.PreparationGroupID,
@@ -70,7 +65,6 @@ func (repository *Repository) LoadProposal(
 		metadataDigest  []byte
 		proposalRoot    []byte
 		requestPayload  []byte
-		snapshotDigest  []byte
 		snapshotPayload []byte
 	)
 	err := repository.pool.QueryRow(
@@ -93,7 +87,6 @@ func (repository *Repository) LoadProposal(
 		&stored.Proposal.Limits.FreeLimits,
 		&stored.Proposal.Limits.PaidLimits,
 		&stored.Proposal.LimitsObservedAt,
-		&snapshotDigest,
 		&snapshotPayload,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -116,8 +109,7 @@ func (repository *Repository) LoadProposal(
 	if err := decodeDigest(proposalRoot, &stored.Proposal.ProposalRoot); err != nil {
 		return cardprepare_service.StoredProposal{}, err
 	}
-	if !bytes.Equal(metadataDigest, snapshotDigest) ||
-		stored.Proposal.ProposalRoot != query.ProposalRoot {
+	if stored.Proposal.ProposalRoot != query.ProposalRoot {
 		return cardprepare_service.StoredProposal{}, cardprepare_service.ErrPreparationMismatch
 	}
 	if err := json.Unmarshal(requestPayload, &stored.Proposal.Request); err != nil {

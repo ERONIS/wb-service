@@ -96,7 +96,6 @@ func (repository *Repository) LockManualResolutionSubject(
 			member.outcome_code,
 			member.nm_id,
 			attempt.id,
-			attempt.error_baseline_id,
 			(
 				SELECT observation.id
 				FROM wb.publication_observations AS observation
@@ -194,7 +193,6 @@ func (repository *Repository) LockManualResolutionSubject(
 		&subject.MemberOutcomeCode,
 		&memberNMID,
 		&subject.AttemptID,
-		&subject.ErrorBaselineID,
 		&preflightID,
 		&subject.AttemptStartedAt,
 		&attentionClosed,
@@ -248,7 +246,7 @@ func (repository *Repository) LockManualResolutionSubject(
 		subject.ActionID != command.ActionID ||
 		subject.ActionMemberID != command.ActionMemberID ||
 		subject.ActionRevision != command.ExpectedActionRevision ||
-		subject.AttemptID <= 0 || subject.ErrorBaselineID <= 0 ||
+		subject.AttemptID <= 0 ||
 		subject.PreflightObservationID <= 0 || subject.AttemptStartedAt.IsZero() ||
 		subject.VendorCode == "" {
 		return cardpublication_service.ManualResolutionSubject{},
@@ -337,20 +335,20 @@ func (repository *Repository) LoadManualErrorEvidence(
 	}
 	const query = `
 		SELECT batch.id, batch.error_codes
-		FROM wb.publication_error_baselines AS baseline
+		FROM wb.publication_attempts AS attempt
 		JOIN wb.publication_error_batches AS batch
-		  ON batch.cabinet_id = baseline.cabinet_id
-		WHERE baseline.transfer_id = $1
-			AND baseline.id = $2
-			AND baseline.action_id = $3
+		  ON batch.cabinet_id = attempt.baseline_cabinet_id
+		WHERE attempt.transfer_id = $1
+			AND attempt.id = $2
+			AND attempt.action_id = $3
 			AND batch.id = $4
 			AND batch.rejected_vendor_codes @> ARRAY[$5]::text[]
 			AND (
-				baseline.cursor_updated_at IS NULL
-				OR batch.batch_updated_at > baseline.cursor_updated_at
+				attempt.baseline_cursor_updated_at IS NULL
+				OR batch.batch_updated_at > attempt.baseline_cursor_updated_at
 				OR (
-					batch.batch_updated_at = baseline.cursor_updated_at
-					AND batch.batch_uuid > baseline.cursor_batch_uuid
+					batch.batch_updated_at = attempt.baseline_cursor_updated_at
+					AND batch.batch_uuid > attempt.baseline_cursor_batch_uuid
 				)
 			);
 	`
@@ -359,7 +357,7 @@ func (repository *Repository) LoadManualErrorEvidence(
 		ctx,
 		query,
 		subject.TransferID,
-		subject.ErrorBaselineID,
+		subject.AttemptID,
 		subject.ActionID,
 		errorBatchID,
 		subject.VendorCode,

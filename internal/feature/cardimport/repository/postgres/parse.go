@@ -44,12 +44,10 @@ func (r *Repository) ClaimFileForParsing(
 						AND file.updated_at < CURRENT_TIMESTAMP - INTERVAL '5 minutes'
 					)
 				)
-			RETURNING file.id
+			RETURNING file.content
 		)
-		SELECT blob.content
-		FROM claimed
-		JOIN wb.card_import_file_blobs AS blob
-			ON blob.file_id = claimed.id;
+		SELECT content
+		FROM claimed;
 	`
 
 	var content []byte
@@ -67,7 +65,7 @@ func (r *Repository) ClaimFileForParsing(
 			)
 		}
 
-		return nil, fmt.Errorf("load cardimport file blob: %w", err)
+		return nil, fmt.Errorf("load cardimport file content: %w", err)
 	}
 
 	return append([]byte(nil), content...), nil
