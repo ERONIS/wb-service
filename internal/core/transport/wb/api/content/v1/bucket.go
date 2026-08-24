@@ -10,6 +10,12 @@ const maxWaitersPerBucket = 256
 
 var contentBucketSpecs = []policy.BucketSpec{
 	mustBucketSpec(policy.BucketSpec{
+		ID:         bucketIDContentPing,
+		Interval:   10 * time.Second,
+		Burst:      3,
+		MaxWaiters: maxWaitersPerBucket,
+	}),
+	mustBucketSpec(policy.BucketSpec{
 		ID:         bucketIDContentCommon,
 		Interval:   600 * time.Millisecond,
 		Burst:      5,

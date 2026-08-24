@@ -1,12 +1,13 @@
 package wb
 
 import (
-	"errors"
+	"fmt"
 
+	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	client "github.com/ERONIS/wb-service/internal/core/transport/wb/client"
 )
 
-var ErrCabinetNotFound = errors.New("WB cabinet not found")
+var ErrCabinetNotFound = fmt.Errorf("WB cabinet: %w", core_errors.ErrNotFound)
 
 type DeliveryState = client.DeliveryState
 type ClassifiedError = client.ClassifiedError

@@ -8,18 +8,20 @@
 internal/core/transport/wb
 ```
 
-Это описание текущего кода, а не план, roadmap или backlog. WB Core собран,
-подключён в composition root и после добавления startup credential verification
-заморожен.
-Feature-адаптеры находятся за границей этого документа.
+Это описание текущего кода, а не план, roadmap или backlog. WB Core собран и
+подключён в composition root. Общая проверка credential, WB seller identity и
+постоянных cabinet bindings находится внутри Core; feature-адаптеры получают
+только его проверенный immutable snapshot.
 
 ## Назначение
 
-WB Core предоставляет один process-wide клиент для Content API Wildberries:
+WB Core предоставляет один process-wide клиент для Content и General API
+Wildberries:
 
 ```text
 Config
 → Clientset
+→ identity.Registry
 → CabinetClient
 → APIClient executor
 → request/response helpers
@@ -31,7 +33,12 @@ Config
 
 - загрузку нескольких кабинетов из environment;
 - безопасное хранение opaque token каждого кабинета;
-- локальную проверку JWT claims и удалённый read-probe каждого token при startup;
+- локальную проверку JWT claims;
+- удалённую проверку token через Content `/ping` и General
+  `/api/v1/seller-info` при startup;
+- сравнение seller из JWT с seller, подтверждённым WB;
+- уникальность seller и постоянную связь `CabinetID → SellerKey`;
+- версии identity binding и capability snapshot;
 - общий HTTP connection pool;
 - per-cabinet Authorization;
 - закрытый catalog Content API операций;
@@ -55,10 +62,13 @@ Feature-код не получает token, `*http.Client` или произво
 internal/core/transport/wb/
 ├── clientset.go
 ├── cabinet.go
+├── credentials.go
 ├── types.go
 ├── errors.go
 ├── config/
 ├── api/content/v1/
+├── api/general/v1/
+├── identity/
 ├── client/
 │   ├── request/
 │   └── response/
@@ -72,8 +82,10 @@ internal/core/transport/wb/
 ```text
 wb Clientset
   → config
+  → identity
   → client
   → api/content/v1
+  → api/general/v1
 
 client
   → client/request
@@ -86,6 +98,12 @@ client/request !→ client/response
 client/response !→ client/request
 client/response !→ flowcontrol
 client/response !→ policy
+```
+
+PostgreSQL-адаптер порта `identity.Store` расположен отдельно от transport:
+
+```text
+internal/core/repository/postgres/wbidentity
 ```
 
 ## Конфигурация
@@ -120,10 +138,12 @@ Clientset работает с копией конфигурации и не из
 - отсутствие port, userinfo, path, query и fragment.
 
 Token не покидает Clientset. Для seller-bound target safety WB Core декодирует
-только документированные JWT claims и отдаёт feature безопасные digests,
-capability flags, expiry и client generation. Raw token и raw seller ID не
-возвращаются. В config поле исключено из JSON, а `String` и `GoString` заменяют
-непустое значение на `--- REDACTED ---`.
+документированные JWT claims, подтверждает token через WB и сравнивает `sid` из
+JWT с `sid` из General API. После синхронизации binding Core отдаёт feature
+только безопасные digests, revisions, capability flags, expiry и client
+generation. Raw token и raw seller ID не возвращаются. В config поле исключено
+из JSON, а `String` и `GoString` заменяют непустое значение на
+`--- REDACTED ---`.
 
 ## Clientset и кабинеты
 
@@ -133,6 +153,7 @@ capability flags, expiry и client generation. Raw token и raw seller ID не
 func NewForConfig(
 	ctx context.Context,
 	config *config.Config,
+	identityStore identity.Store,
 	logger *zap.Logger,
 ) (*Clientset, error)
 
@@ -140,13 +161,14 @@ func NewForConfigAndHTTPClient(
 	ctx context.Context,
 	config *config.Config,
 	httpClient *http.Client,
+	identityStore identity.Store,
 	logger *zap.Logger,
 ) (*Clientset, error)
 
 func (c *Clientset) Cabinets() []CabinetInfo
 func (c *Clientset) ForCabinet(id config.CabinetID) (*CabinetClient, error)
 func (c *Clientset) ExecutorForCabinet(id config.CabinetID) (client.Executor, error)
-func (c *Clientset) CredentialSnapshot(now time.Time) ([]CredentialIdentity, error)
+func (c *Clientset) CredentialSnapshot() ([]CredentialIdentity, error)
 func (c *Clientset) PinnedExecutor(id config.CabinetID, generation ClientGeneration) (client.Executor, error)
 func (c *Clientset) CloseIdleConnections()
 
@@ -162,8 +184,13 @@ func client.ExecuteResponse[T any](
 Свойства:
 
 - registry строится по принципу all-or-error;
-- Clientset публикуется только после локальной проверки claims и успешного
-  Cards List probe каждого кабинета;
+- Clientset публикуется только после локальной проверки claims, успешных
+  Content ping и General seller-info запросов, проверки совпадения seller и
+  синхронизации всех bindings;
+- один seller нельзя настроить под двумя `CabinetID`;
+- прежний `CabinetID` нельзя автоматически перепривязать к другому seller;
+- `CredentialSnapshot()` возвращает копию единственного startup snapshot и не
+  выполняет повторные HTTP/DB обращения;
 - кабинеты сортируются по `CabinetID`;
 - `Cabinets()` возвращает независимый deterministic snapshot;
 - `ForCabinet()` возвращает immutable logical client;
@@ -223,9 +250,11 @@ Redirects запрещены через `http.ErrUseLastResponse`.
 - request/response body mode;
 - request/response byte bounds.
 
-Конкретные операции и wire DTO находятся в `api/content/v1`. Endpoint-specific
-методов в Core нет: operation manifest выбирает `feature/*/transport/wb`, он же
-вызывает `client.ExecuteResponse[T]` и получает полный raw response DTO.
+Конкретные операции и wire DTO находятся в `api/content/v1` и
+`api/general/v1`. General seller-info и Content ping используются внутренней
+проверкой identity. Для прикладных Content-операций endpoint-specific методов в
+Core нет: operation manifest выбирает `feature/*/transport/wb`, он же вызывает
+`client.ExecuteResponse[T]` и получает полный raw response DTO.
 
 `ExecuteResponse[T]` является единственным generic convenience helper. Он не
 выбирает operation, не интерпретирует WB envelope и не реализует workflow.
@@ -396,8 +425,14 @@ body и response body не логируются.
 
 ```go
 wbConfig := wbconfig.NewConfigMust()
+wbIdentityStore := wbidentitypostgres.New(uow)
 
-wbClientset, err := wb.NewForConfig(ctx, &wbConfig, logger.Logger)
+wbClientset, err := wb.NewForConfig(
+	ctx,
+	&wbConfig,
+	wbIdentityStore,
+	logger.Logger,
+)
 if err != nil {
 	panic(fmt.Errorf("create WB clientset: %w", err))
 }
@@ -405,27 +440,16 @@ defer wbClientset.CloseIdleConnections()
 ```
 
 Clientset создаётся до регистрации Telegram handlers. Ошибка конфигурации,
-сборки кабинета, локальной проверки claims или удалённого Cards List probe
-останавливает startup. При shutdown root context отменяется, limiter waits и
-HTTP calls завершаются по context, после чего закрываются idle connections
-общего pool.
-
-## Freeze
-
-После добавления startup credential verification пакет
-`internal/core/transport/wb` считается завершённым:
-
-- новые функции, DTO, operations, endpoint methods и package directories не
-  добавляются;
-- существующие файлы WB Core больше не редактируются;
-- `typed` не восстанавливается;
-- `*_test.go` внутри WB Core отсутствуют и не создаются;
-- вся дальнейшая интеграция выполняется в `feature/*/transport/wb` поверх
-  существующего catalog и generic helper.
+сборки кабинета, локальной проверки claims, Content ping, General seller-info,
+сравнения seller или синхронизации bindings останавливает startup. При shutdown
+root context отменяется, limiter waits и HTTP calls завершаются по context,
+после чего закрываются idle connections общего pool.
 
 ## Текущая граница интеграции
 
-WB Core подключён в composition root и передан `transfer/transport/wb` как
-generic cabinet executor. Общая проверка credential выполняется до публикации
-Clientset; target identity, bindings и orchestration остаются внутри feature.
-Дальнейшие этапы используют этот публичный контракт без изменений WB Core.
+WB Core подключён в composition root. Пакет `identity` владеет общей проверкой
+credential, seller identity, уникальностью sellers, bindings и их revisions.
+`transfer/transport/wb` только преобразует проверенный Core snapshot в свой
+порт. Затем `transfer` добавляет feature-правило: mutation cohort требует
+одновременно `ContentRead` и `ContentWrite`, и вычисляет собственную revision
+набора целей.
