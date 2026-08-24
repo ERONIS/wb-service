@@ -31,8 +31,8 @@ func (repository *Repository) ListDispatchableProductActions(
 			action.id AS action_id,
 			action.target_id AS target_id,
 			target.cabinet_id AS cabinet_id,
-			authorization.id AS authorization_id,
-			authorization.revision AS authorization_revision,
+			live_auth.id AS authorization_id,
+			live_auth.revision AS authorization_revision,
 			plan.plan_digest,
 			plan.target_set_root,
 			target.position AS target_position,
@@ -49,10 +49,10 @@ func (repository *Repository) ListDispatchableProductActions(
 		JOIN wb.transfer_targets AS target
 		  ON target.transfer_id = action.transfer_id
 		 AND target.id = action.target_id
-		JOIN wb.transfer_live_authorizations AS authorization
-		  ON authorization.transfer_id = action.transfer_id
-		 AND authorization.plan_id = action.plan_id
-		 AND authorization.plan_digest = plan.plan_digest
+		JOIN wb.transfer_live_authorizations AS live_auth
+		  ON live_auth.transfer_id = action.transfer_id
+		 AND live_auth.plan_id = action.plan_id
+		 AND live_auth.plan_digest = plan.plan_digest
 		WHERE action.kind IN ('create_group', 'add_to_group')
 			AND action.state = 'planned'
 			AND action.authorization_id IS NULL
@@ -61,8 +61,8 @@ func (repository *Repository) ListDispatchableProductActions(
 				'awaiting_authorization', 'publishing', 'reconciling'
 			)
 			AND transfer.outcome = 'running'
-			AND authorization.state = 'authorized'
-			AND authorization.expires_at > CURRENT_TIMESTAMP
+			AND live_auth.state = 'authorized'
+			AND live_auth.expires_at > CURRENT_TIMESTAMP
 			AND NOT EXISTS (
 				SELECT 1
 				FROM wb.publication_attempts AS attempt
@@ -126,8 +126,8 @@ func (repository *Repository) ListInterruptedProductActions(
 			action.id,
 			action.target_id,
 			target.cabinet_id,
-			authorization.id,
-			authorization.revision,
+			live_auth.id,
+			live_auth.revision,
 			plan.plan_digest,
 			plan.target_set_root
 		FROM wb.publication_actions AS action
@@ -137,9 +137,9 @@ func (repository *Repository) ListInterruptedProductActions(
 		JOIN wb.transfer_targets AS target
 		  ON target.transfer_id = action.transfer_id
 		 AND target.id = action.target_id
-		JOIN wb.transfer_live_authorizations AS authorization
-		  ON authorization.transfer_id = action.transfer_id
-		 AND authorization.id = action.authorization_id
+		JOIN wb.transfer_live_authorizations AS live_auth
+		  ON live_auth.transfer_id = action.transfer_id
+		 AND live_auth.id = action.authorization_id
 		JOIN wb.publication_attempts AS attempt
 		  ON attempt.transfer_id = action.transfer_id
 		 AND attempt.action_id = action.id
@@ -203,10 +203,9 @@ func (repository *Repository) LockProductAction(
 				LIMIT 1
 			),
 			attempt.id,
-			attempt.error_baseline_id,
 			attempt.recheck_observation_id,
 			attempt.started_at,
-			authorization.revision
+			live_auth.revision
 		FROM wb.publication_actions AS action
 		JOIN wb.publication_plans AS plan
 		  ON plan.transfer_id = action.transfer_id
@@ -214,9 +213,9 @@ func (repository *Repository) LockProductAction(
 		JOIN wb.transfer_targets AS target
 		  ON target.transfer_id = action.transfer_id
 		 AND target.id = action.target_id
-		JOIN wb.transfer_live_authorizations AS authorization
-		  ON authorization.transfer_id = action.transfer_id
-		 AND authorization.id = $5
+		JOIN wb.transfer_live_authorizations AS live_auth
+		  ON live_auth.transfer_id = action.transfer_id
+		 AND live_auth.id = $5
 		LEFT JOIN wb.publication_attempts AS attempt
 		  ON attempt.action_id = action.id
 		WHERE action.transfer_id = $1
@@ -232,8 +231,7 @@ func (repository *Repository) LockProductAction(
 		requestDigest, memberDigest  []byte
 		sellerKey, generation        []byte
 		preflightID                  pgtype.Int8
-		attemptID, baselineID        pgtype.Int8
-		recheckID                    pgtype.Int8
+		attemptID, recheckID         pgtype.Int8
 		attemptStartedAt             pgtype.Timestamptz
 		currentAuthorizationRevision int64
 	)
@@ -260,7 +258,6 @@ func (repository *Repository) LockProductAction(
 		&action.CredentialExpiresAt,
 		&preflightID,
 		&attemptID,
-		&baselineID,
 		&recheckID,
 		&attemptStartedAt,
 		&currentAuthorizationRevision,
@@ -288,9 +285,6 @@ func (repository *Repository) LockProductAction(
 	action.AuthorizationRevision = currentAuthorizationRevision
 	if attemptID.Valid {
 		action.AttemptID = attemptID.Int64
-	}
-	if baselineID.Valid {
-		action.ErrorBaselineID = baselineID.Int64
 	}
 	if recheckID.Valid {
 		action.RecheckObservationID = recheckID.Int64
@@ -659,6 +653,7 @@ func (repository *Repository) BeginProductAttempt(
 	if tx == nil || action.State != "planned" || action.AttemptID != 0 ||
 		command.Authorization.AuthorizationID != action.AuthorizationID ||
 		command.Authorization.Revision != action.AuthorizationRevision ||
+		command.Baseline.Validate() != nil ||
 		command.Baseline.TransferID != action.TransferID ||
 		command.Baseline.ActionID != action.ActionID ||
 		command.Baseline.CabinetID != action.CabinetID ||
@@ -760,19 +755,22 @@ func (repository *Repository) BeginProductAttempt(
 			transfer_id,
 			action_id,
 			authorization_id,
-			error_baseline_id,
 			recheck_observation_id,
+			baseline_cabinet_id,
+			baseline_cursor_revision,
+			baseline_cursor_updated_at,
+			baseline_cursor_batch_uuid,
+			baseline_captured_at,
 			request_digest,
 			request_payload
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING id, started_at;
 	`
 	attempt := cardpublication_service.ProductAttempt{
 		TransferID:           action.TransferID,
 		ActionID:             action.ActionID,
 		AuthorizationID:      action.AuthorizationID,
-		ErrorBaselineID:      command.Baseline.ID,
 		RecheckObservationID: command.RecheckObservationID,
 		RequestDigest:        action.RequestDigest,
 	}
@@ -782,8 +780,12 @@ func (repository *Repository) BeginProductAttempt(
 		action.TransferID,
 		action.ActionID,
 		action.AuthorizationID,
-		command.Baseline.ID,
 		command.RecheckObservationID,
+		command.Baseline.CabinetID,
+		command.Baseline.CursorRevision,
+		nullableTime(command.Baseline.CursorUpdatedAt),
+		command.Baseline.CursorBatchUUID,
+		command.Baseline.CapturedAt,
 		action.RequestDigest[:],
 		action.RequestPayload,
 	).Scan(&attempt.ID, &attempt.StartedAt); err != nil {
@@ -1061,8 +1063,8 @@ func (repository *Repository) ListReconcilingProductActions(
 			action.id,
 			action.target_id,
 			target.cabinet_id,
-			authorization.id,
-			authorization.revision,
+			live_auth.id,
+			live_auth.revision,
 			plan.plan_digest,
 			plan.target_set_root
 		FROM wb.publication_actions AS action
@@ -1072,9 +1074,9 @@ func (repository *Repository) ListReconcilingProductActions(
 		JOIN wb.transfer_targets AS target
 		  ON target.transfer_id = action.transfer_id
 		 AND target.id = action.target_id
-		JOIN wb.transfer_live_authorizations AS authorization
-		  ON authorization.transfer_id = action.transfer_id
-		 AND authorization.id = action.authorization_id
+		JOIN wb.transfer_live_authorizations AS live_auth
+		  ON live_auth.transfer_id = action.transfer_id
+		 AND live_auth.id = action.authorization_id
 		JOIN wb.publication_attempts AS attempt
 		  ON attempt.transfer_id = action.transfer_id
 		 AND attempt.action_id = action.id
@@ -1108,7 +1110,7 @@ func (repository *Repository) LoadErrorBatchMatches(
 	ctx context.Context,
 	action cardpublication_service.ProductAction,
 ) ([]cardpublication_service.ErrorBatchMatch, error) {
-	if action.ErrorBaselineID <= 0 || action.AttemptID <= 0 {
+	if action.AttemptID <= 0 {
 		return nil, cardpublication_service.ErrProductActionConflict
 	}
 	ctx, cancel := context.WithTimeout(ctx, repository.pool.OpTimeout())
@@ -1120,19 +1122,19 @@ func (repository *Repository) LoadErrorBatchMatches(
 			batch.batch_updated_at,
 			batch.rejected_vendor_codes,
 			batch.error_codes
-		FROM wb.publication_error_baselines AS baseline
+		FROM wb.publication_attempts AS attempt
 		JOIN wb.publication_error_batches AS batch
-		  ON batch.cabinet_id = baseline.cabinet_id
-		WHERE baseline.transfer_id = $1
-			AND baseline.id = $2
-			AND baseline.action_id = $3
+		  ON batch.cabinet_id = attempt.baseline_cabinet_id
+		WHERE attempt.transfer_id = $1
+			AND attempt.id = $2
+			AND attempt.action_id = $3
 			AND batch.rejected_vendor_codes && $4::text[]
 			AND (
-				baseline.cursor_updated_at IS NULL
-				OR batch.batch_updated_at > baseline.cursor_updated_at
+				attempt.baseline_cursor_updated_at IS NULL
+				OR batch.batch_updated_at > attempt.baseline_cursor_updated_at
 				OR (
-					batch.batch_updated_at = baseline.cursor_updated_at
-					AND batch.batch_uuid > baseline.cursor_batch_uuid
+					batch.batch_updated_at = attempt.baseline_cursor_updated_at
+					AND batch.batch_uuid > attempt.baseline_cursor_batch_uuid
 				)
 			)
 		ORDER BY batch.batch_updated_at, batch.batch_uuid, batch.id;
@@ -1141,7 +1143,7 @@ func (repository *Repository) LoadErrorBatchMatches(
 		ctx,
 		query,
 		action.TransferID,
-		action.ErrorBaselineID,
+		action.AttemptID,
 		action.ActionID,
 		action.VendorCodes(),
 	)
@@ -1395,20 +1397,21 @@ func (repository *Repository) FinishProductReconciliation(
 					transfer_id, action_id, action_member_id, attempt_id,
 					error_batch_id, safe_result_code
 				)
-				SELECT $1, $2, $3, $4, batch.id, $7
+				SELECT $1, $2, $3, $4, batch.id, $6
 				FROM wb.publication_error_batches AS batch
-				JOIN wb.publication_error_baselines AS baseline
-				  ON baseline.transfer_id = $1
-				 AND baseline.id = $5
-				WHERE batch.id = $6
-					AND batch.cabinet_id = baseline.cabinet_id
-					AND batch.rejected_vendor_codes @> ARRAY[$8]::text[]
+				JOIN wb.publication_attempts AS attempt
+				  ON attempt.transfer_id = $1
+				 AND attempt.id = $4
+				 AND attempt.action_id = $2
+				WHERE batch.id = $5
+					AND batch.cabinet_id = attempt.baseline_cabinet_id
+					AND batch.rejected_vendor_codes @> ARRAY[$7]::text[]
 					AND (
-						baseline.cursor_updated_at IS NULL
-						OR batch.batch_updated_at > baseline.cursor_updated_at
+						attempt.baseline_cursor_updated_at IS NULL
+						OR batch.batch_updated_at > attempt.baseline_cursor_updated_at
 						OR (
-							batch.batch_updated_at = baseline.cursor_updated_at
-							AND batch.batch_uuid > baseline.cursor_batch_uuid
+							batch.batch_updated_at = attempt.baseline_cursor_updated_at
+							AND batch.batch_uuid > attempt.baseline_cursor_batch_uuid
 						)
 					)
 				RETURNING id;
@@ -1421,7 +1424,6 @@ func (repository *Repository) FinishProductReconciliation(
 				action.ActionID,
 				member.ID,
 				action.AttemptID,
-				action.ErrorBaselineID,
 				result.ErrorBatchID,
 				result.OutcomeCode,
 				member.VendorCode,

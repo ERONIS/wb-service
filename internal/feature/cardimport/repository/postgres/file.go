@@ -173,30 +173,24 @@ func (r *Repository) StoreFile(
 				AND file.status IN ('reserved', 'stored')
 			FOR UPDATE OF file
 		),
-		persisted_blob AS (
-			INSERT INTO wb.card_import_file_blobs (
-				file_id,
-				content,
-				size,
-				sha256
-			)
-			SELECT id, $4, $5, $6
-			FROM target
-			ON CONFLICT (file_id) DO UPDATE SET
-				content = wb.card_import_file_blobs.content
-			WHERE wb.card_import_file_blobs.size = EXCLUDED.size
-				AND wb.card_import_file_blobs.sha256 = EXCLUDED.sha256
-			RETURNING file_id
-		),
 		stored AS (
 			UPDATE wb.card_import_files AS file
 			SET
 				stored_size = $5,
 				sha256 = $6,
+				content = $4,
 				status = 'stored',
 				updated_at = CURRENT_TIMESTAMP
-			FROM persisted_blob
-			WHERE file.id = persisted_blob.file_id
+			FROM target
+			WHERE file.id = target.id
+				AND (
+					file.status = 'reserved'
+					OR (
+						file.stored_size = $5
+						AND file.sha256 = $6
+						AND file.content = $4
+					)
+				)
 			RETURNING
 				file.id,
 				file.session_id,
@@ -228,7 +222,7 @@ func (r *Repository) StoreFile(
 	)); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return cardimport_service.File{}, fmt.Errorf(
-				"cardimport file is unavailable or content differs from stored blob: %w",
+				"cardimport file is unavailable or content differs from stored file: %w",
 				core_errors.ErrConflict,
 			)
 		}

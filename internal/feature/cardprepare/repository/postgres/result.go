@@ -265,60 +265,38 @@ func insertProposalArtifacts(
 	if err != nil {
 		return fmt.Errorf("encode card preparation metadata snapshot: %w", err)
 	}
-	const insertSnapshot = `
-		INSERT INTO wb.card_metadata_snapshots (
+	const insertArtifact = `
+		INSERT INTO wb.card_preparation_artifacts (
 			preparation_group_id,
 			transfer_id,
-			metadata_digest,
-			snapshot
-		)
-		VALUES ($1, $2, $3, $4::jsonb)
-		RETURNING id;
-	`
-	var snapshotID int64
-	if err := tx.QueryRow(
-		ctx,
-		insertSnapshot,
-		command.Work.ID,
-		command.Work.TransferID,
-		proposal.MetadataDigest[:],
-		string(snapshot),
-	).Scan(&snapshotID); err != nil {
-		return fmt.Errorf("insert card preparation metadata snapshot: %w", err)
-	}
-
-	const insertPayload = `
-		INSERT INTO wb.card_preparation_payloads (
-			preparation_group_id,
-			transfer_id,
-			metadata_snapshot_id,
 			subject_id,
 			semantic_digest,
 			metadata_digest,
 			proposal_root,
 			request_payload,
+			metadata_snapshot,
 			limits_free,
 			limits_paid,
 			limits_observed_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11);
 	`
 	if _, err := tx.Exec(
 		ctx,
-		insertPayload,
+		insertArtifact,
 		command.Work.ID,
 		command.Work.TransferID,
-		snapshotID,
 		proposal.SubjectID,
 		proposal.SemanticDigest[:],
 		proposal.MetadataDigest[:],
 		proposal.ProposalRoot[:],
 		proposal.EncodedRequest,
+		string(snapshot),
 		proposal.Limits.FreeLimits,
 		proposal.Limits.PaidLimits,
 		proposal.LimitsObservedAt,
 	); err != nil {
-		return fmt.Errorf("insert card preparation payload: %w", err)
+		return fmt.Errorf("insert card preparation artifact: %w", err)
 	}
 
 	count, err := tx.CopyFrom(
