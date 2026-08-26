@@ -98,9 +98,11 @@ func (repository *Repository) RequestLive(
 			trusted_actor_digest,
 			trusted_actor_name,
 			requested_at,
-			expires_at
+			expires_at,
+			created_at,
+			updated_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $8, $8)
 		RETURNING ` + liveAuthorizationColumns + `;
 	`
 	authorization, err := scanLiveAuthorization(tx.QueryRow(
@@ -308,7 +310,10 @@ func (repository *Repository) ChangeLiveState(
 		state != transfer_service.LiveAuthorizationClosed {
 		return transfer_service.LiveAuthorization{}, transfer_service.ErrLiveAuthorization
 	}
-	kind := string(state)
+	kind, err := liveAuthorizationCommandKind(state)
+	if err != nil {
+		return transfer_service.LiveAuthorization{}, err
+	}
 	if replay, found, err := loadLiveCommandReplay(
 		ctx,
 		tx,
@@ -423,6 +428,19 @@ func (repository *Repository) ChangeLiveState(
 		return transfer_service.LiveAuthorization{}, err
 	}
 	return authorization, nil
+}
+
+func liveAuthorizationCommandKind(
+	state transfer_service.LiveAuthorizationState,
+) (string, error) {
+	switch state {
+	case transfer_service.LiveAuthorizationSuperseded:
+		return "supersede", nil
+	case transfer_service.LiveAuthorizationClosed:
+		return "close", nil
+	default:
+		return "", transfer_service.ErrLiveAuthorization
+	}
 }
 
 func (repository *Repository) LockValidLive(

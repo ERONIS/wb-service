@@ -1,7 +1,10 @@
 package cardpublication
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
@@ -106,6 +109,7 @@ func (feature *Feature) ConfigureProductDispatch(
 		feature.uow,
 		feature.config.ReconciliationDelay,
 		feature.config.ReconciliationTimeout,
+		feature.config.ProductConcurrency,
 	)
 	feature.mediaDispatcher = cardpublication_service.NewMediaDispatcher(
 		feature.repository,
@@ -116,7 +120,39 @@ func (feature *Feature) ConfigureProductDispatch(
 		feature.transferExecutionResults,
 		feature.uow,
 		feature.config.MediaAutoDispatch,
+		feature.config.MediaCheckInterval,
+		feature.config.MediaCheckTimeout,
+		feature.config.MediaConcurrency,
 	)
+}
+
+func (feature *Feature) RunMediaPolling(
+	ctx context.Context,
+	onError func(error),
+) error {
+	if ctx == nil {
+		return errors.New("run publication media polling: context is nil")
+	}
+	if feature.mediaDispatcher == nil {
+		return errors.New("run publication media polling: dispatcher is not configured")
+	}
+	process := func() {
+		if err := feature.mediaDispatcher.ProcessPending(ctx); err != nil &&
+			ctx.Err() == nil && onError != nil {
+			onError(err)
+		}
+	}
+	process()
+	ticker := time.NewTicker(feature.config.MediaCheckInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			process()
+		}
+	}
 }
 
 func (feature *Feature) MediaDispatcher() *cardpublication_service.MediaDispatcher {

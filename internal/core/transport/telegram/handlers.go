@@ -20,7 +20,10 @@ func Register(
 	ctx context.Context,
 	bot *tele.Bot,
 	roleProvider core_tg_middleware.RoleProvider,
+	menuStore MenuStore,
 ) *Handler {
+	menuHost := newMenuHost(ctx, bot, menuStore)
+	bot.Use(menuHost.Middleware())
 	roleAccess := core_tg_middleware.NewRoleAccess(
 		ctx,
 		roleProvider,

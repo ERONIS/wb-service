@@ -9,6 +9,7 @@ import (
 
 type SellerKey [sha256.Size]byte
 type ClientGeneration [sha256.Size]byte
+ 
 
 // Credential is the secret-bearing input used only while the registry is
 // initialized. Registry snapshots never expose the raw token.

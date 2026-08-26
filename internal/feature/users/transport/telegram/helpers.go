@@ -19,7 +19,9 @@ func withUserPayload(next userCallbackHandler) tele.HandlerFunc {
 	return func(ctx tele.Context) error {
 		telegramID, page, err := parseUserCallbackPayload(ctx.Args())
 		if err != nil {
-			return ctx.EditOrSend(
+			return core_transport_telegram.Notify(
+				ctx,
+				"users.invalid_callback",
 				"Не удалось определить выбранного пользователя.",
 			)
 		}
