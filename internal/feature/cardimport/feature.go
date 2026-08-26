@@ -44,6 +44,18 @@ func (f *Feature) Service() *cardimport_service.Service {
 	return f.service
 }
 
+func (f *Feature) SetCompletionNavigator(
+	navigator cardimport_telegram_transport.CompletionNavigator,
+) {
+	f.telegramHandler.SetCompletionNavigator(navigator)
+}
+
+func (f *Feature) SetProcessingNotifier(
+	notifier cardimport_telegram_transport.ProcessingNotifier,
+) {
+	f.telegramHandler.SetProcessingNotifier(notifier)
+}
+
 func (f *Feature) RegisterTelegram(
 	menu *core_transport_telegram.Handler,
 ) {

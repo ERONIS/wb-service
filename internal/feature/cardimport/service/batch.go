@@ -87,6 +87,7 @@ type AuthorSnapshot struct {
 
 type BatchHeader struct {
 	ID                   BatchID
+	SourceSessionID      SessionID
 	Purpose              Purpose
 	ItemsCount           int
 	GroupsCount          int
@@ -101,6 +102,8 @@ func (h BatchHeader) Validate() error {
 	switch {
 	case h.ID <= 0:
 		return invalidBatch("batch ID must be positive")
+	case h.SourceSessionID <= 0:
+		return invalidBatch("batch source session ID must be positive")
 	case !h.Purpose.IsValid():
 		return invalidBatch("purpose is invalid")
 	case h.ItemsCount <= 0:

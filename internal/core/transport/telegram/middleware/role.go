@@ -188,9 +188,13 @@ func respondRoleMessage(
 		return fmt.Errorf("telegram context is nil")
 	}
 
+	if notifier, ok := ctx.(interface {
+		NotifyMenu(string, string) error
+	}); ok {
+		return notifier.NotifyMenu("access.denied", message)
+	}
 	if ctx.Callback() != nil {
 		return ctx.RespondAlert(message)
 	}
-
-	return ctx.EditOrSend(message)
+	return ctx.Send(message)
 }

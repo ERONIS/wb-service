@@ -11,6 +11,10 @@ type Config struct {
 	ReconciliationDelay   time.Duration `envconfig:"RECONCILIATION_DELAY" default:"10s"`
 	ReconciliationTimeout time.Duration `envconfig:"RECONCILIATION_TIMEOUT" default:"30m"`
 	MediaAutoDispatch     bool          `envconfig:"MEDIA_AUTO_DISPATCH" default:"true"`
+	MediaCheckInterval    time.Duration `envconfig:"MEDIA_CHECK_INTERVAL" default:"3s"`
+	MediaCheckTimeout     time.Duration `envconfig:"MEDIA_CHECK_TIMEOUT" default:"30m"`
+	ProductConcurrency    int           `envconfig:"PRODUCT_CONCURRENCY" default:"5"`
+	MediaConcurrency      int           `envconfig:"MEDIA_CONCURRENCY" default:"20"`
 }
 
 func New() (Config, error) {
@@ -39,6 +43,19 @@ func (config Config) Validate() error {
 	if config.ReconciliationTimeout <= config.ReconciliationDelay ||
 		config.ReconciliationTimeout > 24*time.Hour {
 		return fmt.Errorf("reconciliation timeout must be greater than delay and at most 24 hours")
+	}
+	if config.MediaCheckInterval <= 0 {
+		return fmt.Errorf("media check interval must be positive")
+	}
+	if config.MediaCheckTimeout <= config.MediaCheckInterval ||
+		config.MediaCheckTimeout > 24*time.Hour {
+		return fmt.Errorf("media check timeout must be greater than interval and at most 24 hours")
+	}
+	if config.ProductConcurrency <= 0 || config.ProductConcurrency > 20 {
+		return fmt.Errorf("product concurrency must be between 1 and 20")
+	}
+	if config.MediaConcurrency <= 0 || config.MediaConcurrency > 20 {
+		return fmt.Errorf("media concurrency must be between 1 and 20")
 	}
 	return nil
 }

@@ -35,11 +35,7 @@ func (repository *Repository) ListDispatchableProductActions(
 			live_auth.revision AS authorization_revision,
 			plan.plan_digest,
 			plan.target_set_root,
-			target.position AS target_position,
-			ROW_NUMBER() OVER (
-				PARTITION BY action.transfer_id, action.target_id
-				ORDER BY action.id
-			) AS lane_position
+			target.position AS target_position
 		FROM wb.publication_actions AS action
 		JOIN wb.publication_plans AS plan
 		  ON plan.transfer_id = action.transfer_id
@@ -68,15 +64,6 @@ func (repository *Repository) ListDispatchableProductActions(
 				FROM wb.publication_attempts AS attempt
 				WHERE attempt.action_id = action.id
 			)
-			AND NOT EXISTS (
-				SELECT 1
-				FROM wb.publication_actions AS active_action
-				WHERE active_action.transfer_id = action.transfer_id
-				  AND active_action.target_id = action.target_id
-				  AND active_action.id <> action.id
-				  AND active_action.kind IN ('create_group', 'add_to_group')
-				  AND active_action.state IN ('dispatching', 'reconciling')
-			)
 		)
 		SELECT
 			transfer_id,
@@ -88,7 +75,6 @@ func (repository *Repository) ListDispatchableProductActions(
 			plan_digest,
 			target_set_root
 		FROM dispatchable
-		WHERE lane_position = 1
 		ORDER BY target_position, action_id
 		LIMIT $1;
 	`
@@ -702,16 +688,7 @@ func (repository *Repository) BeginProductAttempt(
 			AND action.id = $2
 			AND action.revision = $3
 			AND action.state = 'planned'
-			AND action.authorization_id IS NULL
-			AND NOT EXISTS (
-				SELECT 1
-				FROM wb.publication_actions AS active_action
-				WHERE active_action.transfer_id = action.transfer_id
-				  AND active_action.target_id = action.target_id
-				  AND active_action.id <> action.id
-				  AND active_action.kind IN ('create_group', 'add_to_group')
-				  AND active_action.state IN ('dispatching', 'reconciling')
-			);
+			AND action.authorization_id IS NULL;
 	`
 	result, err = tx.Exec(
 		ctx,

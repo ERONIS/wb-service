@@ -18,7 +18,7 @@ const addUserPromptText = "➕ <b>Добавление пользователя<
 func (h *UsersTgHandler) StartAddUser(ctx tele.Context) error {
 	page, err := parseUsersPage(ctx)
 	if err != nil {
-		return ctx.EditOrSend("Не удалось определить страницу списка.")
+		return core_transport_telegram.Notify(ctx, "users.invalid_page", "Не удалось определить страницу списка.")
 	}
 
 	h.setPendingAdd(ctx.Sender().ID, page)
@@ -43,10 +43,7 @@ func (h *UsersTgHandler) AddUserInput(
 	)
 	if err != nil {
 		h.finishPendingAdd(sender.ID, pending.id, true)
-		return ctx.Send(
-			"⚠️ Неверный формат.\n\n"+addUserPromptText,
-			addUserPromptMarkup(pending.page),
-		)
+		return core_transport_telegram.Notify(ctx, "users.invalid_add_format", "⚠️ Неверный формат. Отправьте TG ID и полное имя одной строкой.")
 	}
 
 	created, err := h.createUser(

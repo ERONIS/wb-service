@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"html"
 
+	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
+
 	tele "gopkg.in/telebot.v3"
 )
 
@@ -43,11 +45,7 @@ func (h *UsersTgHandler) confirmDeleteUser(
 	}
 
 	if user.IsAdmin() {
-		return ctx.EditOrSend(
-			"⛔ Администраторов удалять нельзя.\n\n"+
-				userCardText(user),
-			userCardMarkup(user, page),
-		)
+		return core_transport_telegram.Notify(ctx, "users.admin_delete_forbidden", "⛔ Администраторов удалять нельзя.")
 	}
 
 	return ctx.EditOrSend(

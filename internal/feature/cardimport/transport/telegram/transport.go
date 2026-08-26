@@ -3,6 +3,7 @@ package cardimport_telegram_transport
 import (
 	"context"
 	"io"
+	"sync"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
@@ -21,7 +22,7 @@ var (
 		Unique: "cardimport_transfer",
 	}
 	buttonCancel = tele.Btn{
-		Text:   "✖️ Отменить импорт",
+		Text:   "✖️ Отменить загрузку",
 		Unique: "cardimport_cancel",
 	}
 	buttonFinalize = tele.Btn{
@@ -75,9 +76,24 @@ type CardImportService interface {
 }
 
 type Handler struct {
-	ctx     context.Context
-	bot     *tele.Bot
-	service CardImportService
+	ctx                    context.Context
+	bot                    *tele.Bot
+	service                CardImportService
+	completion             CompletionNavigator
+	processing             ProcessingNotifier
+	uploadScreenMu         sync.Mutex
+	uploadScreenGeneration map[int64]uint64
+}
+
+type CompletionNavigator interface {
+	ShowFinalizedSession(
+		tele.Context,
+		cardimport_service.BatchHeader,
+	) error
+}
+
+type ProcessingNotifier interface {
+	NotifyFinalized()
 }
 
 func New(
@@ -96,10 +112,31 @@ func New(
 	}
 
 	return &Handler{
-		ctx:     ctx,
-		bot:     bot,
-		service: service,
+		ctx:                    ctx,
+		bot:                    bot,
+		service:                service,
+		uploadScreenGeneration: make(map[int64]uint64),
 	}
+}
+
+func (h *Handler) SetCompletionNavigator(navigator CompletionNavigator) {
+	if navigator == nil {
+		panic("cardimport completion navigator is nil")
+	}
+	if h.completion != nil {
+		panic("cardimport completion navigator is already configured")
+	}
+	h.completion = navigator
+}
+
+func (h *Handler) SetProcessingNotifier(notifier ProcessingNotifier) {
+	if notifier == nil {
+		panic("cardimport processing notifier is nil")
+	}
+	if h.processing != nil {
+		panic("cardimport processing notifier is already configured")
+	}
+	h.processing = notifier
 }
 
 func (h *Handler) Register(menu *core_transport_telegram.Handler) {
@@ -128,4 +165,10 @@ func (h *Handler) Register(menu *core_transport_telegram.Handler) {
 		domain.RoleAdmin,
 		h.receiveDocument,
 	)
+	if h.completion == nil {
+		panic("cardimport completion navigator is not configured")
+	}
+	if h.processing == nil {
+		panic("cardimport processing notifier is not configured")
+	}
 }

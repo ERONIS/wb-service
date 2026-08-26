@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
+	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
 
 	tele "gopkg.in/telebot.v3"
 )
@@ -12,24 +13,25 @@ func sendServiceError(
 	ctx tele.Context,
 	err error,
 ) error {
-	return ctx.EditOrSend(serviceErrorText(err))
+	key, text := serviceErrorNotification(err)
+	return core_transport_telegram.Notify(ctx, key, text)
 }
 
-func serviceErrorText(err error) string {
+func serviceErrorNotification(err error) (string, string) {
 	switch {
 	case errors.Is(err, core_errors.ErrForbidden):
-		return "⛔ Недостаточно прав."
+		return "users.forbidden", "⛔ Недостаточно прав."
 
 	case errors.Is(err, core_errors.ErrNotFound):
-		return "❌ Пользователь не найден."
+		return "users.not_found", "❌ Пользователь не найден."
 
 	case errors.Is(err, core_errors.ErrConflict):
-		return "⚠️ Операция не выполнена: данные уже существуют."
+		return "users.conflict", "⚠️ Операция не выполнена: данные уже существуют."
 
 	case errors.Is(err, core_errors.ErrInvalidArgument):
-		return "⚠️ Переданы некорректные данные."
+		return "users.invalid_argument", "⚠️ Переданы некорректные данные."
 
 	default:
-		return "❌ Не удалось выполнить операцию. Попробуйте позже."
+		return "users.internal", "❌ Не удалось выполнить операцию. Попробуйте позже."
 	}
 }
