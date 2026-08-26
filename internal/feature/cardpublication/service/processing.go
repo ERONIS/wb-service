@@ -121,20 +121,34 @@ func (processor *Processor) processTransfer(
 		loaded = append(loaded, loadedPlanningGroup{Source: group, Proposal: proposal})
 	}
 
-	observations := make(map[int64]CatalogObservation)
+	vendorCodesByTarget := make(map[int64][]string)
+	cabinetByTarget := make(map[int64]CabinetID)
 	for _, group := range source.Groups {
-		if _, exists := observations[group.TargetID]; exists {
-			continue
+		cabinetID := CabinetID(group.CabinetID)
+		if existing, ok := cabinetByTarget[group.TargetID]; ok && existing != cabinetID {
+			return errors.New("publication target has multiple cabinets")
 		}
-		observation, err := processor.catalogReader.Read(
+		cabinetByTarget[group.TargetID] = cabinetID
+		for _, member := range group.Members {
+			vendorCodesByTarget[group.TargetID] = append(
+				vendorCodesByTarget[group.TargetID],
+				member.VendorCode,
+			)
+		}
+	}
+
+	observations := make(map[int64]CatalogObservation, len(vendorCodesByTarget))
+	for targetID, vendorCodes := range vendorCodesByTarget {
+		observation, err := processor.catalogReader.ReadVendorCodes(
 			ctx,
-			group.TargetID,
-			CabinetID(group.CabinetID),
+			targetID,
+			cabinetByTarget[targetID],
+			vendorCodes,
 		)
 		if err != nil {
 			return err
 		}
-		observations[group.TargetID] = observation
+		observations[targetID] = observation
 	}
 	draft, err := processor.planner.Build(transfer, loaded, observations)
 	if err != nil {

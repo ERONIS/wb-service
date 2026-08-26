@@ -92,20 +92,46 @@ func (client *APIClient) Execute(
 	}
 	trace.requestBytes = prepared.BodyBytes()
 
-	requestContext, cancel := context.WithTimeout(
-		ctx,
-		client.httpClient.Timeout,
-	)
-	defer cancel()
-
 	for attemptNumber := 1; attemptNumber <= attemptLimit; attemptNumber++ {
 		if attemptNumber > 1 {
-			if err := requestContext.Err(); err != nil {
+			if err := ctx.Err(); err != nil {
 				result = retryInterruptedResult(result, err)
 
 				return result.err
 			}
 		}
+		// Queue admission is governed only by the caller context. The HTTP
+		// timeout starts after the limiter grants a request slot.
+		waitStartedAt := time.Now()
+		waitErr := client.rateLimiters.Wait(
+			ctx,
+			client.cabinetID,
+			operation.BucketID(),
+		)
+		trace.addLimiterWait(time.Since(waitStartedAt))
+		if waitErr != nil {
+			waitResult := executionResult{
+				err: newClassifiedError(
+					ErrorCodeRateLimited,
+					NotDispatched,
+					0,
+					waitErr,
+				),
+				delivery: NotDispatched,
+			}
+			if attemptNumber > 1 {
+				result = retryInterruptedResult(result, waitResult.err)
+			} else {
+				result = waitResult
+			}
+
+			return result.err
+		}
+
+		requestContext, cancel := context.WithTimeout(
+			ctx,
+			client.httpClient.Timeout,
+		)
 
 		attemptResult := client.doAttempt(
 			requestContext,
@@ -113,6 +139,7 @@ func (client *APIClient) Execute(
 			operation,
 			trace,
 		)
+		cancel()
 		trace.addResponseBytes(len(attemptResult.body))
 		trace.recordObservationError(attemptResult.observationErr)
 
@@ -129,7 +156,7 @@ func (client *APIClient) Execute(
 
 		result = attemptResult
 		if !client.shouldRetry(
-			requestContext,
+			ctx,
 			operation,
 			result,
 			attemptNumber,
@@ -139,7 +166,7 @@ func (client *APIClient) Execute(
 		}
 
 		if err := client.backoff.Wait(
-			requestContext,
+			ctx,
 			attemptNumber,
 			result.retryAfter,
 		); err != nil {
@@ -201,25 +228,6 @@ func (client *APIClient) doAttempt(
 	operation policy.Operation,
 	trace *requestTrace,
 ) executionResult {
-	waitStartedAt := time.Now()
-	waitErr := client.rateLimiters.Wait(
-		ctx,
-		client.cabinetID,
-		operation.BucketID(),
-	)
-	trace.addLimiterWait(time.Since(waitStartedAt))
-	if waitErr != nil {
-		return executionResult{
-			err: newClassifiedError(
-				ErrorCodeRateLimited,
-				NotDispatched,
-				0,
-				waitErr,
-			),
-			delivery: NotDispatched,
-		}
-	}
-
 	recorder := &attemptRecorder{}
 	attemptContext := transport.WithAttemptRecorder(ctx, recorder)
 

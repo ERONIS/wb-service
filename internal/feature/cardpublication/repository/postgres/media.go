@@ -33,11 +33,7 @@ func (repository *Repository) ListDispatchableMediaActions(
 				live_auth.revision AS authorization_revision,
 				plan.plan_digest,
 				plan.target_set_root,
-				target.position AS target_position,
-				ROW_NUMBER() OVER (
-					PARTITION BY action.transfer_id, action.target_id
-					ORDER BY action.id
-				) AS lane_position
+				target.position AS target_position
 			FROM wb.publication_actions AS action
 			JOIN wb.publication_plans AS plan
 			  ON plan.transfer_id = action.transfer_id
@@ -99,20 +95,11 @@ func (repository *Repository) ListDispatchableMediaActions(
 					  AND unfinished_product.kind IN ('create_group', 'add_to_group')
 					  AND unfinished_product.state NOT IN ('terminal', 'superseded')
 				)
-				AND NOT EXISTS (
-					SELECT 1
-					FROM wb.publication_actions AS active_action
-					WHERE active_action.transfer_id = action.transfer_id
-					  AND active_action.target_id = action.target_id
-					  AND active_action.id <> action.id
-					  AND active_action.state IN ('dispatching', 'reconciling')
-				)
 		)
 		SELECT
 			transfer_id, action_id, target_id, cabinet_id,
 			authorization_id, authorization_revision, plan_digest, target_set_root
 		FROM dispatchable
-		WHERE lane_position = 1
 		ORDER BY target_position, action_id
 		LIMIT $1;
 	`
@@ -598,15 +585,7 @@ func (repository *Repository) BeginMediaAttempt(
 			AND action.revision = $3
 			AND action.kind = 'upload_media'
 			AND action.state = 'planned'
-			AND action.authorization_id IS NULL
-			AND NOT EXISTS (
-				SELECT 1
-				FROM wb.publication_actions AS active_action
-				WHERE active_action.transfer_id = action.transfer_id
-				  AND active_action.target_id = action.target_id
-				  AND active_action.id <> action.id
-				  AND active_action.state IN ('dispatching', 'reconciling')
-			);
+			AND action.authorization_id IS NULL;
 	`
 	result, err = tx.Exec(
 		ctx,
