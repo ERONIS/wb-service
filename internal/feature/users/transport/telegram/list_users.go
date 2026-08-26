@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
 	users_service "github.com/ERONIS/wb-service/internal/feature/users/service"
 
 	tele "gopkg.in/telebot.v3"
@@ -16,7 +17,7 @@ func (h *UsersTgHandler) ListUsers(
 ) error {
 	page, err := parseUsersPage(ctx)
 	if err != nil {
-		return ctx.EditOrSend("Не удалось определить страницу списка.")
+		return core_transport_telegram.Notify(ctx, "users.invalid_page", "Не удалось определить страницу списка.")
 	}
 
 	result, err := h.usersService.GetUsers(

@@ -270,6 +270,9 @@ CREATE TABLE wb.publication_error_correlations (
         REFERENCES wb.publication_error_batches (id)
 );
 
+CREATE INDEX publication_error_correlations_error_batch_idx
+ON wb.publication_error_correlations (error_batch_id, id);
+
 
 CREATE TABLE wb.publication_attributions (
     id                      BIGSERIAL PRIMARY KEY,
@@ -435,5 +438,4 @@ ALTER TABLE wb.transfer_item_targets
 ADD CONSTRAINT transfer_item_targets_source_action_fk
 FOREIGN KEY (transfer_id, source_action_id)
 REFERENCES wb.publication_actions (transfer_id, id);
-
 
