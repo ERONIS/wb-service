@@ -109,14 +109,15 @@ func TestFinalizedExactReplayReturnsFrozenBatch(t *testing.T) {
 		finalizedSessionRow(10, 42, 7, "key", digest),
 		scanRow(func(dest ...any) error {
 			*(dest[0].(*int64)) = 42
-			*(dest[1].(*cardimport_service.Purpose)) = cardimport_service.PurposeTransfer
-			*(dest[2].(*int)) = 3
-			*(dest[3].(*int)) = 2
-			*(dest[4].(*int)) = 1
+			*(dest[1].(*cardimport_service.SessionID)) = 5
+			*(dest[2].(*cardimport_service.Purpose)) = cardimport_service.PurposeTransfer
+			*(dest[3].(*int)) = 3
+			*(dest[4].(*int)) = 2
 			*(dest[5].(*int)) = 1
-			*(dest[6].(*[]byte)) = append([]byte(nil), checksum[:]...)
-			*(dest[7].(*[]byte)) = append([]byte(nil), snapshotJSON...)
-			*(dest[8].(*time.Time)) = now
+			*(dest[6].(*int)) = 1
+			*(dest[7].(*[]byte)) = append([]byte(nil), checksum[:]...)
+			*(dest[8].(*[]byte)) = append([]byte(nil), snapshotJSON...)
+			*(dest[9].(*time.Time)) = now
 			return nil
 		}),
 	}}

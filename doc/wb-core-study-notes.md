@@ -1,994 +1,226 @@
-# Учебный конспект по WB Core
+# Конспект изучения WB Core
 
-Изучаемый пакет:
+## Этап 1. Назначение WB Core
 
-```text
-internal/core/transport/wb
-```
+`internal/core/transport/wb` — общий защищённый шлюз между feature-модулями
+приложения и API Wildberries.
 
-Этот файл — накопительный конспект. После каждого разобранного этапа сюда
-добавляется краткая выжимка, ссылки на ключевые файлы и вопросы для
-самопроверки.
+Разделение ответственности:
 
-## Формат обучения
+- feature-модуль решает, **что** нужно запросить у Wildberries;
+- WB Core отвечает за то, **как** безопасно выполнить запрос.
 
-1. Разбираем назначение механизма.
-2. Проходим реализующий его Go-код: структуры, функции, ветвления и важные
-   языковые приёмы.
-3. Проверяем понимание на нескольких вопросах.
-4. Переходим дальше только после сообщения «понял».
-5. В конце собираем весь путь одного реального запроса и итоговую шпаргалку.
+WB Core хранит и проверяет токены кабинетов, связывает кабинет с продавцом,
+формирует и отправляет HTTP-запросы, применяет rate limit и retry, разбирает
+ответы и классифицирует ошибки.
 
-## План
+Feature-код не получает сырой токен, прямой доступ к `http.Client` или
+возможность отправлять запросы на произвольные URL. Он выбирает только заранее
+описанную и разрешённую WB-операцию.
 
-- [x] Этап 1. Назначение, границы и карта пакетов.
-- [ ] Этап 2. Конфигурация, создание `Clientset`, кабинеты и credentials.
-- [ ] Этап 3. Каталог Content API: `Operation`, bucket policies и wire DTO.
-- [ ] Этап 4. Контракт `Executor`, подготовка query/body и создание HTTP request.
-- [ ] Этап 5. HTTP transport: общий connection pool, Authorization и attempt trace.
-- [ ] Этап 6. Чтение response, декодирование, классификация ошибок и delivery state.
-- [ ] Этап 7. Rate limiting, наблюдение заголовков WB, retry и backoff.
-- [ ] Этап 8. Логирование, безопасность данных и полный lifecycle запроса.
-- [ ] Этап 9. Реальное использование из `feature`, практический разбор и итоговая
-  модель.
-
----
-
-## Этап 1. Назначение, границы и карта пакетов
-
-### Главная мысль
-
-WB Core — это общая транспортная инфраструктура для безопасного выполнения
-заранее описанных запросов к Wildberries Content API от имени одного из
-настроенных кабинетов.
-
-Удобная формула одного вызова:
+Упрощённый поток:
 
 ```text
-кабинет + операция + query/body + тип результата
-                         ↓
-              управляемый HTTP lifecycle
+Feature
+  → разрешённая WB-операция
+  → WB Core
+  → Wildberries API
 ```
 
-Пакет решает общие технические задачи: конфигурацию кабинетов, авторизацию,
-HTTP, лимиты, повторные попытки, чтение ответа, классификацию ошибок и
-логирование. Он не решает бизнес-задачи вроде подготовки карточки, выбора
-целевого кабинета или управления переносом.
+## Этап 2. Основные части WB Core
 
-### Где находится граница
+- `config` загружает и проверяет конфигурацию кабинетов.
+- `identity` проверяет идентичность продавца и управляет безопасными bindings.
+- `api` содержит закрытый каталог разрешённых операций Wildberries.
+- `policy` описывает правила операций: метод, путь, retry, лимиты и статусы.
+- `client` координирует полное выполнение логического запроса.
+- `flowcontrol` управляет частотой запросов и ожиданием.
+- `transport` выполняет отдельную HTTP-попытку.
+- `Clientset` владеет кабинетами и общей инфраструктурой.
+- `CabinetClient` является executor, привязанным к одному кабинету.
+
+Упрощённая композиция:
 
 ```text
-feature/service
-    решает, зачем и когда обращаться к WB
-            ↓
-feature/*/transport/wb
-    выбирает разрешённую операцию и wire DTO
-            ↓
-internal/core/transport/wb
-    безопасно выполняет технический lifecycle запроса
-            ↓
-Wildberries Content API
+Clientset
+  └── CabinetClient
+        └── client
+              ├── api + policy
+              ├── flowcontrol
+              └── transport
 ```
 
-Следовательно:
+### Credentials и identity
 
-- `feature` владеет сценарием и интерпретацией ответа;
-- feature-адаптер выбирает конкретную операцию;
-- WB Core знает, как надёжно доставить запрос, но не знает бизнес-смысла
-  сценария;
-- токен и произвольный `*http.Client` не передаются в feature-код.
+`identity` содержит правила и абстракции идентификации. Корневой
+`credentials.go` реализует их через конкретные возможности `Clientset`, Content
+API `/ping` и General API `/seller-info`.
 
-### Карта пакета
+`credentials.go`:
 
-В текущем состоянии WB Core состоит из 44 Go-файлов и примерно 5,5 тысяч строк.
+- удалённо проверяет токен;
+- получает подтверждённого продавца;
+- предоставляет безопасный immutable snapshot без raw token и seller ID;
+- проверяет `ClientGeneration`, не позволяя использовать executor от старого
+  поколения credentials.
+
+Интеграционный verifier находится в корневом `wb`, а не в `identity`, чтобы
+`identity` не зависел от `Clientset`, WB API и HTTP client и не возникал цикл
+импортов.
+
+### Публичные ошибки
+
+Корневой `errors.go` предоставляет `ClassifiedError` и `DeliveryState`:
+
+- `NotDispatched` — запрос точно не отправлен;
+- `ResponseReceived` — ответ WB получен;
+- `UnknownDelivery` — неизвестно, был ли запрос принят WB.
+
+`cardpublication` использует эти состояния для бизнес-решения: можно ли считать
+операцию отклонённой, требуется ли сверка и безопасен ли повтор. WB Core сообщает
+технический факт доставки, а feature интерпретирует его в своём процессе.
+
+`ErrCabinetNotFound` и отдельные aliases кодов ошибок сейчас напрямую в feature
+не используются.
+
+### Небольшой рефакторинг
+
+`CabinetInfo` перенесён из отдельного `types.go` в `clientset.go`, поскольку тип
+используется публичным API `Clientset`. Принадлежность `wb.CabinetInfo` от этого
+не изменилась: в Go её определяет пакет, а не файл.
+
+## Этап 3. Назначение config
+
+`internal/core/transport/wb/config` получает и локально проверяет настройки WB
+Core до создания `Clientset`.
+
+Состав пакета:
+
+- `types.go` — модели конфигурации;
+- `env.go` — чтение environment;
+- `validation.go` — проверка значений;
+- `format.go` — безопасное строковое представление.
+
+Поток данных:
 
 ```text
-internal/core/transport/wb/
-├── clientset.go, cabinet.go   публичный фасад и выбор кабинета
-├── credentials.go            безопасная идентичность credential
-├── types.go, errors.go        публичные типы и error-контракт
-├── config/                    env-конфигурация и её валидация
-├── api/content/v1/            каталог операций и JSON/query DTO
-├── policy/                    неизменяемые правила операций и bucket-ов
-├── client/                    оркестратор полного lifecycle запроса
-│   ├── request/               подготовка URL, query и JSON body
-│   └── response/              bounded read, close и JSON decode
-├── flowcontrol/               limiter, server hints, retry backoff
-└── transport/                 RoundTripper, Authorization, HTTP trace
+Environment
+  → env.go
+  → Config и CabinetConfig
+  → validation.go
+  → Clientset
 ```
 
-### Роли основных слоёв
+Проверяются наличие кабинетов и токенов, уникальность ID и имён, timeout и
+безопасность base URL. `config` не обращается к WB и не подтверждает владельца
+токена: это локальная структурная валидация.
 
-| Слой | На какой вопрос отвечает |
-|---|---|
-| корневой `wb` | Как получить клиент нужного кабинета? |
-| `api/content/v1` | Как выглядит конкретная операция WB и её wire DTO? |
-| `policy` | Какие неизменяемые правила есть у операции? |
-| `client` | В каком порядке выполнить весь запрос? |
-| `client/request` | Как один раз безопасно подготовить запрос? |
-| `client/response` | Как ограниченно прочитать и декодировать ответ? |
-| `flowcontrol` | Когда можно отправлять и можно ли повторить? |
-| `transport` | Как физически отправить запрос с credential кабинета? |
-
-### Направление зависимостей
-
-Главный оркестратор — `client`. Он собирает узкие механизмы в один lifecycle:
+Граница ответственности:
 
 ```text
-root wb
-  ├── config
-  ├── api/content/v1 ──→ policy
-  ├── client
-  │     ├── request ──→ policy
-  │     ├── response
-  │     ├── flowcontrol ──→ config + policy
-  │     ├── policy
-  │     └── transport
-  └── transport
+config             → значение структурно корректно
+credentialVerifier → WB принимает токен
+identity           → токен связан с ожидаемым продавцом
 ```
 
-`request`, `response`, `flowcontrol` и `transport` не управляют всем запросом
-самостоятельно. Каждый из них предоставляет ограниченный механизм, а порядок
-их вызовов задаёт `client.APIClient.Execute`.
+## Этап 4. Модели config
 
-### Две точки входа в реальном приложении
+`CabinetID` — отдельный тип поверх `string` и стабильный внутренний ключ
+кабинета. Он не является seller ID Wildberries.
 
-1. `cmd/wb-service/main.go` один раз создаёт process-wide `Clientset` и передаёт
-   его feature-адаптерам.
-2. `feature/*/transport/wb` получает executor кабинета, выбирает операцию из
-   `api/content/v1` и вызывает generic helper `client.ExecuteResponse[T]`.
+`CabinetConfig` содержит:
 
-Пример общего пути:
+- `ID` — технический стабильный идентификатор;
+- `Name` — изменяемое отображаемое имя;
+- `Token` — секрет; поле исключено из JSON через `json:"-"`.
+
+`Config` содержит общий `BaseURL`, `Timeout` и список `CabinetConfig`. Общие
+настройки не дублируются для каждого кабинета.
+
+Сырой token существует в `Config` только на этапе создания `Clientset`. Feature
+не должен получать конфигурацию или token.
+
+### Принятые решения
+
+- Пока `CabinetID` задаётся явно и не зависит от имени, token или seller ID.
+- В будущем для добавления кабинетов через Telegram лучше генерировать UUID,
+  хранить кабинет в БД, шифровать token и отключать кабинет мягко вместо
+  немедленного физического удаления.
+- Текущий immutable `Clientset` для этого потребуется заменить или дополнить
+  динамическим registry, но сейчас эта переработка отложена.
+- `.env.wb` остаётся в корне проекта. Это файл запуска с секретами, а
+  `internal/core/transport/wb/config` — пакет исходного Go-кода; смешивать их не
+  следует.
+
+## Этап 5. Clientset
+
+`Clientset` — верхнеуровневый объект и внутренний composition root WB Core. Он
+создаётся при запуске, собирает инфраструктуру и предоставляет доступ к
+настроенным кабинетам.
+
+Он владеет:
+
+- реестром `CabinetClient`;
+- безопасным списком `CabinetInfo`;
+- credentials кабинетов и General API executors;
+- identity registry;
+- общим HTTP connection pool.
+
+Основные точки доступа:
+
+- `Cabinets()` возвращает копию безопасного списка ID и имён;
+- `ForCabinet(id)` возвращает `CabinetClient` или `ErrCabinetNotFound`;
+- `ExecutorForCabinet(id)` выдаёт узкий интерфейс `client.Executor`;
+- pinned executor дополнительно проверяет поколение credentials.
+
+Все кабинеты разделяют connection pool, но авторизация и rate limiting остаются
+привязанными к конкретному кабинету. `Clientset` связывает `config`, `identity`,
+`client`, `flowcontrol`, `transport` и `api`, однако делегирует им фактическую
+подготовку и выполнение запросов.
+
+## Этап 6. CabinetClient
+
+`CabinetClient` — тонкая оболочка над generic executor, привязанная к одному
+кабинету. Он хранит безопасные `ID` и `Name` и делегирует `Execute` внутреннему
+executor. Сырого token в нём нет: Authorization встроен глубже в транспортную
+цепочку при сборке клиента.
+
+`Credential-bound` означает, что клиент всегда использует credentials выбранного
+кабинета. `Generic` означает отсутствие endpoint-методов вроде `GetCards` или
+`UploadCards`: клиент принимает только разрешённый `Operation`, query, body и
+target результата.
+
+Разделение ответственности:
 
 ```text
-feature transport
-→ Clientset.ExecutorForCabinet(...)
-→ contentapi.SubjectsOperation()
-→ client.ExecuteResponse[SubjectsResponse](...)
-→ APIClient.Execute(...)
-→ request / limiter / transport / response
+Clientset                   → выбирает кабинет
+CabinetClient               → фиксирует кабинет и его credentials
+feature/*/transport/wb      → выбирает конкретную операцию и DTO
+внутренний executor         → выполняет операцию
 ```
 
-### Что важно не перепутать
+Сначала изучается архитектурная карта всех компонентов. После неё выполняется
+отдельный проход по реализации: поля, конструкторы, методы и реальные цепочки
+вызовов. Внутренний код `Clientset` будет разобран первым во втором проходе.
 
-- WB Core — не весь модуль Wildberries и не бизнес-сервис переноса карточек.
-- `api/content/v1` хранит описание HTTP-контракта, но сам запрос не отправляет.
-- `transport` — самый нижний HTTP-слой; полный алгоритм находится в `client`.
-- Один logical request может включать несколько physical attempts при
-  разрешённом retry.
-- «Какую операцию выполнить» и «от имени какого кабинета» — две независимые
-  части вызова.
+## Этап 7. API catalog
 
-### Файлы для повторения
+`api/content/v1` и `api/general/v1` описывают поддерживаемые контракты двух
+сервисов Wildberries. Суффикс `v1` фиксирует версию контракта.
 
-- `cmd/wb-service/main.go`
-- `internal/core/transport/wb/clientset.go`
-- `internal/core/transport/wb/cabinet.go`
-- `internal/core/transport/wb/client/api_client.go`
-- `internal/core/transport/wb/client/execute_response.go`
-- `internal/feature/cardprepare/transport/wb/catalog.go`
+Пакет содержит:
 
-### Самопроверка
+- query, request и response DTO внешнего API;
+- функции закрытого каталога вроде `CardsListOperation`,
+  `UploadCardsOperation` и `SellerInfoOperation`.
 
-1. Почему выбор бизнес-сценария не находится в WB Core?
-2. Чем `client` отличается от `transport`?
-3. Где выбираются кабинет и конкретная операция?
-4. Почему `api/content/v1` не является готовым HTTP-клиентом сам по себе?
+DTO отражают формат Wildberries, а не внутренние бизнес-модели. Общие DTO
+централизованы в Core, чтобы feature-модули не дублировали JSON-контракты. При
+необходимости feature transport преобразует внешний DTO в собственную модель.
 
----
+Закрытый каталог не позволяет feature передавать произвольные method, URL и
+правила выполнения. Feature выбирает заранее описанный `policy.Operation`, что
+защищает Authorization и обеспечивает единые retry и rate-limit правила.
 
-## Этап 2. Config, Clientset, кабинеты и credentials
-
-### Общая цепочка startup
-
-```text
-main
-→ config.NewConfigMust()
-  → config.NewConfig()
-    → envconfig.Process(...)
-    → loadCabinetsFromEnv()
-    → Config.Validate()
-→ wb.NewForConfig(ctx, ...)
-  → prepareClientsetConfig(...)
-  → transport.NewSharedTransport()
-  → buildClientset(...)
-    → один CabinetClient на каждый кабинет
-  → identity.Registry.VerifyAtStartup(...)
-    → строгий разбор JWT claims
-    → GET Content /ping
-    → GET General /api/v1/seller-info
-    → сравнение JWT sid с подтверждённым WB sid
-    → проверка duplicate seller
-    → identity.Store.SyncBindings(...)
-→ только проверенный Clientset возвращается вызывающему коду
-```
-
-### 1. Типы конфигурации
-
-`config/types.go` содержит только данные:
-
-```go
-type CabinetID string
-
-type CabinetConfig struct {
-	ID    CabinetID
-	Name  string
-	Token string `json:"-"`
-}
-
-type Config struct {
-	BaseURL  string
-	Timeout  time.Duration
-	Cabinets []CabinetConfig
-}
-```
-
-`CabinetID` — отдельный named type поверх `string`. Поэтому ID сложнее случайно
-перепутать с обычной строкой, но при необходимости доступно явное преобразование
-`config.CabinetID(value)`.
-
-Тег `json:"-"` запрещает стандартному JSON encoder сериализовать token. Это
-один защитный слой, но он не защищает `%v`/`%#v`, поэтому форматирование также
-переопределено отдельно.
-
-### 2. Загрузка environment
-
-`NewConfig` загружает общие поля через `envconfig` с префиксом `WB_API`:
-
-```go
-type environmentConfig struct {
-	BaseURL string        `envconfig:"BASE_URL" default:"https://content-api.wildberries.ru"`
-	Timeout time.Duration `envconfig:"TIMEOUT" default:"20s"`
-}
-```
-
-Отсюда получаются `WB_API_BASE_URL` и `WB_API_TIMEOUT`.
-
-Список кабинетов динамический, поэтому он читается вручную:
-
-```text
-WB_API_CABINETS=main,backup
-        ↓ strings.Split
-main   → WB_API_CABINET_MAIN_NAME / _TOKEN
-backup → WB_API_CABINET_BACKUP_NAME / _TOKEN
-```
-
-`os.LookupEnv` выбран вместо `os.Getenv`, чтобы различать отсутствующую
-переменную и присутствующую переменную с пустым значением.
-
-ID и name очищаются через `strings.TrimSpace`. Token намеренно не очищается:
-невидимый пробел в credential должен вызвать ошибку, а не молча изменить
-секрет.
-
-`NewConfigMust` — startup helper:
-
-```go
-func NewConfigMust() Config {
-	config, err := NewConfig()
-	if err != nil {
-		panic(...)
-	}
-	return config
-}
-```
-
-Паника здесь означает fail-fast: без корректных WB credentials приложение не
-должно продолжать запуск в частично рабочем состоянии.
-
-### 3. Валидация и защита token
-
-`Config.Validate` последовательно проверяет:
-
-- непустой `BaseURL` без внешних пробелов;
-- положительный timeout;
-- хотя бы один кабинет;
-- непустые и уникальные ID;
-- уникальные имена без учёта регистра и внешних пробелов;
-- корректный UTF-8 и не более 128 символов в имени;
-- непустой token без внешних пробелов и не более 16 KiB.
-
-Для множества уже встреченных значений используется идиоматический Go set:
-
-```go
-seenIDs := make(map[CabinetID]struct{}, len(config.Cabinets))
-
-if _, exists := seenIDs[cabinet.ID]; exists {
-	return fmt.Errorf("cabinet ID %q is duplicated", cabinet.ID)
-}
-seenIDs[cabinet.ID] = struct{}{}
-```
-
-Пустая `struct{}` не хранит полезных данных — map используется только для
-проверки присутствия ключа.
-
-`CabinetConfig.String()` и `GoString()` заменяют непустой token на
-`--- REDACTED ---`. Поэтому обычное и Go-syntax форматирование структуры не
-выводит secret. Вместе с `json:"-"` это снижает риск утечки токена в лог.
-
-### 4. Копирование и нормализация Config
-
-`wb.NewForConfig` начинает с `prepareClientsetConfig`:
-
-```go
-configCopy := *configuration
-configCopy.Cabinets = append(
-	[]config.CabinetConfig(nil),
-	configuration.Cabinets...,
-)
-```
-
-Первая строка копирует struct, но slice в Go — это header с указателем на общий
-backing array. Поэтому второй `append` создаёт отдельный массив кабинетов.
-Иначе последующая сортировка могла бы изменить slice вызывающего кода.
-
-После копирования код:
-
-1. валидирует config;
-2. нормализует display names;
-3. сортирует кабинеты по ID;
-4. строго разбирает production base URL.
-
-`parseProductionBaseURL` разрешает только:
-
-```text
-https://content-api.wildberries.ru
-```
-
-Запрещены другой host, HTTP, port, userinfo, произвольный path, query и
-fragment. Это одновременно фиксирует правильный endpoint и не позволяет
-случайно отправить Authorization на чужой сервер.
-
-### 5. Сборка Clientset
-
-`Clientset` хранит четыре части состояния:
-
-```go
-type Clientset struct {
-	cabinets         map[config.CabinetID]*CabinetClient
-	cabinetInfos     []CabinetInfo
-	credentialTokens map[config.CabinetID]string
-	sharedTransport  *transport.SharedTransport
-}
-```
-
-- `cabinets` нужен для быстрого поиска executor по ID;
-- `cabinetInfos` — безопасный отсортированный публичный snapshot;
-- `credentialTokens` остаётся внутри root package и нужен credential API;
-- `sharedTransport` владеет общим connection pool.
-
-`buildClientset` сначала создаёт один registry rate limiters, затем в цикле для
-каждого кабинета строит:
-
-```text
-shared transport
-→ cabinet Authorization wrapper
-→ attempt trace wrapper
-→ cabinet http.Client
-→ APIClient
-→ CabinetClient
-```
-
-Ключевой фрагмент:
-
-```go
-roundTripper := sharedTransport.RoundTripper(
-	transport.Authorization(cabinetConfig.Token),
-	transport.AttemptTrace(),
-)
-
-apiClient, err := client.NewAPIClient(
-	cabinetConfig.ID,
-	cabinetConfig.Name,
-	baseURL,
-	cabinetHTTPClient,
-	rateLimiters,
-	500*time.Millisecond,
-	3,
-	logger,
-)
-```
-
-В реальном коде retry values передаются через constants. У каждого кабинета
-свой credential-bound wrapper и `APIClient`, но network connection pool и
-limiter registry общие для `Clientset`.
-
-Сигнатура `buildClientset` использует named return `err`:
-
-```go
-func buildClientset(...) (_ *Clientset, err error) {
-	defer func() {
-		if err != nil {
-			sharedTransport.CloseIdleConnections()
-		}
-	}()
-```
-
-Это гарантирует очистку уже созданных ресурсов, если ошибка возникла посередине
-цикла. Результат строится по правилу all-or-error: частичный `Clientset`
-наружу не возвращается.
-
-После сборки `verifyClientsetCredentials` выполняет startup verification. Если
-она завершается ошибкой, уже собранный `Clientset` также закрывает idle
-connections и наружу возвращается `nil`.
-
-### 6. Публичный доступ к кабинетам
-
-`Cabinets()` возвращает копию slice:
-
-```go
-result := make([]CabinetInfo, len(clientset.cabinetInfos))
-copy(result, clientset.cabinetInfos)
-return result
-```
-
-Вызывающий код может менять полученный slice, не повреждая registry.
-
-`ForCabinet(id)` делает lookup в map и оборачивает sentinel error через `%w`,
-поэтому снаружи доступен `errors.Is(err, wb.ErrCabinetNotFound)`.
-
-`ExecutorForCabinet` возвращает более узкий интерфейс `client.Executor`, хотя
-внутри лежит `*CabinetClient`. Это уменьшает доступную feature-коду поверхность.
-
-`CabinetClient.Execute` только делегирует вызов внутреннему executor:
-
-```go
-return cabinet.executor.Execute(ctx, operation, query, body, target)
-```
-
-Проверка на этапе компиляции:
-
-```go
-var _ client.Executor = (*CabinetClient)(nil)
-```
-
-Она ничего не выполняет runtime, но заставляет компилятор подтвердить, что
-`*CabinetClient` реализует интерфейс `client.Executor`.
-
-### 7. CredentialSnapshot
-
-Локальный разбор JWT и общий registry находятся в отдельном пакете
-`core/transport/wb/identity`. Во время создания `Clientset` registry формирует
-проверенный credential, а PostgreSQL store добавляет постоянные revisions:
-
-```go
-type Binding struct {
-	CabinetID           config.CabinetID
-	SellerKey           SellerKey
-	BindingRevision     int64
-	CapabilityRevision  int64
-	ContentRead         bool
-	ContentWrite        bool
-	CredentialExpiresAt time.Time
-	ClientGeneration    ClientGeneration
-}
-```
-
-Алгоритм `decodeCredentialToken`:
-
-1. требует ровно три непустые JWT-части;
-2. декодирует payload через base64url без padding;
-3. ограничивает payload 16 KiB;
-4. декодирует JSON с `UseNumber`, чтобы числа не превращались во `float64`;
-5. запрещает второй/trailing JSON value;
-6. проверяет UUID claims `id` и `sid`;
-7. читает unsigned integer claims `s` и `exp`;
-8. отклоняет истёкший token.
-
-Подпись JWT локально не проверяется. Поэтому конструктор выполняет удалённую
-проверку exact token, привязанную к его `ClientGeneration`:
-
-```text
-wb.NewForConfig(ctx, ...)
-→ buildClientset(...)
-→ identity.Registry.VerifyAtStartup(ctx, now, credentials)
-  → decodeCredentialToken(token, now)
-  → PinnedExecutor(cabinetID, generation)
-  → GET https://content-api.wildberries.ru/ping
-  → pinnedCommonExecutor(cabinetID, generation)
-  → GET https://common-api.wildberries.ru/api/v1/seller-info
-  → claims.sid == sellerInfo.sid
-  → Store.SyncBindings(...)
-```
-
-До сети Core требует установленный Content capability bit. Content `/ping`
-подтверждает, что token принимается Content API; проверяются `Status == "OK"` и
-RFC3339 timestamp. General seller-info возвращает seller identity, которую WB
-аутентифицировал этим же token. Core канонизирует `sid` и требует точного
-совпадения с `sid` из JWT. Для обоих endpoint заданы отдельные rate buckets.
-Актуальный wire contract находится в
-[официальной документации WB API](https://dev.wildberries.ru/docs/openapi/api-information).
-
-Следовательно, ни один из публичных конструкторов `Clientset` не возвращает
-непроверенный credential-bound client. Оба конструктора теперь принимают
-`context.Context`, чтобы startup probe можно было отменить.
-
-Это проверка на конкретный момент времени, а не вечная гарантия: после startup
-token может истечь или быть отозван. Возможность mutation выводится из
-аутентифицированного claim `s`, но специально выполнять mutation ради проверки
-write-доступа нельзя.
-
-После успешной сетевой проверки Core запрещает duplicate `SellerKey` и через
-`identity.Store` синхронизирует общую таблицу bindings. Только затем registry
-замораживает snapshot. `CredentialSnapshot()` возвращает его копию без нового
-разбора token, HTTP-запросов и DB-записей.
-
-Snapshot передаёт без raw secrets:
-
-- `CabinetID`;
-- `SellerKey` — digest seller ID;
-- `ContentRead` и `ContentWrite`;
-- время истечения;
-- `ClientGeneration` — digest token;
-- `BindingRevision` и `CapabilityRevision`.
-
-### Что отдельно проверяет transfer
-
-Core отвечает на общий вопрос: «какому seller принадлежит credential, принят ли
-он WB и согласован ли с постоянным binding». `transfer` не повторяет HTTP-probe,
-seller uniqueness или DB sync. Он добавляет только своё feature-правило:
-«можно ли включить этот уже проверенный кабинет в mutation cohort».
-
-`MutationTargetSnapshot.Validate` проверяет корректность уже построенного
-feature snapshot и требует одновременно `ContentRead == true` и
-`ContentWrite == true`. Поэтому валидный read-only token принимается Core для
-read-сценариев, но отклоняется `transfer`, которому нужны mutation-права.
-
-Core registry запрещает дубликаты `CabinetID` и `SellerKey`. Второе условие не
-позволяет дважды настроить одного продавца под разными локальными именами
-кабинетов. Domain-валидация transfer snapshot также защищает чтение его
-сохранённого состояния, но не декодирует token, не обращается к WB и не владеет
-identity registry.
-
-Binding — сохранённая в PostgreSQL связь:
-
-```text
-CabinetID → SellerKey
-```
-
-При первом запуске она создаётся. При следующих startup строка блокируется
-через `FOR UPDATE` и сравнивается с новым snapshot. Если прежний `CabinetID`
-внезапно указывает на другого продавца, binding получает статус
-`identity_mismatch`, а startup WB Core завершается ошибкой. Это защищает от
-случайной подмены token между кабинетами. Сам `SellerKey` не перезаписывается:
-возврат token исходного seller снова активирует прежний binding, а rebind к
-другому seller текущий код не выполняет.
-
-`binding_revision` имеет начальное значение `1` и представляет версию identity
-binding; текущий код не разрешает автоматическую смену seller, поэтому сам его
-не увеличивает. `capability_revision` также начинается с `1`, но увеличивается,
-если изменились `ContentRead` или `ContentWrite`.
-
-Из cohort name, порядка targets, seller keys, обеих revisions и capability
-flags вычисляется SHA-256 snapshot revision. Она фиксирует точный набор целей,
-с которым создавался transfer, чтобы незаметное изменение target cohort не
-продолжило старый workflow с другими получателями.
-
-Capabilities извлекаются bit masks:
-
-```go
-contentRead := claims.Properties&contentCapabilityBit != 0
-contentWrite := contentRead && claims.Properties&readOnlyBit == 0
-```
-
-Оператор `&` оставляет интересующий бит. Запись разрешена, только если есть
-Content capability и не установлен read-only bit.
-
-### 8. SellerKey, ClientGeneration и pinning
-
-Вместо чувствительных исходных значений наружу выходят SHA-256 digests:
-
-```text
-SellerKey        = hash("wb-seller-key:v1", sellerID)
-ClientGeneration = hash("wb-client-generation:v1", rawToken)
-```
-
-Разные domain strings не позволяют одинаковому исходному значению дать
-одинаковый digest в двух разных смыслах. Перед каждой частью в hash записывается
-её длина, поэтому границы частей однозначны.
-
-`PinnedExecutor(id, generation)` снова вычисляет generation текущего token и
-сравнивает её с сохранённой workflow generation. Если token был заменён между
-подготовкой операции и выполнением, executor не выдаётся. Это защищает долгий
-workflow от незаметной смены credential.
-
-### Инварианты этапа
-
-- Конфигурация либо полностью корректна, либо приложение не стартует.
-- Caller-owned config и `http.Client` не изменяются.
-- Порядок кабинетов deterministic благодаря сортировке по ID.
-- Частично собранный `Clientset` не публикуется.
-- `Clientset` публикуется только после локальной проверки claims, Content ping,
-  General seller-info, совпадения seller и успешной синхронизации bindings.
-- `CredentialSnapshot()` не выполняет повторную проверку и возвращает копию
-  immutable startup snapshot.
-- Feature не получает raw token и raw seller ID.
-- Все клиенты кабинетов используют один shared connection pool.
-
-### Файлы для повторения
-
-- `internal/core/transport/wb/config/types.go`
-- `internal/core/transport/wb/config/env.go`
-- `internal/core/transport/wb/config/validation.go`
-- `internal/core/transport/wb/config/format.go`
-- `internal/core/transport/wb/clientset.go`
-- `internal/core/transport/wb/cabinet.go`
-- `internal/core/transport/wb/credentials.go`
-- `internal/core/transport/wb/identity/token.go`
-- `internal/core/transport/wb/identity/registry.go`
-- `internal/core/transport/wb/api/content/v1/ping.go`
-- `internal/core/transport/wb/api/general/v1/operations.go`
-- `internal/core/repository/postgres/wbidentity/store.go`
-
-### Самопроверка
-
-1. Почему после `configCopy := *configuration` отдельно копируется slice?
-2. Почему token не обрабатывается через `strings.TrimSpace`?
-3. Что общего и что отдельного у клиентов разных кабинетов?
-4. Что гарантирует `var _ client.Executor = (*CabinetClient)(nil)`?
-5. Почему декодирование JWT payload не доказывает валидность token?
-6. От какой смены защищает `PinnedExecutor`?
-
----
-
-## Этап 3. Operation, API catalog, bucket policies и wire DTO
-
-### Главная модель
-
-Конкретный WB endpoint представлен не методом клиента, а значением
-`policy.Operation`:
-
-```text
-Operation =
-    identity
-  + HTTP contract
-  + retry safety
-  + rate-limit bucket
-  + body modes
-  + byte bounds
-```
-
-DTO отвечает за форму данных, `Operation` — за правила доставки этих данных.
-Например, `SubjectsQuery` не содержит URL, а `SubjectsOperation()` не содержит
-Go-тип результата. Вместе они образуют полный wire contract.
-
-### 1. Почему существуют OperationSpec и Operation
-
-В `policy/operation.go` есть две структуры:
-
-```go
-type OperationSpec struct {
-	ID               OperationID
-	Method           string
-	Path             string
-	BucketID         BucketID
-	Kind             OperationKind
-	RetryMode        RetryMode
-	SuccessStatuses  []int
-	RequestMode      BodyMode
-	ResponseMode     BodyMode
-	MaxRequestBytes  int64
-	MaxResponseBytes int64
-}
-
-type Operation struct {
-	id               OperationID
-	method           string
-	path             string
-	// остальные поля также unexported
-}
-```
-
-`OperationSpec` — mutable вход для конструктора. `Operation` — проверенное
-значение с закрытыми полями, которое executor может безопасно использовать.
-
-Цепочка создания:
-
-```go
-operation, err := policy.NewOperation(spec)
-```
-
-```text
-OperationSpec
-→ validateOperationSpec
-→ buildOperation
-→ immutable-by-API Operation
-```
-
-Поля `Operation` нельзя менять снаружи пакета `policy`. Доступ идёт через
-методы `Method()`, `Path()`, `Kind()` и остальные getters.
-
-Slice success statuses требует отдельной защиты:
-
-```go
-successStatuses: cloneSuccessStatuses(spec.SuccessStatuses)
-```
-
-и при чтении:
-
-```go
-func (operation Operation) SuccessStatuses() []int {
-	return cloneSuccessStatuses(operation.successStatuses)
-}
-```
-
-Без обеих копий вызывающий код мог бы изменить внутренний slice операции через
-общий backing array.
-
-### 2. Что валидирует NewOperation
-
-`validateOperationSpec` объединяет четыре группы инвариантов.
-
-Identity и modes:
-
-- `ID` и `BucketID` непустые;
-- kind только `read` или `mutation`;
-- retry только `never` или `read_safe`;
-- retry запрещён для mutation;
-- request/response mode только `none` или `json`.
-
-HTTP contract:
-
-- разрешены только GET и POST;
-- path начинается ровно с одного `/`;
-- path не может быть absolute URL;
-- в path запрещены host, query и fragment.
-
-Success statuses:
-
-- список не пуст;
-- только диапазон 2xx;
-- нет дубликатов.
-
-Byte bounds:
-
-- при `BodyModeNone` соответствующий max bytes обязан быть `0`;
-- при `BodyModeJSON` соответствующий max bytes обязан быть положительным.
-
-Эти правила проверяют согласованность manifest, но не бизнес-валидность DTO.
-Например, `MaxCardsListPageSize == 100` не проверяется автоматически внутри
-`Operation`; это обязанность feature/service, формирующего request.
-
-### 3. Read/mutation не равны GET/POST
-
-`OperationKind` описывает семантику, а HTTP method — wire protocol.
-
-`Cards List` является POST, потому что принимает JSON body, но логически только
-читает данные:
-
-```go
-Method:    http.MethodPost,
-Kind:      policy.OperationKindRead,
-RetryMode: policy.RetryModeReadSafe,
-```
-
-`Upload Cards` также является POST, но меняет состояние:
-
-```go
-Method:    http.MethodPost,
-Kind:      policy.OperationKindMutation,
-RetryMode: policy.RetryModeNever,
-```
-
-Именно kind и retry mode, а не HTTP method, разрешают executor повторить
-операцию.
-
-### 4. Статический API catalog
-
-`api/content/v1/operations.go` содержит 17 операций:
-
-| Группа | Операции |
-|---|---|
-| categories | parent categories, subjects, characteristics, brands |
-| directories | colors, kinds, countries, seasons, VAT, TNVED |
-| cards | limits, list, trash list, error list, upload, upload-add |
-| media | save by links |
-
-Большинство операций создаётся во время package initialization:
-
-```go
-subjectsOperation = mustOperation(policy.OperationSpec{
-	ID:               operationIDSubjects,
-	Method:           http.MethodGet,
-	Path:             "/content/v2/object/all",
-	BucketID:         bucketIDContentCommon,
-	Kind:             policy.OperationKindRead,
-	RetryMode:        policy.RetryModeReadSafe,
-	SuccessStatuses:  []int{http.StatusOK},
-	RequestMode:      policy.BodyModeNone,
-	ResponseMode:     policy.BodyModeJSON,
-	MaxRequestBytes:  0,
-	MaxResponseBytes: maxSubjectsResponseBytes,
-})
-```
-
-`mustOperation` вызывает `policy.NewOperation` и паникует при ошибке. Неверный
-manifest — ошибка разработчика в статическом коде, поэтому приложение не должно
-запускаться с ним.
-
-Наружу возвращается готовое значение:
-
-```go
-func SubjectsOperation() policy.Operation {
-	return subjectsOperation
-}
-```
-
-Особый случай — endpoint с параметром в path:
-
-```go
-func SubjectCharacteristicsOperation(
-	subjectID int64,
-) (policy.Operation, error)
-```
-
-Он сначала требует положительный `subjectID`, затем безопасно строит path через
-`strconv.FormatInt` и создаёт новую проверенную operation.
-
-Каталог «закрытый» архитектурно: feature должен брать operations только из
-`api/content/v1`. Но это правило не полностью обеспечено компилятором, потому
-что `policy.NewOperation` экспортирован и технически доступен feature-коду.
-Запрет зафиксирован контрактом и комментарием конструктора.
-
-### 5. Rate-limit buckets
-
-Операция содержит `BucketID`, а параметры bucket хранятся отдельно:
-
-```go
-type BucketSpec struct {
-	ID         BucketID
-	Interval   time.Duration
-	Burst      int
-	MaxWaiters int
-}
-```
-
-В Content API catalog определено восемь buckets. Например:
-
-```go
-policy.BucketSpec{
-	ID:         bucketIDCardsUpload,
-	Interval:   6 * time.Second,
-	Burst:      5,
-	MaxWaiters: 256,
-}
-```
-
-Операции с одним `BucketID` делят одну квоту внутри одного кабинета. При этом
-одинаковый bucket разных кабинетов позже получит отдельный limiter.
-
-`mustBucketSpec` проверяет статическую конфигурацию при package initialization.
-`BucketSpecs()` возвращает копию slice, чтобы вызывающий код не изменил catalog:
-
-```go
-specs := make([]policy.BucketSpec, len(contentBucketSpecs))
-copy(specs, contentBucketSpecs)
-return specs
-```
-
-Точная механика `Interval`, `Burst` и `MaxWaiters` будет разобрана в этапе 7.
-
-### 6. Transport byte bounds и semantic bounds
-
-`bounds.go` содержит две категории ограничений.
-
-Unexported byte bounds используются executor-ом:
-
-```go
-maxCardsListRequestBytes  = 64 * kibibyte
-maxCardsListResponseBytes = 32 * mebibyte
-maxUploadCardsRequestBytes = 10_000_000
-```
-
-Они защищают память и не позволяют бесконечно читать или отправлять body.
-
-Exported semantic bounds использует feature-код:
-
-```go
-MaxCardsListPageSize       = 100
-MaxUploadGroups            = 100
-MaxVariantsPerGroup        = 30
-MaxProductTitleRunes       = 60
-MaxProductDescriptionRunes = 5000
-```
-
-Byte limit отвечает «сколько памяти допустимо», semantic limit — «принимает ли
-такой request WB API».
-
-### 7. Wire DTO и struct tags
-
-DTO — прямое отображение JSON/query контракта WB без бизнес-логики.
-
-Query DTO использует custom tag `url`:
-
-```go
-type SubjectsQuery struct {
-	Locale   Locale `url:"locale,omitempty"`
-	Name     string `url:"name,omitempty"`
-	Limit    int    `url:"limit,omitempty"`
-	Offset   int    `url:"offset,omitempty"`
-	ParentID int64  `url:"parentID,omitempty"`
-}
-```
-
-Этот tag будет обработан собственным encoder из `client/request`, а не
-стандартной библиотекой.
-
-JSON DTO использует стандартные `json` tags:
-
-```go
-type CardsListRequest struct {
-	Settings CardsListSettings `json:"settings"`
-}
-```
-
-`omitempty` означает «не сериализовать zero value». Поэтому pointer часто
-нужен, чтобы различать «поле отсутствует» и «поле явно равно нулю»:
-
-```go
-WithPhoto *int `json:"withPhoto,omitempty"`
-Price     *int64 `json:"price,omitempty"`
-```
-
-Anonymous embedding `ResponseMeta` поднимает его JSON-поля на верхний уровень:
-
-```go
-type SubjectsResponse struct {
-	Data []Subject `json:"data"`
-	ResponseMeta
-}
-```
-
-Wire JSON имеет форму:
-
-```json
-{
-  "data": [],
-  "error": false,
-  "errorText": "",
-  "additionalErrors": null
-}
-```
-
-`any` используется там, где WB допускает данные нескольких JSON-типов, например
-в значении характеристики. Цена за гибкость — необходимость type switch или
-дополнительной проверки в feature.
-
-Named slice request:
-
-```go
-type UploadCardsRequest []UploadCardsGroup
-```
-
-сериализуется как JSON array, а не object.
-
-### 8. Чего DTO и catalog не делают
-
-- DTO не выполняет HTTP request.
-- Struct tags не валидируют значения.
-- `omitempty` влияет на encoding, но не подтверждает корректность данных.
-- `ResponseMeta.Error` интерпретируется feature/service, не executor-ом.
-- `APIErrorResponse` описан как wire type, но текущий executor не публикует
-  декодированный non-2xx body вызывающему коду.
-- Catalog определяет транспортные правила, но не реализует pagination или
-  бизнес-workflow.
-
-### Файлы для повторения
-
-- `internal/core/transport/wb/policy/operation.go`
-- `internal/core/transport/wb/policy/status.go`
-- `internal/core/transport/wb/policy/retry.go`
-- `internal/core/transport/wb/policy/bucket.go`
-- `internal/core/transport/wb/api/content/v1/operations.go`
-- `internal/core/transport/wb/api/content/v1/bucket.go`
-- `internal/core/transport/wb/api/content/v1/bounds.go`
-- `internal/core/transport/wb/api/content/v1/categories.go`
-- `internal/core/transport/wb/api/content/v1/cards.go`
-
-### Самопроверка
-
-1. Зачем разделены `OperationSpec` и `Operation`?
-2. Почему `Cards List` можно retry, хотя его HTTP method — POST?
-3. Что произойдёт при ошибке в статическом manifest операции?
-4. Для чего `SuccessStatuses()` возвращает новый slice?
-5. Чем transport byte bound отличается от semantic API bound?
-6. Что именно означает pointer в поле с `omitempty`?
+Сам `api` запросов не выполняет и не знает о token, `http.Client`, текущем
+limiter или `Clientset`. Он только описывает разрешённые операции и данные.

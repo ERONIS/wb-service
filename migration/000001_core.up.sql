@@ -57,5 +57,3 @@ CREATE TABLE wb.cabinet_identity_bindings (
         )
     )
 );
-
-

@@ -280,15 +280,18 @@ type MediaJournalRepository interface {
 }
 
 type MediaDispatcher struct {
-	repository      MediaJournalRepository
-	transport       CatalogTransport
-	catalogReader   *CatalogReader
-	errorFeed       *ErrorFeed
-	authorization   LiveAuthorizationVerifier
-	transferResults PublicationExecutionResultApplier
-	uow             core_postgres_transaction.UnitOfWork
-	enabled         bool
-	processMu       sync.Mutex
+	repository         MediaJournalRepository
+	transport          CatalogTransport
+	catalogReader      *CatalogReader
+	errorFeed          *ErrorFeed
+	authorization      LiveAuthorizationVerifier
+	transferResults    PublicationExecutionResultApplier
+	uow                core_postgres_transaction.UnitOfWork
+	enabled            bool
+	mediaCheckInterval time.Duration
+	mediaCheckTimeout  time.Duration
+	concurrency        int
+	processMu          sync.Mutex
 }
 
 func NewMediaDispatcher(
@@ -300,20 +303,27 @@ func NewMediaDispatcher(
 	transferResults PublicationExecutionResultApplier,
 	uow core_postgres_transaction.UnitOfWork,
 	enabled bool,
+	mediaCheckInterval time.Duration,
+	mediaCheckTimeout time.Duration,
+	concurrency int,
 ) *MediaDispatcher {
 	if repository == nil || transport == nil || catalogReader == nil || errorFeed == nil ||
-		authorization == nil || transferResults == nil || uow == nil {
+		authorization == nil || transferResults == nil || uow == nil ||
+		mediaCheckInterval <= 0 || mediaCheckTimeout <= mediaCheckInterval || concurrency <= 0 {
 		panic("cardpublication media dispatcher dependency is nil")
 	}
 	return &MediaDispatcher{
-		repository:      repository,
-		transport:       transport,
-		catalogReader:   catalogReader,
-		errorFeed:       errorFeed,
-		authorization:   authorization,
-		transferResults: transferResults,
-		uow:             uow,
-		enabled:         enabled,
+		repository:         repository,
+		transport:          transport,
+		catalogReader:      catalogReader,
+		errorFeed:          errorFeed,
+		authorization:      authorization,
+		transferResults:    transferResults,
+		uow:                uow,
+		enabled:            enabled,
+		mediaCheckInterval: mediaCheckInterval,
+		mediaCheckTimeout:  mediaCheckTimeout,
+		concurrency:        concurrency,
 	}
 }
 
@@ -357,7 +367,7 @@ func (dispatcher *MediaDispatcher) ProcessPending(ctx context.Context) error {
 	if err != nil {
 		return errors.Join(firstErr, err)
 	}
-	for _, candidate := range candidates {
+	processErr := processConcurrently(ctx, candidates, dispatcher.concurrency, func(candidate MediaActionCandidate) error {
 		var err error
 		if dispatcher.enabled {
 			err = dispatcher.dispatch(ctx, candidate)
@@ -368,16 +378,15 @@ func (dispatcher *MediaDispatcher) ProcessPending(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			if firstErr == nil {
-				firstErr = fmt.Errorf(
-					"process publication media action ID='%d': %w",
-					candidate.ActionID,
-					err,
-				)
-			}
+			return fmt.Errorf(
+				"process publication media action ID='%d': %w",
+				candidate.ActionID,
+				err,
+			)
 		}
-	}
-	return firstErr
+		return nil
+	})
+	return errors.Join(firstErr, processErr)
 }
 
 func (dispatcher *MediaDispatcher) dispatch(
@@ -388,7 +397,12 @@ func (dispatcher *MediaDispatcher) dispatch(
 	if err != nil {
 		return err
 	}
-	observation, err := dispatcher.catalogReader.Read(ctx, action.TargetID, action.CabinetID)
+	observation, err := dispatcher.catalogReader.ReadActiveVendorCode(
+		ctx,
+		action.TargetID,
+		action.CabinetID,
+		action.Member.VendorCode,
+	)
 	if err != nil {
 		return err
 	}
@@ -510,6 +524,28 @@ func (dispatcher *MediaDispatcher) dispatch(
 		action.ClientGeneration,
 		request,
 	)
+	if result.Disposition == SubmissionAccepted {
+		if err := dispatcher.catalogReader.WaitForMedia(
+			ctx,
+			action.CabinetID,
+			action.Member.VendorCode,
+			action.NMID,
+			len(request.Data),
+			false,
+			dispatcher.mediaCheckInterval,
+			dispatcher.mediaCheckTimeout,
+		); err != nil {
+			result = MediaMutationResult{
+				Delivery:          SubmissionResponseReceived,
+				HTTPStatus:        200,
+				ClassifierVersion: mediaClassifierVersion,
+				Disposition:       SubmissionUncertain,
+				OutcomeClass:      transfer_service.ResultUnresolved,
+				OutcomeCode:       "WB_MEDIA_NOT_VISIBLE_IN_RECENT_CACHE",
+				UnmatchedCount:    1,
+			}
+		}
+	}
 	return dispatcher.recordResult(ctx, candidate, attempt, result)
 }
 

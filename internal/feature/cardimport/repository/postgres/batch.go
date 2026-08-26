@@ -18,6 +18,7 @@ import (
 
 const batchColumns = `
 	batch.id,
+	batch.source_session_id,
 	batch.purpose,
 	batch.items_count,
 	batch.groups_count,
@@ -221,6 +222,7 @@ func (r *Repository) Finalize(
 
 	header := cardimport_service.BatchHeader{
 		ID:                   cardimport_service.BatchID(batchID),
+		SourceSessionID:      command.SessionID,
 		Purpose:              session.purpose,
 		ItemsCount:           len(items),
 		GroupsCount:          groupsCount,
@@ -644,6 +646,7 @@ func scanBatchHeader(row rowScanner) (cardimport_service.BatchHeader, error) {
 	)
 	err := row.Scan(
 		&batchID,
+		&header.SourceSessionID,
 		&header.Purpose,
 		&header.ItemsCount,
 		&header.GroupsCount,

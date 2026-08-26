@@ -9,6 +9,7 @@ import (
 
 	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
+	core_postgres_telegramview "github.com/ERONIS/wb-service/internal/core/repository/postgres/telegramview"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	core_wb_identity_postgres "github.com/ERONIS/wb-service/internal/core/repository/postgres/wbidentity"
 	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
@@ -20,6 +21,7 @@ import (
 	cardprepare_wb_transport "github.com/ERONIS/wb-service/internal/feature/cardprepare/transport/wb"
 	cardpublication "github.com/ERONIS/wb-service/internal/feature/cardpublication"
 	cardpublication_wb_transport "github.com/ERONIS/wb-service/internal/feature/cardpublication/transport/wb"
+	statistics "github.com/ERONIS/wb-service/internal/feature/statistics"
 	transfer "github.com/ERONIS/wb-service/internal/feature/transfer"
 	transfer_wb_transport "github.com/ERONIS/wb-service/internal/feature/transfer/transport/wb"
 	users "github.com/ERONIS/wb-service/internal/feature/users"
@@ -124,6 +126,23 @@ func main() {
 		cardprepareFeature.ProposalReader(),
 		cardpublication.NewConfigMust(),
 	)
+	livePlans := cardpublicationFeature.LivePlanSource()
+	transferFeature.ConfigureLiveAuthorization(livePlans)
+	liveAuthorization := transferFeature.LiveAuthorizationVerifier()
+	cabinetNames := make(map[string]string, len(wbClientset.Cabinets()))
+	for _, cabinet := range wbClientset.Cabinets() {
+		cabinetNames[string(cabinet.ID)] = cabinet.Name
+	}
+	statisticsFeature := statistics.New(
+		ctx,
+		postgresPool,
+		bot,
+		cardpublicationFeature.ManualResolver(),
+		cardimportFeature.Service(),
+		cabinetNames,
+	)
+	cardimportFeature.SetCompletionNavigator(statisticsFeature.CompletionNavigator())
+	cardimportFeature.SetProcessingNotifier(transferFeature)
 
 	// Telegram commands.
 
@@ -131,18 +150,24 @@ func main() {
 		ctx,
 		bot,
 		usersFeature.Service(),
+		core_postgres_telegramview.New(postgresPool),
 	)
 	usersFeature.RegisterTelegram(telegramHandler)
 	cardimportFeature.RegisterTelegram(telegramHandler)
-	transferFeature.ConfigureLiveAuthorization(
-		ctx,
-		bot,
-		telegramHandler,
-		cardpublicationFeature.LivePlanSource(),
-	)
+	statisticsFeature.RegisterTelegram(telegramHandler)
 	cardpublicationFeature.ConfigureProductDispatch(
-		transferFeature.LiveAuthorizationVerifier(),
+		liveAuthorization,
 	)
+	go func() {
+		if err := cardpublicationFeature.RunMediaPolling(
+			ctx,
+			func(err error) {
+				logger.Logger.Error("process pending publication media", zap.Error(err))
+			},
+		); err != nil && ctx.Err() == nil {
+			logger.Logger.Error("run publication media polling", zap.Error(err))
+		}
+	}()
 
 	go func() {
 		if err := transferFeature.RunPolling(
@@ -153,8 +178,8 @@ func main() {
 			cardprepareFeature.Processor(),
 			cardpublicationFeature.Processor(),
 			cardpublicationFeature.ErrorFeed(),
+			transferFeature.AutomaticAuthorizationProcessor(),
 			cardpublicationFeature.ProductDispatcher(),
-			cardpublicationFeature.MediaDispatcher(),
 		); err != nil && ctx.Err() == nil {
 			logger.Logger.Error("run transfer polling", zap.Error(err))
 			cancel()

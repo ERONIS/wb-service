@@ -7,15 +7,11 @@ import (
 
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
 	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
 	transfer_postgres_repository "github.com/ERONIS/wb-service/internal/feature/transfer/repository/postgres"
 	transfer_server "github.com/ERONIS/wb-service/internal/feature/transfer/server"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 	transfer_config_transport "github.com/ERONIS/wb-service/internal/feature/transfer/transport/config"
-	transfer_telegram_transport "github.com/ERONIS/wb-service/internal/feature/transfer/transport/telegram"
-
-	tele "gopkg.in/telebot.v3"
 )
 
 type Mode = transfer_config_transport.Mode
@@ -46,7 +42,9 @@ type Feature struct {
 	liveMode                    bool
 	authorizationTTL            time.Duration
 	liveAuthorization           *transfer_service.LiveAuthorizationService
+	automaticAuthorization      *transfer_service.AutomaticAuthorizationProcessor
 	pollingInterval             time.Duration
+	pollingWake                 chan struct{}
 }
 
 func New(
@@ -102,13 +100,11 @@ func New(
 		liveMode:         config.Mode == ModeLive,
 		authorizationTTL: config.AuthorizationTTL,
 		pollingInterval:  config.PollInterval,
+		pollingWake:      make(chan struct{}, 1),
 	}, nil
 }
 
 func (feature *Feature) ConfigureLiveAuthorization(
-	ctx context.Context,
-	bot *tele.Bot,
-	menu *core_transport_telegram.Handler,
 	plans transfer_service.LivePlanSource,
 ) {
 	if feature.liveAuthorization != nil {
@@ -121,8 +117,25 @@ func (feature *Feature) ConfigureLiveAuthorization(
 		feature.liveMode,
 		feature.authorizationTTL,
 	)
-	transfer_telegram_transport.New(ctx, bot, service, plans).Register(menu)
 	feature.liveAuthorization = service
+	feature.automaticAuthorization = transfer_service.NewAutomaticAuthorizationProcessor(
+		plans,
+		service,
+	)
+}
+
+func (feature *Feature) AutomaticAuthorizationProcessor() *transfer_service.AutomaticAuthorizationProcessor {
+	if feature.automaticAuthorization == nil {
+		panic("transfer automatic authorization is not configured")
+	}
+	return feature.automaticAuthorization
+}
+
+func (feature *Feature) NotifyFinalized() {
+	select {
+	case feature.pollingWake <- struct{}{}:
+	default:
+	}
 }
 
 func (feature *Feature) LiveAuthorizationVerifier() *transfer_service.LiveAuthorizationService {
@@ -160,8 +173,9 @@ func (feature *Feature) RunPolling(
 	)
 	processors = append(processors, feature.service)
 	processors = append(processors, afterTransfer...)
-	return transfer_server.NewPolling(
+	return transfer_server.NewPollingWithWake(
 		feature.pollingInterval,
+		feature.pollingWake,
 		processors...,
 	).Run(ctx, onError)
 }

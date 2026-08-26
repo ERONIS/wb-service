@@ -18,6 +18,7 @@ const authorizationPlanColumns = `
 	plan.plan_digest,
 	plan.target_set_root,
 	plan.revision,
+	transfer.targets_count,
 	(
 		SELECT COUNT(*)
 		FROM wb.publication_actions AS action
@@ -25,6 +26,26 @@ const authorizationPlanColumns = `
 		  AND action.plan_id = plan.id
 		  AND action.kind = 'create_group'
 		  AND action.state = 'planned'
+	),
+	(
+		SELECT COUNT(*)
+		FROM wb.publication_action_members AS member
+		JOIN wb.publication_actions AS action
+		  ON action.transfer_id = member.transfer_id
+		 AND action.id = member.action_id
+		WHERE action.transfer_id = plan.transfer_id
+		  AND action.plan_id = plan.id
+		  AND action.kind = 'create_group'
+	),
+	(
+		SELECT COUNT(*)
+		FROM wb.publication_action_members AS member
+		JOIN wb.publication_actions AS action
+		  ON action.transfer_id = member.transfer_id
+		 AND action.id = member.action_id
+		WHERE action.transfer_id = plan.transfer_id
+		  AND action.plan_id = plan.id
+		  AND action.kind = 'add_to_group'
 	),
 	(
 		SELECT COUNT(*)
@@ -62,6 +83,66 @@ const authorizationPlanColumns = `
 	),
 	session.author_telegram_id
 `
+
+func (repository *Repository) ListAutomaticAuthorizationPlans(
+	ctx context.Context,
+	limit int,
+) ([]transfer_service.AuthorizationPlanSummary, error) {
+	if limit <= 0 || limit > 100 {
+		return nil, core_errors.ErrInvalidArgument
+	}
+	ctx, cancel := context.WithTimeout(ctx, repository.pool.OpTimeout())
+	defer cancel()
+	query := `
+		SELECT ` + authorizationPlanColumns + `
+		FROM wb.publication_plans AS plan
+		JOIN wb.transfers AS transfer
+		  ON transfer.id = plan.transfer_id
+		JOIN wb.card_batches AS batch
+		  ON batch.id = transfer.batch_id
+		JOIN wb.card_import_sessions AS session
+		  ON session.id = batch.source_session_id
+		WHERE transfer.phase IN (
+				'awaiting_authorization', 'publishing', 'reconciling', 'media'
+			)
+			AND transfer.outcome = 'running'
+			AND plan.state IN ('awaiting_authorization', 'executing')
+			AND EXISTS (
+				SELECT 1
+				FROM wb.publication_actions AS pending_action
+				WHERE pending_action.transfer_id = plan.transfer_id
+				  AND pending_action.plan_id = plan.id
+				  AND pending_action.state = 'planned'
+			)
+			AND NOT EXISTS (
+				SELECT 1
+				FROM wb.transfer_live_authorizations AS live_auth
+				WHERE live_auth.transfer_id = transfer.id
+				  AND live_auth.plan_digest = plan.plan_digest
+				  AND live_auth.state = 'authorized'
+				  AND live_auth.expires_at > CURRENT_TIMESTAMP
+			)
+		ORDER BY transfer.id
+		LIMIT $1;
+	`
+	rows, err := repository.pool.Query(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list automatic authorization plans: %w", err)
+	}
+	defer rows.Close()
+	plans := make([]transfer_service.AuthorizationPlanSummary, 0)
+	for rows.Next() {
+		plan, err := scanAuthorizationPlan(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan automatic authorization plan: %w", err)
+		}
+		plans = append(plans, plan)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate automatic authorization plans: %w", err)
+	}
+	return plans, nil
+}
 
 func (repository *Repository) ListAuthorizationPlans(
 	ctx context.Context,
@@ -236,7 +317,10 @@ func scanAuthorizationPlan(row interface{ Scan(...any) error }) (
 		&planDigest,
 		&targetSetRoot,
 		&plan.PlanRevision,
+		&plan.TargetsCount,
 		&plan.CreateActions,
+		&plan.CreateItems,
+		&plan.AddItems,
 		&plan.AddActions,
 		&plan.MediaActions,
 		&plan.ExistingItems,

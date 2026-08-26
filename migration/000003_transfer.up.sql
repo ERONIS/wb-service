@@ -400,6 +400,13 @@ CREATE TABLE wb.transfer_item_targets (
     CHECK (updated_at >= created_at)
 );
 
+CREATE INDEX transfer_item_targets_open_attention_idx
+ON wb.transfer_item_targets (finished_at DESC, id DESC)
+WHERE state = 'terminal'
+  AND outcome_class IN ('unresolved', 'internal_error')
+  AND attention_closed_at IS NULL
+  AND source_action_id IS NOT NULL;
+
 
 CREATE FUNCTION wb.reject_activated_transfer_derived_mutation()
 RETURNS TRIGGER
@@ -571,5 +578,4 @@ FOR EACH ROW EXECUTE FUNCTION wb.reject_transfer_target_mutation();
 CREATE TRIGGER transfer_targets_reject_activated_insert
 BEFORE INSERT ON wb.transfer_targets
 FOR EACH ROW EXECUTE FUNCTION wb.reject_activated_transfer_derived_mutation();
-
 

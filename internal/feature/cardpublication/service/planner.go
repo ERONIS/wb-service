@@ -97,6 +97,9 @@ func (planner *Planner) Build(
 			return PlanDraft{}, err
 		}
 	}
+	if err := batchCreateGroupActions(&draft); err != nil {
+		return PlanDraft{}, err
+	}
 
 	sort.Slice(draft.Actions, func(left, right int) bool {
 		leftAction, rightAction := draft.Actions[left], draft.Actions[right]
@@ -395,6 +398,157 @@ func buildProductAction(
 	}, nil
 }
 
+func batchCreateGroupActions(draft *PlanDraft) error {
+	if draft == nil {
+		return errors.New("batch create-group actions: plan draft is nil")
+	}
+	createActions := make([]ActionDraft, 0)
+	otherActions := make([]ActionDraft, 0, len(draft.Actions))
+	for _, action := range draft.Actions {
+		if action.Kind == ActionCreateGroup {
+			createActions = append(createActions, action)
+			continue
+		}
+		otherActions = append(otherActions, action)
+	}
+	if len(createActions) < 2 {
+		return nil
+	}
+	sort.Slice(createActions, func(left, right int) bool {
+		if createActions[left].TargetID != createActions[right].TargetID {
+			return createActions[left].TargetID < createActions[right].TargetID
+		}
+		return bytes.Compare(createActions[left].Key[:], createActions[right].Key[:]) < 0
+	})
+
+	oldProductKeyByItem := make(map[int64]Digest, len(draft.Items))
+	for _, item := range draft.Items {
+		if item.ActionKey != (Digest{}) {
+			oldProductKeyByItem[item.TransferItemTargetID] = item.ActionKey
+		}
+	}
+	keyRemap := make(map[Digest]Digest, len(createActions))
+	batched := make([]ActionDraft, 0, len(createActions))
+	for start := 0; start < len(createActions); {
+		targetID := createActions[start].TargetID
+		end := start
+		for end < len(createActions) && createActions[end].TargetID == targetID {
+			end++
+		}
+		combined, remap, err := batchTargetCreateActions(createActions[start:end])
+		if err != nil {
+			return err
+		}
+		batched = append(batched, combined...)
+		for oldKey, newKey := range remap {
+			keyRemap[oldKey] = newKey
+		}
+		start = end
+	}
+
+	for index := range draft.Items {
+		if newKey, exists := keyRemap[draft.Items[index].ActionKey]; exists {
+			draft.Items[index].ActionKey = newKey
+		}
+	}
+	for index := range otherActions {
+		action := &otherActions[index]
+		if action.Kind != ActionUploadMedia || len(action.Members) != 1 {
+			continue
+		}
+		oldProductKey, exists := oldProductKeyByItem[action.Members[0].TransferItemTargetID]
+		if !exists {
+			return errors.New("media action has no product action")
+		}
+		newProductKey, remapped := keyRemap[oldProductKey]
+		if !remapped || newProductKey == oldProductKey {
+			continue
+		}
+		action.Key = mediaActionKey(*action, newProductKey)
+	}
+	draft.Actions = append(otherActions, batched...)
+	return nil
+}
+
+func batchTargetCreateActions(
+	actions []ActionDraft,
+) ([]ActionDraft, map[Digest]Digest, error) {
+	if len(actions) == 0 {
+		return nil, nil, errors.New("batch target create-group actions: actions are empty")
+	}
+	targetID := actions[0].TargetID
+	requests := make([]contentapi.UploadCardsGroup, len(actions))
+	for index, action := range actions {
+		if action.Kind != ActionCreateGroup || action.TargetID != targetID {
+			return nil, nil, errors.New("batch target create-group actions: action target differs")
+		}
+		var request contentapi.UploadCardsRequest
+		if err := decodeExactJSON(action.RequestPayload, &request); err != nil ||
+			len(request) != 1 || len(request[0].Variants) != len(action.Members) {
+			return nil, nil, errors.New("batch target create-group actions: action payload is invalid")
+		}
+		requests[index] = request[0]
+	}
+
+	result := make([]ActionDraft, 0, (len(actions)+contentapi.MaxUploadGroups-1)/contentapi.MaxUploadGroups)
+	remap := make(map[Digest]Digest, len(actions))
+	for start := 0; start < len(actions); {
+		end := start
+		var payload []byte
+		for end < len(actions) && end-start < contentapi.MaxUploadGroups {
+			candidate, err := json.Marshal(contentapi.UploadCardsRequest(requests[start : end+1]))
+			if err != nil {
+				return nil, nil, fmt.Errorf("encode batched create-group request: %w", err)
+			}
+			if int64(len(candidate)) > contentapi.UploadCardsOperation().MaxRequestBytes() {
+				break
+			}
+			payload = candidate
+			end++
+		}
+		if end == start || len(payload) == 0 {
+			return nil, nil, errors.New("create-group request exceeds WB operation bound")
+		}
+
+		chunk := actions[start:end]
+		if len(chunk) == 1 {
+			result = append(result, chunk[0])
+			remap[chunk[0].Key] = chunk[0].Key
+			start = end
+			continue
+		}
+		members := make([]ActionMemberDraft, 0)
+		for _, action := range chunk {
+			for _, member := range action.Members {
+				member.RequestMemberIndex = len(members)
+				members = append(members, member)
+			}
+		}
+		requestDigest := digestParts("cardpublication-request:v1", payload)
+		memberDigest := digestMembers(members)
+		key := digestParts(
+			"cardpublication-create-batch:v1",
+			[]byte(strconv.FormatInt(targetID, 10)),
+			requestDigest[:],
+			memberDigest[:],
+		)
+		result = append(result, ActionDraft{
+			Key:             key,
+			Kind:            ActionCreateGroup,
+			TargetID:        targetID,
+			RequestDigest:   requestDigest,
+			RequestPayload:  payload,
+			MemberSetDigest: memberDigest,
+			Members:         members,
+		})
+		for _, action := range chunk {
+			remap[action.Key] = key
+		}
+		start = end
+	}
+	return result, remap, nil
+}
+
 func buildMediaAction(
 	group loadedPlanningGroup,
 	member transfer_service.PublicationPlanningMember,
@@ -416,18 +570,7 @@ func buildMediaAction(
 	requestDigest := digestParts("cardpublication-media-template:v1", payload)
 	memberDigest := digestMembers([]ActionMemberDraft{actionMember})
 	linkRoot := digestParts("cardpublication-media-links:v1", payload)
-	key := digestParts(
-		"cardpublication-action:v1",
-		[]byte(ActionUploadMedia),
-		[]byte(strconv.FormatInt(group.Source.TargetID, 10)),
-		[]byte(strconv.FormatInt(group.Source.GroupTargetID, 10)),
-		productActionKey[:],
-		requestDigest[:],
-		memberDigest[:],
-		linkRoot[:],
-	)
-	return ActionDraft{
-		Key:              key,
+	action := ActionDraft{
 		Kind:             ActionUploadMedia,
 		TargetID:         group.Source.TargetID,
 		RequestDigest:    requestDigest,
@@ -435,7 +578,26 @@ func buildMediaAction(
 		MemberSetDigest:  memberDigest,
 		MediaLinkSetRoot: linkRoot,
 		Members:          []ActionMemberDraft{actionMember},
-	}, nil
+	}
+	action.Key = mediaActionKey(action, productActionKey)
+	return action, nil
+}
+
+func mediaActionKey(action ActionDraft, productActionKey Digest) Digest {
+	groupTargetID := int64(0)
+	if len(action.Members) == 1 {
+		groupTargetID = action.Members[0].GroupTargetID
+	}
+	return digestParts(
+		"cardpublication-action:v1",
+		[]byte(ActionUploadMedia),
+		[]byte(strconv.FormatInt(action.TargetID, 10)),
+		[]byte(strconv.FormatInt(groupTargetID, 10)),
+		productActionKey[:],
+		action.RequestDigest[:],
+		action.MemberSetDigest[:],
+		action.MediaLinkSetRoot[:],
+	)
 }
 
 func validateLoadedGroup(group loadedPlanningGroup) error {

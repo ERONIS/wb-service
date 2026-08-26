@@ -27,6 +27,11 @@ const (
 	defaultMaxReadAttempts = 3
 )
 
+type CabinetInfo struct {
+	ID   config.CabinetID
+	Name string
+}
+
 // Clientset хранит immutable registry кабинетов и общий connection pool.
 type Clientset struct {
 	cabinets         map[config.CabinetID]*CabinetClient

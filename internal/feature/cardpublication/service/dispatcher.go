@@ -24,6 +24,7 @@ type ProductDispatcher struct {
 	uow                   core_postgres_transaction.UnitOfWork
 	reconciliationDelay   time.Duration
 	reconciliationTimeout time.Duration
+	concurrency           int
 	now                   func() time.Time
 	processMu             sync.Mutex
 }
@@ -38,10 +39,11 @@ func NewProductDispatcher(
 	uow core_postgres_transaction.UnitOfWork,
 	reconciliationDelay time.Duration,
 	reconciliationTimeout time.Duration,
+	concurrency int,
 ) *ProductDispatcher {
 	if repository == nil || transport == nil || catalogReader == nil ||
 		errorFeed == nil || authorization == nil || transferResults == nil || uow == nil ||
-		reconciliationDelay <= 0 || reconciliationTimeout <= reconciliationDelay {
+		reconciliationDelay <= 0 || reconciliationTimeout <= reconciliationDelay || concurrency <= 0 {
 		panic("cardpublication product dispatcher dependency is nil")
 	}
 	return &ProductDispatcher{
@@ -54,6 +56,7 @@ func NewProductDispatcher(
 		uow:                   uow,
 		reconciliationDelay:   reconciliationDelay,
 		reconciliationTimeout: reconciliationTimeout,
+		concurrency:           concurrency,
 		now:                   time.Now,
 	}
 }
@@ -92,24 +95,23 @@ func (dispatcher *ProductDispatcher) ProcessPending(ctx context.Context) error {
 		}
 		return err
 	}
-	for _, candidate := range candidates {
+	dispatchErr := processConcurrently(ctx, candidates, dispatcher.concurrency, func(candidate ProductActionCandidate) error {
 		if err := dispatcher.dispatch(ctx, candidate); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			if isExpectedProductDispatchStop(err) {
-				continue
+				return nil
 			}
-			if firstErr == nil {
-				firstErr = fmt.Errorf(
-					"dispatch publication product action ID='%d': %w",
-					candidate.ActionID,
-					err,
-				)
-			}
+			return fmt.Errorf(
+				"dispatch publication product action ID='%d': %w",
+				candidate.ActionID,
+				err,
+			)
 		}
-	}
-	return firstErr
+		return nil
+	})
+	return errors.Join(firstErr, dispatchErr)
 }
 
 func isExpectedProductDispatchStop(err error) bool {
@@ -126,10 +128,11 @@ func (dispatcher *ProductDispatcher) dispatch(
 	if err != nil {
 		return err
 	}
-	observation, err := dispatcher.catalogReader.Read(
+	observation, err := dispatcher.catalogReader.ReadVendorCodes(
 		ctx,
 		snapshot.TargetID,
 		snapshot.CabinetID,
+		snapshot.VendorCodes(),
 	)
 	if err != nil {
 		return err

@@ -2,7 +2,11 @@ package config
 
 import "time"
 
-type CabinetID string
+type Config struct {
+	BaseURL  string
+	Timeout  time.Duration
+	Cabinets []CabinetConfig
+}
 
 type CabinetConfig struct {
 	ID    CabinetID
@@ -10,8 +14,4 @@ type CabinetConfig struct {
 	Token string `json:"-"`
 }
 
-type Config struct {
-	BaseURL  string
-	Timeout  time.Duration
-	Cabinets []CabinetConfig
-}
+type CabinetID string

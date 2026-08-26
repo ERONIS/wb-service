@@ -213,7 +213,7 @@ func productDecisionStillStable(
 	action ProductAction,
 	normal []contentapi.Card,
 	trash []contentapi.TrashCard,
-	addRequest contentapi.UploadCardsAddRequest,
+	_ contentapi.UploadCardsAddRequest,
 ) (bool, string) {
 	for _, member := range action.Members {
 		normalCount, trashCount := 0, 0
@@ -229,17 +229,6 @@ func productDecisionStillStable(
 		}
 		if normalCount != 0 || trashCount != 0 {
 			return false, "TARGETED_RECHECK_REMOTE_CHANGED"
-		}
-	}
-	if action.Kind == ActionAddToGroup {
-		groupMembers := 0
-		for _, card := range normal {
-			if card.IMTID == addRequest.IMTID {
-				groupMembers++
-			}
-		}
-		if groupMembers == 0 || groupMembers+len(action.Members) > contentapi.MaxVariantsPerGroup {
-			return false, "TARGETED_RECHECK_GROUP_CHANGED"
 		}
 	}
 	return true, "TARGETED_RECHECK_STABLE"
