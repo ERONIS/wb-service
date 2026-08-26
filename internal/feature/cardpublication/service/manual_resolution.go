@@ -455,8 +455,7 @@ func decideManualRemotePresent(
 	case ActionCreateGroup:
 		var request contentapi.UploadCardsRequest
 		if err := decodeExactJSON(subject.RequestPayload, &request); err != nil ||
-			len(request) != 1 || request[0].SubjectID != card.SubjectID ||
-			countUploadVendor(request[0].Variants, subject.VendorCode) != 1 {
+			!uploadVendorMatchesSubject(request, subject.VendorCode, card.SubjectID) {
 			return ManualResolutionDecision{}, ErrManualEvidenceInvalid
 		}
 	case ActionAddToGroup:
@@ -488,4 +487,23 @@ func countUploadVendor(cards []contentapi.UploadCard, vendorCode string) int {
 		}
 	}
 	return count
+}
+
+func uploadVendorMatchesSubject(
+	request contentapi.UploadCardsRequest,
+	vendorCode string,
+	subjectID int64,
+) bool {
+	matches := 0
+	for _, group := range request {
+		count := countUploadVendor(group.Variants, vendorCode)
+		if count == 0 {
+			continue
+		}
+		if count != 1 || group.SubjectID != subjectID {
+			return false
+		}
+		matches++
+	}
+	return matches == 1
 }

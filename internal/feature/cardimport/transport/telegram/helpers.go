@@ -6,6 +6,7 @@ import (
 	"html"
 	"strconv"
 	"strings"
+	"time"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
@@ -108,6 +109,64 @@ func (h *Handler) sendSessionView(
 	ctx tele.Context,
 	view cardimport_service.SessionView,
 ) error {
+	text, markup := h.sessionView(view)
+	return ctx.EditOrSend(text, markup)
+}
+
+const uploadedScreenDebounce = 350 * time.Millisecond
+
+// sendUploadedSessionView refreshes the existing active menu. A short debounce
+// combines Telegram multi-file sends into one Telegram edit.
+func (h *Handler) sendUploadedSessionView(
+	ctx tele.Context,
+	view cardimport_service.SessionView,
+) error {
+	chat := ctx.Chat()
+	if chat == nil || chat.ID == 0 {
+		text, markup := h.sessionView(view)
+		return ctx.EditOrSend(text, markup)
+	}
+
+	h.uploadScreenMu.Lock()
+	h.uploadScreenGeneration[chat.ID]++
+	generation := h.uploadScreenGeneration[chat.ID]
+	h.uploadScreenMu.Unlock()
+
+	timer := time.NewTimer(uploadedScreenDebounce)
+	defer timer.Stop()
+	select {
+	case <-h.ctx.Done():
+		return nil
+	case <-timer.C:
+	}
+
+	h.uploadScreenMu.Lock()
+	if h.uploadScreenGeneration[chat.ID] != generation {
+		h.uploadScreenMu.Unlock()
+		return nil
+	}
+	delete(h.uploadScreenGeneration, chat.ID)
+	h.uploadScreenMu.Unlock()
+
+	authorTelegramID, err := senderTelegramID(ctx)
+	if err != nil {
+		return sendServiceError(ctx, err)
+	}
+	latestView, err := h.service.GetView(h.ctx, cardimport_service.SessionCommand{
+		AuthorTelegramID: authorTelegramID,
+		SessionID:        view.ID,
+	})
+	if err != nil {
+		return sendServiceError(ctx, err)
+	}
+
+	text, markup := h.sessionView(latestView)
+	return ctx.EditOrSend(text, markup)
+}
+
+func (h *Handler) sessionView(
+	view cardimport_service.SessionView,
+) (string, *tele.ReplyMarkup) {
 	markup := h.bot.NewMarkup()
 	rows := make([]tele.Row, 0, 3)
 	if view.Ready {
@@ -128,16 +187,14 @@ func (h *Handler) sendSessionView(
 		markup.Row(core_transport_telegram.MainMenuButton()),
 	)
 	markup.Inline(rows...)
-
-	return ctx.EditOrSend(sessionViewText(view), markup)
+	return sessionViewText(view), markup
 }
 
 func sessionViewText(view cardimport_service.SessionView) string {
 	var builder strings.Builder
 	fmt.Fprintf(
 		&builder,
-		"📤 <b>Перенос карточек</b>\n\nСессия №%d\nФайлы: %d/%d\nКарточки: %d\nОшибки: %d\n",
-		view.ID,
+		"📦 <b>Загрузка карточек</b>\n\nФайлы: %d/%d\nКарточки: %d\nОшибки: %d\n",
 		len(view.Files),
 		cardimport_service.MaxFilesPerSession,
 		view.CardsCount,
@@ -218,17 +275,27 @@ func fileStatusIcon(status cardimport_service.FileStatus) string {
 }
 
 func sendServiceError(ctx tele.Context, err error) error {
+	key, text := serviceErrorNotification(err)
+	return core_transport_telegram.Notify(ctx, key, text)
+}
+
+func serviceErrorNotification(err error) (string, string) {
+	key := "cardimport.internal"
 	text := "❌ Не удалось выполнить операцию. Попробуйте позже."
 	switch {
 	case errors.Is(err, core_errors.ErrNotFound):
+		key = "cardimport.session_not_found"
 		text = "⚠️ Сначала откройте «Карточки» → «Перенос карточек»."
 	case errors.Is(err, core_errors.ErrConflict):
-		text = "⚠️ Файл или сессия сейчас недоступны для этой операции."
+		key = "cardimport.session_conflict"
+		text = "⚠️ Файл или текущая загрузка уже изменились. Обновите экран."
 	case errors.Is(err, core_errors.ErrInvalidArgument):
+		key = "cardimport.invalid_file"
 		text = "⚠️ Файл не подходит: проверьте формат и размер."
 	case errors.Is(err, core_errors.ErrForbidden):
+		key = "cardimport.forbidden"
 		text = "⛔ Недостаточно прав."
 	}
 
-	return ctx.EditOrSend(text)
+	return key, text
 }

@@ -21,8 +21,10 @@ modules внутри одного приложения.
 
 Текущий реализованный срез: Stages 0–7 — полный transfer flow от immutable batch
 до product/media publication, reconciliation и manual evidence resolver без
-повторного WB mutation. Stage 8 `statistics` отложен отдельным решением и в
-текущей итерации не реализуется:
+повторного WB mutation. Реализация Stage 8 `statistics` начата 2026-08-24:
+добавлены read-only query/service package, bounded drill-down, Telegram
+presentation, attention/manual-resolution callbacks и composition-root wiring;
+runtime PostgreSQL/Telegram verification этапа ещё не закрыта:
 
 - startup один раз проверяет все configured WB cabinets и замораживает target
   snapshot до остановки процесса;
@@ -86,8 +88,9 @@ modules внутри одного приложения.
 - immutable target snapshot теперь фиксирует также exact
   `ClientGeneration` и expiration credentials; authorization verifier
   fail-closed сверяет их в caller-owned transaction;
-- admin Telegram UI показывает только планы автора batch,
-  создаёт request и требует отдельную кнопку «Отправить в WB»;
+- admin Telegram UI показывает только планы автора batch внутри экрана
+  «Статистика» выбранного сеанса, создаёт request и требует отдельное
+  подтверждение «Отправить в WB»;
   callback не содержит actor или `PlanDigest`, они читаются из
   trusted context и PostgreSQL;
 - authorization привязана к exact `PlanDigest`/`TargetSetRoot`, имеет
@@ -170,9 +173,10 @@ Finalize → Start → Initialize → cardprepare → immutable publication plan
   integration audit;
 - rollout checklist, monitoring и recovery runbook.
 
-Stage 8 `statistics`, statistics Telegram presentation, notification UI и
-Telegram callbacks manual resolver намеренно отложены. Они не входят в текущий
-scope и не уменьшают указанную готовность transfer flow.
+Stage 8 `statistics`, statistics Telegram presentation, attention UI и Telegram
+callbacks manual resolver реализуются отдельным срезом. Они не входят в оценку
+готовности transfer flow; до закрытия Stage 8 остаётся runtime PostgreSQL и
+Telegram verification.
 
 Завершённый кодовый срез Stage 6–7 дополнительно фиксирует:
 
@@ -217,7 +221,8 @@ scope и не уменьшают указанную готовность transfe
 - `go build ./...` проходит;
 - `git diff --check` проходит;
 - новые test files не создавались, тесты не запускались;
-- pre-release schema разделена на доменные миграции `000001`–`000008`;
+- business schema разделена на доменные миграции `000001`–`000008`, technical
+  Telegram screen state добавлен additive migration `000009`;
 - official WB OpenAPI на 2026-08-21 сверена для `Upload`, `UploadAdd`,
   `Cards Error List` и `SaveMediaByLinks`; request/response DTO и актуальная
   cursor pagination совпадают, а media `200/error=false` теперь явно означает
@@ -246,9 +251,10 @@ scope и не уменьшают указанную готовность transfe
   read-only `cardimport.BatchReader` находит новые finalized batches, создаёт по
   одному transfer на batch и выполняет одну атомарную initialization. Это не
   generic runtime, outbox или очередь;
-- repository находится до первого production release, поэтому полная целевая
-  schema собирается в доменных миграциях `migration/000001_*`–`000008_*`;
-- после первого production применения набор `000001`–`000008` замораживается,
+- repository находится до первого production release, поэтому business schema
+  собирается в доменных миграциях `migration/000001_*`–`000008_*`; migration
+  `000009` отдельно добавляет только technical Telegram screen state;
+- после первого production применения применённый набор миграций замораживается,
   но этот post-release migration policy находится за границей текущей реализации;
 - баркоды в import payload опциональны: если они не заданы, `Upload`/`UploadAdd`
   не передают пользовательские SKU и WB генерирует их автоматически;
@@ -582,13 +588,13 @@ commit-ится первой и попадает в batch, либо после F
 ### 5.1. Размер схемы v1
 
 Набор `000001`–`000008` содержит 31 прикладную таблицу и 6 read-only statistics
-views.
+views. `000009` добавляет одну техническую таблицу active Telegram screen.
 Служебная `schema_migrations`, которую создаёт migrator, в это число не входит.
 Таблицы распределены так: 2 общие, 6 `cardimport`, 8 `transfer` с live
 authorization journal, 4 `cardprepare` и 11 `cardpublication`.
 
-Перед первым release схема намеренно упрощена без дополнительных delta
-migrations:
+Перед первым release business schema намеренно упрощена без дополнительных
+delta migrations; `000009` не содержит business facts:
 
 - file content хранится в `card_import_files.content`; отдельной blob table нет;
 - принадлежность item группе задаёт `transfer_items.source_group_id`; отдельной
@@ -1803,10 +1809,11 @@ Automatic media dispatch включён по умолчанию, но остаё
 
 ## 10. Модуль `statistics`
 
-Статус на 2026-08-24: **отложен** до отдельной команды на продолжение. В
-текущем repository сохранён только foundation из read-only SQL views. Package
-`internal/feature/statistics`, repository/service, Telegram presentation,
-notifications и composition-root wiring пока не создаются.
+Статус на 2026-08-24: **реализация начата**. В repository существуют read-only
+SQL views и package `internal/feature/statistics` с repository/service,
+bounded operation/action/attempt drill-down, aggregates, Telegram presentation,
+attention UI, manual-resolution callbacks и composition-root wiring. До
+закрытия этапа требуется runtime PostgreSQL/Telegram verification.
 
 `statistics` является отдельной read-only feature:
 
@@ -1823,7 +1830,7 @@ notifications и composition-root wiring пока не создаются.
 - operation `phase/outcome/attention_code`;
 - group-target stage progress;
 - item-target current results;
-- notification state.
+- вычисляемый open-attention state без отдельной notification table.
 
 Историческая статистика читает durable facts `cardpublication`:
 
@@ -1841,6 +1848,8 @@ wb.statistics_transfer_facts
 wb.statistics_item_facts
 wb.statistics_action_facts
 wb.statistics_attempt_facts
+wb.statistics_authorization_facts
+wb.statistics_error_batch_facts
 ```
 
 Views выбирают bounded business columns из owner tables и не содержат request
@@ -2102,7 +2111,7 @@ internal/feature/
 │   ├── service/              # product + internal media use cases
 │   ├── repository/postgres/  # common publication plan/action/attempt tables
 │   └── transport/wb/         # Upload, UploadAdd, Error List, SaveMediaByLinks
-└── statistics/               # planned, Stage 8 отложен
+└── statistics/               # Stage 8, runtime verification pending
     ├── feature.go
     ├── service/
     ├── repository/
@@ -2116,8 +2125,9 @@ internal/core/
 
 ### 13.1. Pre-release schema policy
 
-- Целевая schema разделена по domain/dependency boundaries на миграции
-  `migration/000001_*`–`000008_*`.
+- Целевая business schema разделена по domain/dependency boundaries на миграции
+  `migration/000001_*`–`000008_*`; additive technical UI migration `000009`
+  сохраняет active Telegram screen.
 - Каждая `down` migration самостоятельно отменяет соответствующую `up`
   migration; полный откат выполняется в обратном dependency order.
 - После первого production rollout применённый набор миграций не изменяется;
@@ -2328,17 +2338,27 @@ Exit:
 
 ### Stage 8. Statistics, Telegram и notifications
 
-Статус на 2026-08-24: **отложен**. Не приступать без отдельного решения о
-возврате к Stage 8. Он не входит в оценку 95% готовности transfer flow из
-раздела 1.1. SQL fact views уже существуют как foundation, а feature package
-отсутствует. Manual resolver доступен как service `cardpublication`; Telegram
-presentation и callback wiring его команд остаются частью этого этапа.
+Статус на 2026-08-24: **в работе**. Отдельное решение о возврате к Stage 8
+получено. Этап не входит в оценку 95% готовности transfer flow из раздела 1.1.
+SQL fact views, feature package, read-only queries/aggregates, Telegram
+presentation, attention UI, callback wiring manual resolver и composition-root
+wiring реализованы; runtime PostgreSQL/Telegram verification остаётся открытой.
+
+Telegram presentation использует один persisted active screen на chat: меню,
+загрузка XLSX, статистика сеанса и подтверждение отправки редактируют одно
+bot-owned сообщение. Callback другого message ID отклоняется до вызова feature
+handler. После `cardimport.Finalize` presentation сразу открывает статистику
+завершённого сеанса; пока transfer/plan ещё не материализован polling-ом,
+показывается понятный статус и refresh. Готовый immutable plan подтверждается в
+этом же экране. Отдельного root menu «Отправка в WB» нет. Telegram скрывает
+внутренние BatchID, checksum, PlanDigest, ActionID/AttemptID и media action
+counts, сохраняя их только в persisted contracts и read-only diagnostics.
 
 - current operation/group/item queries;
 - transfer/item/action/attempt aggregates;
 - progress, grouped `OutcomeClass/OutcomeCode` и attention details;
 - duration только по `started_at/finished_at`;
-- drill-down до ActionID/AttemptID;
+- bounded diagnostic drill-down до ActionID/AttemptID через typed query contract;
 - notification presentation из persisted projections;
 - callback revision/idempotency/permissions;
 - composition-root wiring.
@@ -2388,9 +2408,10 @@ Exit:
 Каждый PR сохраняет mutations disabled, пока не закрыты все предыдущие safety
 gates.
 
-Все schema changes этих PR до первого release обновляют соответствующую
-доменную миграцию `000001`–`000008`. После первого release используются только
-новые номера миграций.
+Business schema changes этих PR до первого release обновляют соответствующую
+доменную миграцию `000001`–`000008`. Persisted Telegram screen добавляется
+отдельной additive migration `000009`, чтобы уже развёрнутая локальная Stage 8
+БД не требовала удаления данных.
 
 ## 16. Ограничения на структуру и проверки
 
@@ -2577,7 +2598,7 @@ fixtures не создаются.
 - `transfer_group_targets` и `transfer_item_targets` являются только current
   projections и не дублируют raw mutation journal.
 - Связанные owner-state changes используют caller-owned transaction владельца.
-- Fresh цикл полного набора `up/down/up` проходит последовательно до `000008`.
+- Fresh цикл полного набора `up/down/up` проходит последовательно до `000009`.
 - Every item × target имеет persisted explainable result.
 - Recovery nonterminal workflows и защита от второго instance явно отложены до
   отдельного решения после `transfer` и `statistics`; до него live rollout
@@ -2585,7 +2606,7 @@ fixtures не создаются.
 - Existing cards и media остаются untouched.
 - Dry-run и canary gates пройдены до production live.
 
-### 17.1. Отложенный DoD Stage 8
+### 17.1. DoD Stage 8 (runtime verification pending)
 
 - `statistics` не вызывает WB и не изменяет business facts.
 - `statistics` читает current projections и immutable action/attempt facts без

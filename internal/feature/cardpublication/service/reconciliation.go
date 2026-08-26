@@ -21,22 +21,19 @@ func (dispatcher *ProductDispatcher) reconcilePending(ctx context.Context) error
 	if err != nil {
 		return err
 	}
-	var firstErr error
-	for _, candidate := range candidates {
+	return processConcurrently(ctx, candidates, dispatcher.concurrency, func(candidate ProductActionCandidate) error {
 		if err := dispatcher.reconcile(ctx, candidate, now); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			if firstErr == nil {
-				firstErr = fmt.Errorf(
-					"reconcile publication product action ID='%d': %w",
-					candidate.ActionID,
-					err,
-				)
-			}
+			return fmt.Errorf(
+				"reconcile publication product action ID='%d': %w",
+				candidate.ActionID,
+				err,
+			)
 		}
-	}
-	return firstErr
+		return nil
+	})
 }
 
 func (dispatcher *ProductDispatcher) reconcile(
@@ -52,10 +49,11 @@ func (dispatcher *ProductDispatcher) reconcile(
 		action.AttemptStartedAt.IsZero() {
 		return ErrProductActionConflict
 	}
-	observation, err := dispatcher.catalogReader.Read(
+	observation, err := dispatcher.catalogReader.ReadVendorCodes(
 		ctx,
 		action.TargetID,
 		action.CabinetID,
+		action.VendorCodes(),
 	)
 	if err != nil {
 		return err

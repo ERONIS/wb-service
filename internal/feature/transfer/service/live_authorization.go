@@ -97,9 +97,12 @@ type AuthorizationPlanSummary struct {
 	PlanDigest       Digest
 	TargetSetRoot    Digest
 	PlanRevision     int64
+	TargetsCount     int
 	CreateActions    int
 	AddActions       int
 	MediaActions     int
+	CreateItems      int
+	AddItems         int
 	ExistingItems    int
 	ConflictItems    int
 	AuthorTelegramID int64
@@ -108,8 +111,9 @@ type AuthorizationPlanSummary struct {
 func (summary AuthorizationPlanSummary) Validate() error {
 	if summary.TransferID <= 0 || summary.PlanID <= 0 ||
 		summary.PlanDigest == (Digest{}) || summary.TargetSetRoot == (Digest{}) ||
-		summary.PlanRevision < 0 || summary.CreateActions < 0 ||
+		summary.PlanRevision < 0 || summary.TargetsCount <= 0 || summary.CreateActions < 0 ||
 		summary.AddActions < 0 || summary.MediaActions < 0 ||
+		summary.CreateItems < 0 || summary.AddItems < 0 ||
 		summary.ExistingItems < 0 || summary.ConflictItems < 0 ||
 		summary.AuthorTelegramID <= 0 {
 		return errors.New("authorization plan summary is invalid")
@@ -122,6 +126,11 @@ func (summary AuthorizationPlanSummary) ActionsCount() int {
 }
 
 type LivePlanSource interface {
+	ListAutomaticAuthorizationPlans(
+		ctx context.Context,
+		limit int,
+	) ([]AuthorizationPlanSummary, error)
+
 	ListAuthorizationPlans(
 		ctx context.Context,
 		actorTelegramID int64,
@@ -487,6 +496,90 @@ func (service *LiveAuthorizationService) Request(
 	}
 	if authorization.State == LiveAuthorizationExpired {
 		return LiveAuthorization{}, ErrLiveExpired
+	}
+	return authorization, nil
+}
+
+// Authorize records request and approval in one transaction. It is used when
+// finalizing a transfer is itself the user's durable consent to publish the
+// exact plan produced from that transfer.
+func (service *LiveAuthorizationService) Authorize(
+	ctx context.Context,
+	actor LiveTrustedActor,
+	command RequestLiveCommand,
+) (LiveAuthorization, error) {
+	if !service.live {
+		return LiveAuthorization{}, ErrLiveModeDisabled
+	}
+	actor = actor.normalized()
+	command = command.normalized()
+	if err := actor.validate(); err != nil {
+		return LiveAuthorization{}, err
+	}
+	if err := command.validate(); err != nil {
+		return LiveAuthorization{}, err
+	}
+	approveKey := command.IdempotencyKey + ":approve"
+	if len(approveKey) > MaxLiveIdempotencyKeyLength {
+		return LiveAuthorization{}, fmt.Errorf(
+			"automatic approve idempotency key is too long: %w",
+			core_errors.ErrInvalidArgument,
+		)
+	}
+	now := service.now().UTC()
+	actorDigest := actor.digest()
+	var authorization LiveAuthorization
+	err := service.uow.WithinTransaction(ctx, func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
+		plan, err := service.plans.LockAuthorizationPlan(
+			ctx,
+			tx,
+			actor.TelegramUserID,
+			command.TransferID,
+			command.PlanDigest,
+		)
+		if err != nil {
+			return err
+		}
+		authorization, err = service.repository.RequestLive(
+			ctx,
+			tx,
+			now,
+			now.Add(service.ttl),
+			actor,
+			actorDigest,
+			command,
+			command.digest(),
+			plan,
+		)
+		if err != nil || authorization.State == LiveAuthorizationAuthorized {
+			return err
+		}
+		approve := ApproveLiveCommand{
+			TransferID:         command.TransferID,
+			AuthorizationID:    authorization.ID,
+			ExpectedRevision:   authorization.Revision,
+			ExpectedPlanDigest: command.PlanDigest,
+			IdempotencyKey:     approveKey,
+		}
+		authorization, err = service.repository.ApproveLive(
+			ctx,
+			tx,
+			now,
+			actor,
+			actorDigest,
+			approve,
+			approve.digest(),
+		)
+		return err
+	})
+	if err != nil {
+		return LiveAuthorization{}, fmt.Errorf("authorize live publication: %w", err)
+	}
+	if authorization.State == LiveAuthorizationExpired {
+		return LiveAuthorization{}, ErrLiveExpired
+	}
+	if authorization.State != LiveAuthorizationAuthorized {
+		return LiveAuthorization{}, ErrLiveAuthorization
 	}
 	return authorization, nil
 }

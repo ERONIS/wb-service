@@ -1,8 +1,6 @@
 package cardimport_telegram_transport
 
 import (
-	"fmt"
-
 	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
 	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
 
@@ -55,7 +53,7 @@ func (h *Handler) cancel(ctx tele.Context) error {
 
 	sessionID, err := parseSessionID(ctx.Args())
 	if err != nil {
-		return ctx.EditOrSend("⚠️ Не удалось определить сессию импорта.")
+		return core_transport_telegram.Notify(ctx, "cardimport.session_argument", "⚠️ Не удалось определить текущую загрузку.")
 	}
 
 	if err := h.service.Cancel(h.ctx, cardimport_service.SessionCommand{
@@ -72,7 +70,7 @@ func (h *Handler) cancel(ctx tele.Context) error {
 	)
 
 	return ctx.EditOrSend(
-		fmt.Sprintf("Импорт №%d отменён.", sessionID),
+		"Загрузка карточек отменена.",
 		markup,
 	)
 }
@@ -84,7 +82,7 @@ func (h *Handler) finalize(ctx tele.Context) error {
 	}
 	command, err := parseFinalizeCommand(ctx.Args())
 	if err != nil {
-		return ctx.EditOrSend("⚠️ Кнопка устарела. Откройте импорт заново.")
+		return core_transport_telegram.Notify(ctx, "cardimport.stale_finalize", "⚠️ Кнопка устарела. Откройте новый перенос заново.")
 	}
 
 	batch, err := h.service.Finalize(h.ctx, actor, command)
@@ -92,16 +90,6 @@ func (h *Handler) finalize(ctx tele.Context) error {
 		return sendServiceError(ctx, err)
 	}
 
-	markup := h.bot.NewMarkup()
-	markup.Inline(markup.Row(core_transport_telegram.MainMenuButton()))
-	return ctx.EditOrSend(
-		fmt.Sprintf(
-			"✅ Импорт зафиксирован.\n\nBatch №%d\nКарточки: %d\nГруппы: %d\nChecksum: <code>%s</code>\n\nПодготовка переноса будет запущена отдельным обработчиком.",
-			batch.ID,
-			batch.ItemsCount,
-			batch.GroupsCount,
-			batch.Checksum.String()[:12],
-		),
-		markup,
-	)
+	h.processing.NotifyFinalized()
+	return h.completion.ShowFinalizedSession(ctx, batch)
 }
