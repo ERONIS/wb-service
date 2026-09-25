@@ -7,11 +7,9 @@ import (
 	"sync"
 	"time"
 
-	core_observability "github.com/ERONIS/wb-service/internal/core/observability"
 	tx "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	"github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
 	transfer "github.com/ERONIS/wb-service/internal/feature/transfer/service"
-	"go.uber.org/zap"
 )
 
 const mediaVisibilityRequestTimeout = 45 * time.Second
@@ -33,8 +31,6 @@ type MediaVisibilityUpdate struct {
 	OutcomeCode  string
 }
 
-// ProcessMediaVisibility is polled separately from sending requests. Each claim
-// performs at most one observation; sleeping and retries are represented in DB.
 func (dispatcher *MediaDispatcher) ProcessMediaVisibility(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("process media visibility: context is nil")
@@ -58,19 +54,8 @@ func (dispatcher *MediaDispatcher) ProcessMediaVisibility(ctx context.Context) e
 	return errors.Join(errs...)
 }
 
-func (dispatcher *MediaDispatcher) checkMediaVisibility(ctx context.Context, job MediaVisibilityJob) (err error) {
-	startedAt := time.Now()
-	ctx = core_observability.WithCorrelation(ctx, core_observability.Correlation{
-		TransferID: int64(job.Candidate.TransferID), ActionID: job.Candidate.ActionID,
-	})
+func (dispatcher *MediaDispatcher) checkMediaVisibility(ctx context.Context, job MediaVisibilityJob) error {
 	update := MediaVisibilityUpdate{NextDelay: mediaVisibilityDelay(dispatcher.mediaCheckInterval, job.CheckCount)}
-	defer func() {
-		core_observability.LogTiming(core_observability.LoggerWithContext(ctx, dispatcher.logger),
-			"cardpublication", "check_media_visibility", startedAt, err,
-			zap.Int("check_count", job.CheckCount), zap.Time("deadline_at", job.DeadlineAt),
-			zap.Bool("card_found", update.Observation.CardFound), zap.Int("photos_count", update.Observation.PhotosCount),
-			zap.String("outcome_code", update.OutcomeCode), zap.String("check_error_code", update.ErrorCode))
-	}()
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -92,7 +77,7 @@ func (dispatcher *MediaDispatcher) checkMediaVisibility(ctx context.Context, job
 		cancel()
 		if ctx.Err() != nil {
 			return ctx.Err()
-		} // A restart never turns a pending check into a terminal failure.
+		}
 		if err != nil {
 			update.ErrorCode = "WB_MEDIA_VISIBILITY_CHECK_FAILED"
 		}

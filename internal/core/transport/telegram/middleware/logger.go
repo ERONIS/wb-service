@@ -10,7 +10,6 @@ import (
 	tele "gopkg.in/telebot.v3"
 )
 
-// Logger logs the result of processing every incoming Telegram update.
 func Logger(logger *zap.Logger) tele.MiddlewareFunc {
 	if logger == nil {
 		panic("telegram middleware logger is nil")

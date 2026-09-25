@@ -36,8 +36,6 @@ type CabinetInfo struct {
 	Name string
 }
 
-// CredentialCandidate is isolated from the runtime registry until the
-// wbcabinet feature verifies and explicitly activates it.
 type CredentialCandidate struct {
 	id         config.CabinetID
 	name       string
@@ -89,8 +87,6 @@ func (candidate *CredentialCandidate) PricesExecutor() client.Executor {
 	return candidate.prices
 }
 
-// Clientset owns shared HTTP/rate-limit infrastructure and a mutable runtime
-// registry containing only identity-verified cabinets.
 type Clientset struct {
 	mutex           sync.RWMutex
 	cabinets        map[config.CabinetID]*CabinetClient
@@ -157,8 +153,6 @@ func NewForConfigAndHTTPClient(
 	return buildClientset(configCopy, contentBaseURL, &baseHTTPClient, sharedTransport, logger)
 }
 
-// NewCandidate builds credential-bound clients without exposing them through
-// ForCabinet. It is the verification seam used by feature/wbcabinet.
 func (clientset *Clientset) NewCandidate(
 	cabinetConfig config.CabinetConfig,
 ) (*CredentialCandidate, error) {
@@ -230,7 +224,6 @@ func (clientset *Clientset) NewCandidate(
 	}, nil
 }
 
-// ActivateCandidate atomically publishes an already verified candidate.
 func (clientset *Clientset) ActivateCandidate(candidate *CredentialCandidate) error {
 	if clientset == nil {
 		return errors.New("WB clientset is required")

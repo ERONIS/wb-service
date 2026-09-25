@@ -2,21 +2,19 @@ package cabinetcopy_service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
-	"github.com/ERONIS/wb-service/internal/core/observability"
+	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 	"go.uber.org/zap"
 )
 
-var ErrNotEnoughCards = errors.New("not enough cards match cabinet copy filter")
+var ErrNotEnoughCards = fmt.Errorf("not enough cards match cabinet copy filter: %w", core_errors.ErrInvalidArgument)
 
 type Service struct {
 	repository Repository
@@ -50,7 +48,7 @@ func New(
 		transfers:  transfers,
 		uow:        uow,
 		maxCards:   maxCards,
-		logger:     observability.Logger(loggers...),
+		logger:     core_logger.Fallback(loggers...),
 	}
 }
 
@@ -118,7 +116,7 @@ func (service *Service) SelectSource(
 		return Session{}, err
 	}
 	if !available {
-		return Session{}, fmt.Errorf("source cabinet %q is unavailable: %w", cabinetID, core_errors.ErrInvalidArgument)
+		return Session{}, core_errors.InvalidArgument("source cabinet %q is unavailable", cabinetID)
 	}
 	return service.repository.SetSource(ctx, authorTelegramID, sessionID, revision, cabinetID)
 }
@@ -135,7 +133,7 @@ func (service *Service) SelectTarget(
 		return Session{}, err
 	}
 	if !available {
-		return Session{}, fmt.Errorf("target cabinet %q is unavailable: %w", cabinetID, core_errors.ErrInvalidArgument)
+		return Session{}, core_errors.InvalidArgument("target cabinet %q is unavailable", cabinetID)
 	}
 	session, err := service.repository.Get(ctx, authorTelegramID, sessionID)
 	if err != nil {
@@ -164,7 +162,7 @@ func (service *Service) SelectCount(
 	count int,
 ) (Session, error) {
 	if count <= 0 || count > service.maxCards {
-		return Session{}, fmt.Errorf("card count must be between 1 and %d: %w", service.maxCards, core_errors.ErrInvalidArgument)
+		return Session{}, core_errors.InvalidArgument("card count must be between 1 and %d", service.maxCards)
 	}
 	return service.repository.SetCount(ctx, authorTelegramID, sessionID, revision, count)
 }
@@ -240,16 +238,6 @@ func (service *Service) Prepare(
 	sessionID SessionID,
 	revision int64,
 ) (prepared Session, err error) {
-	startedAt := time.Now()
-	var readDuration, persistDuration time.Duration
-	itemsCount := 0
-	logger := service.logger.With(zap.Int64("copy_session_id", int64(sessionID)))
-	observability.LogStarted(logger, "cabinetcopy", "prepare")
-	defer func() {
-		observability.LogTiming(logger, "cabinetcopy", "prepare", startedAt, err,
-			zap.Int("items_count", itemsCount), zap.Duration("read_cards_duration", readDuration),
-			zap.Duration("persist_duration", persistDuration))
-	}()
 	session, err := service.repository.Get(ctx, authorTelegramID, sessionID)
 	if err != nil {
 		return Session{}, err
@@ -257,24 +245,18 @@ func (service *Service) Prepare(
 	if session.Step != StepTags || session.Revision != revision || session.RequestedCount <= 0 {
 		return Session{}, core_errors.ErrConflict
 	}
-	logger = logger.With(zap.String("source_cabinet_id", string(session.SourceCabinetID)),
-		zap.String("target_cabinet_id", string(session.TargetCabinetID)), zap.Int("requested_count", session.RequestedCount))
-	stepStartedAt := time.Now()
 	items, err := service.reader.ReadCards(
 		ctx,
 		session.SourceCabinetID,
 		append([]int64(nil), session.SelectedTagIDs...),
 		session.RequestedCount,
 	)
-	readDuration = time.Since(stepStartedAt)
-	itemsCount = len(items)
 	if err != nil {
 		return Session{}, err
 	}
 	if len(items) != session.RequestedCount {
 		return Session{}, fmt.Errorf("found %d of %d requested cards: %w", len(items), session.RequestedCount, ErrNotEnoughCards)
 	}
-	stepStartedAt = time.Now()
 	err = service.uow.WithinTransaction(ctx, func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
 		var saveErr error
 		prepared, saveErr = service.repository.SavePrepared(
@@ -282,7 +264,6 @@ func (service *Service) Prepare(
 		)
 		return saveErr
 	})
-	persistDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return Session{}, fmt.Errorf("save prepared cabinet copy: %w", err)
 	}
@@ -295,21 +276,11 @@ func (service *Service) Submit(
 	sessionID SessionID,
 	expectedRevision int64,
 ) (submission Submission, err error) {
-	startedAt := time.Now()
-	var batchDuration, startTransferDuration time.Duration
-	logger := service.logger.With(zap.Int64("copy_session_id", int64(sessionID)))
-	observability.LogStarted(logger, "cabinetcopy", "submit")
-	defer func() {
-		observability.LogTiming(logger, "cabinetcopy", "submit", startedAt, err,
-			zap.Duration("create_batch_duration", batchDuration),
-			zap.Duration("start_transfer_duration", startTransferDuration))
-	}()
 	session, err := service.repository.Get(ctx, actor.TelegramUserID, sessionID)
 	if err != nil {
 		return Submission{}, err
 	}
 	if session.Step == StepSubmitted {
-		logger = logger.With(zap.Int64("batch_id", int64(session.BatchID)), zap.Int64("transfer_id", int64(session.TransferID)), zap.Bool("reused", true))
 		batch, batchErr := service.batches.GetBatch(ctx, session.BatchID)
 		if batchErr != nil {
 			return Submission{}, batchErr
@@ -330,17 +301,14 @@ func (service *Service) Submit(
 	for index := range items {
 		cards[index] = items[index].Card
 	}
-	stepStartedAt := time.Now()
 	batch, err := service.batches.CreateExternalBatch(ctx, actor, cardimport_service.CreateExternalBatchCommand{
 		SourceKind:        cardimport_service.BatchSourceWBCabinet,
 		SourceReferenceID: int64(session.ID),
 		Cards:             cards,
 	})
-	batchDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return Submission{}, fmt.Errorf("create cabinet copy batch: %w", err)
 	}
-	logger = logger.With(zap.Int64("batch_id", int64(batch.ID)), zap.Int("items_count", len(items)))
 	if session.BatchID == 0 {
 		session, err = service.repository.AttachBatch(
 			ctx, actor.TelegramUserID, sessionID, expectedRevision, batch.ID,
@@ -351,17 +319,14 @@ func (service *Service) Submit(
 	} else if session.BatchID != batch.ID {
 		return Submission{}, core_errors.ErrConflict
 	}
-	stepStartedAt = time.Now()
 	transferID, err := service.transfers.StartToCabinet(
 		ctx,
 		batch.ID,
 		transfer_service.CabinetID(session.TargetCabinetID),
 	)
-	startTransferDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return Submission{}, fmt.Errorf("start cabinet copy transfer: %w", err)
 	}
-	logger = logger.With(zap.Int64("transfer_id", int64(transferID)))
 	session, err = service.repository.MarkSubmitted(
 		ctx, actor.TelegramUserID, sessionID, batch.ID, transferID,
 	)

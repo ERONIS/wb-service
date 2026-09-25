@@ -32,10 +32,9 @@ func (s *UsersService) GetUsers(
 	}
 
 	if page < 1 {
-		return UsersPage{}, fmt.Errorf(
-			"invalid page='%d': %w",
+		return UsersPage{}, core_errors.InvalidArgument(
+			"invalid page='%d'",
 			page,
-			core_errors.ErrInvalidArgument,
 		)
 	}
 

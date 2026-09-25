@@ -13,8 +13,6 @@ type StoredContent struct {
 	SHA256 [32]byte
 }
 
-// RecoverableFile is an unfinished file together with the owner required to
-// resume its durable workflow after a Telegram timeout or process restart.
 type RecoverableFile struct {
 	AuthorTelegramID int64
 	File             File

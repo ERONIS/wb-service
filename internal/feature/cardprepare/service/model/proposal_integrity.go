@@ -6,9 +6,6 @@ import (
 	"errors"
 )
 
-// ValidateIntegrity verifies the immutable parts of a proposal without any WB
-// or database access. SemanticDigest cannot be reconstructed without the
-// source cards, but it is still covered by ProposalRoot.
 func (proposal Proposal) ValidateIntegrity() error {
 	if proposal.SubjectID <= 0 || len(proposal.Request) != 1 ||
 		len(proposal.Request[0].Variants) == 0 ||

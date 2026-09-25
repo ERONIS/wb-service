@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	core_observability "github.com/ERONIS/wb-service/internal/core/observability"
+	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 	"go.uber.org/zap"
 )
@@ -27,60 +27,19 @@ func NewPreparer(transport CatalogTransport, loggers ...*zap.Logger) *Preparer {
 	return &Preparer{
 		transport: transport,
 		now:       time.Now,
-		logger:    core_observability.Logger(loggers...),
+		logger:    core_logger.Fallback(loggers...),
 	}
 }
 
-// PrepareTarget owns the multi-read catalog workflow. The transport below it
-// executes only individual operations and returns complete raw DTOs.
 func (preparer *Preparer) PrepareTarget(
 	ctx context.Context,
 	cabinetID CabinetID,
 	group SourceGroup,
 ) (prepared Result, err error) {
-	startedAt := time.Now()
-	logger := core_observability.LoggerWithContext(ctx, preparer.logger)
-	core_observability.LogStarted(logger, "cardprepare", "catalog_prepare_target",
-		zap.String("cabinet_id", string(cabinetID)), zap.Int("items_count", len(group.Items)))
-	var (
-		normalizeDuration       time.Duration
-		limitsDuration          time.Duration
-		subjectsDuration        time.Duration
-		characteristicsDuration time.Duration
-		brandsDuration          time.Duration
-		directoriesDuration     time.Duration
-		buildDuration           time.Duration
-		subjectID               int64
-	)
+	var subjectID int64
 	defer func() {
-		timingFields := []zap.Field{
-			zap.String("cabinet_id", string(cabinetID)),
-			zap.Int("items_count", len(group.Items)),
-			zap.Int64("subject_id", subjectID),
-			zap.String("outcome_code", string(prepared.Outcome.Code)),
-			zap.Int("outcome_item_position", prepared.Outcome.ItemPosition),
-			zap.String("outcome_field", prepared.Outcome.Field),
-			zap.Duration("normalize_duration", normalizeDuration),
-			zap.Duration("cards_limits_duration", limitsDuration),
-			zap.Duration("subjects_duration", subjectsDuration),
-			zap.Duration("characteristics_duration", characteristicsDuration),
-			zap.Duration("brands_duration", brandsDuration),
-			zap.Duration("directories_duration", directoriesDuration),
-			zap.Duration("build_duration", buildDuration),
-		}
-		if cache, ok := preparer.transport.(*batchCatalog); ok {
-			stats := cache.stats()
-			timingFields = append(timingFields,
-				zap.Int("catalog_cache_entries", stats.Entries),
-				zap.Int("catalog_cache_bytes", stats.Bytes),
-				zap.Int("catalog_cache_max_bytes", maxCatalogCacheBytes),
-				zap.Uint64("catalog_cache_hits", stats.Hits),
-				zap.Uint64("catalog_cache_misses", stats.Misses),
-				zap.Uint64("catalog_cache_coalesced_waits", stats.CoalescedWaits),
-				zap.Uint64("catalog_cache_stores", stats.Stores),
-				zap.Uint64("catalog_cache_skipped_capacity", stats.SkippedCapacity),
-				zap.Uint64("catalog_cache_evictions", stats.Evictions),
-			)
+		if preparer.logger == nil {
+			return
 		}
 		if err == nil && prepared.Outcome.Code != "" && prepared.Outcome.Code != OutcomePrepared {
 			fields := []zap.Field{
@@ -94,16 +53,8 @@ func (preparer *Preparer) PrepareTarget(
 			if prepared.Outcome.Details != nil {
 				fields = append(fields, zap.Any("outcome_details", prepared.Outcome.Details))
 			}
-			logger.Warn("Card preparation rejected", fields...)
+			preparer.logger.Warn("Card preparation rejected", fields...)
 		}
-		core_observability.LogTiming(
-			logger,
-			"cardprepare",
-			"catalog_prepare_target",
-			startedAt,
-			err,
-			timingFields...,
-		)
 	}()
 	if ctx == nil {
 		return Result{}, errors.New("prepare target: context is nil")
@@ -113,9 +64,7 @@ func (preparer *Preparer) PrepareTarget(
 		return Result{}, errors.New("prepare target: cabinet ID is invalid")
 	}
 
-	stepStartedAt := time.Now()
 	normalizedGroup, err := normalizeSourceGroup(group)
-	normalizeDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return Result{}, err
 	}
@@ -123,9 +72,7 @@ func (preparer *Preparer) PrepareTarget(
 		return *localResult, nil
 	}
 
-	stepStartedAt = time.Now()
 	limitsResponse, err := preparer.transport.CardsLimits(ctx, cabinetID)
-	limitsDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return Result{}, fmt.Errorf("read WB Cards Limits: %w", err)
 	}
@@ -140,13 +87,11 @@ func (preparer *Preparer) PrepareTarget(
 		return Result{}, errors.New("prepare target: current time is empty")
 	}
 
-	stepStartedAt = time.Now()
 	subjects, subjectsResult, err := preparer.readSubjects(
 		ctx,
 		cabinetID,
 		normalizedGroup.Items[0].Card.Category,
 	)
-	subjectsDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return Result{}, err
 	}
@@ -159,14 +104,12 @@ func (preparer *Preparer) PrepareTarget(
 	}
 	subjectID = subject.SubjectID
 
-	stepStartedAt = time.Now()
 	characteristicsResponse, err := preparer.transport.SubjectCharacteristics(
 		ctx,
 		cabinetID,
 		subject.SubjectID,
 		contentapi.SubjectCharacteristicsQuery{Locale: contentapi.LocaleRU},
 	)
-	characteristicsDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return Result{}, fmt.Errorf("read WB subject characteristics: %w", err)
 	}
@@ -180,13 +123,11 @@ func (preparer *Preparer) PrepareTarget(
 	brands := make([]contentapi.Brand, 0)
 	if groupUsesBrand(normalizedGroup) {
 		var brandsResult *Result
-		stepStartedAt = time.Now()
 		brands, brandsResult, err = preparer.readBrands(
 			ctx,
 			cabinetID,
 			subject.SubjectID,
 		)
-		brandsDuration = time.Since(stepStartedAt)
 		if err != nil {
 			return Result{}, err
 		}
@@ -195,7 +136,6 @@ func (preparer *Preparer) PrepareTarget(
 		}
 	}
 
-	stepStartedAt = time.Now()
 	directories, directoriesResult, err := preparer.readUsedDirectories(
 		ctx,
 		cabinetID,
@@ -203,7 +143,6 @@ func (preparer *Preparer) PrepareTarget(
 		normalizedGroup,
 		characteristicsResponse.Data,
 	)
-	directoriesDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return Result{}, err
 	}
@@ -211,7 +150,6 @@ func (preparer *Preparer) PrepareTarget(
 		return *directoriesResult, nil
 	}
 
-	stepStartedAt = time.Now()
 	prepared, err = Prepare(normalizedGroup, CatalogSnapshot{
 		Subjects:        subjects,
 		Characteristics: characteristicsResponse.Data,
@@ -220,7 +158,6 @@ func (preparer *Preparer) PrepareTarget(
 		Limits:          limitsResponse.Data,
 		ObservedAt:      limitsObservedAt,
 	})
-	buildDuration = time.Since(stepStartedAt)
 	return prepared, err
 }
 

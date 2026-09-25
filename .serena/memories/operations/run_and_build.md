@@ -14,8 +14,9 @@
 - `make env-up` / `make env-down`: Start / stop PostgreSQL docker container.
 - `make env-wait`: Polls PostgreSQL container with `pg_isready`.
 - `make env-cleanup`: Deletes local PostgreSQL volume data in `.runtime/pgdata` (with confirmation).
-- `make migrate-up`: Applies pending database migrations located in `migration/`.
-- `make migrate-down`: Rolls back the last applied migration.
+- `make migrate-up`: Applies pending database migrations located in `migration/` (7 domain layers).
+- `make migrate-down`: Rolls back the last applied migration (`down 1`).
+- `make migrate-action action="<command>"`: Runs custom migrate action (e.g. `action="down 2"`, `action="force 7"`, `action=version`).
 - `make migrate-create seq=<name>`: Creates a new SQL migration pair in `migration/`.
 - `make admin-bootstrap`: Executes `scripts/bootstrap_admin.sql` to upsert admin user from `.env`.
 - `make wb-service-run`: Runs the service locally (`go run cmd/wb-service/main.go`).

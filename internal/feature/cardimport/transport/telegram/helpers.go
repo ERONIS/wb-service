@@ -341,13 +341,11 @@ func fileStatusIcon(status cardimport_service.FileStatus) string {
 }
 
 func sendServiceError(ctx tele.Context, err error) error {
-	return core_transport_telegram.NotifyError(
+	return core_transport_telegram.NotifyServiceError(
 		ctx,
 		err,
-		core_transport_telegram.OnError(nil, "cardimport.internal", "❌ Не удалось выполнить операцию. Попробуйте позже."),
 		core_transport_telegram.OnError(core_errors.ErrNotFound, "cardimport.session_not_found", "⚠️ Сначала откройте «Карточки» → «Перенос карточек»."),
 		core_transport_telegram.OnError(core_errors.ErrConflict, "cardimport.session_conflict", "⚠️ Файл или текущая загрузка уже изменились. Обновите экран."),
 		core_transport_telegram.OnError(core_errors.ErrInvalidArgument, "cardimport.invalid_file", "⚠️ Файл не подходит: проверьте формат и размер."),
-		core_transport_telegram.OnError(core_errors.ErrForbidden, "cardimport.forbidden", "⛔ Недостаточно прав."),
 	)
 }

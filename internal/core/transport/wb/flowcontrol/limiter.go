@@ -9,6 +9,7 @@ import (
 	"time"
 
 	policy "github.com/ERONIS/wb-service/internal/core/transport/wb/policy"
+	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	"golang.org/x/time/rate"
 )
 
@@ -25,8 +26,9 @@ var (
 )
 
 // ErrLimiterQueueFull означает, что очередь ожидания заполнена.
-var ErrLimiterQueueFull = errors.New(
-	"rate limiter wait queue is full",
+var ErrLimiterQueueFull = fmt.Errorf(
+	"rate limiter wait queue is full: %w",
+	core_errors.ErrQueueFull,
 )
 
 // Limiter ограничивает скорость запросов одного rate-limit bucket.

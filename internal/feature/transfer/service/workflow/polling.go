@@ -4,51 +4,26 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
-	core_observability "github.com/ERONIS/wb-service/internal/core/observability"
-	"go.uber.org/zap"
 )
 
 const pollingPageSize = 100
 
-func (service *Service) ProcessPending(ctx context.Context) (err error) {
-	startedAt := time.Now()
-	var resumeDuration, discoveryDuration, lockWait time.Duration
-	defer func() {
-		core_observability.LogTimingDebug(
-			service.logger,
-			"transfer",
-			"workflow_poll",
-			startedAt,
-			err,
-			zap.Duration("lock_wait_duration", lockWait),
-			zap.Duration("resume_initializing_duration", resumeDuration),
-			zap.Duration("discover_batches_duration", discoveryDuration),
-		)
-	}()
+func (service *Service) ProcessPending(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("process pending transfers: context is nil")
 	}
-	lockStartedAt := time.Now()
 	service.processMu.Lock()
-	lockWait = time.Since(lockStartedAt)
 	defer service.processMu.Unlock()
 
-	stepStartedAt := time.Now()
 	if err := service.resumeInitializing(ctx); err != nil {
-		resumeDuration = time.Since(stepStartedAt)
 		return err
 	}
-	resumeDuration = time.Since(stepStartedAt)
-	stepStartedAt = time.Now()
 	if err := service.discoverFinalizedBatches(ctx); err != nil {
-		discoveryDuration = time.Since(stepStartedAt)
 		return err
 	}
-	discoveryDuration = time.Since(stepStartedAt)
 	return nil
 }
 

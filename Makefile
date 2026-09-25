@@ -83,7 +83,7 @@ migrate-up:
 	@$(MAKE) migrate-action action=up
 
 migrate-down:
-	@$(MAKE) migrate-action action=down
+	@$(MAKE) migrate-action action="down 1"
 
 migrate-action:
 	@if [ -z "$(action)" ]; then \
@@ -93,7 +93,7 @@ migrate-action:
 	@docker compose run --rm wb-postgresql-migrate \
 		-path /migration \
 		-database "postgres://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@wb-postgresql:5432/$${POSTGRES_DB}?sslmode=disable" \
-		"$(action)"
+		$(action)
 
 admin-bootstrap:
 	@if [ -z "$(ADMIN_TG_ID)" ]; then \

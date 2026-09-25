@@ -12,7 +12,7 @@ import (
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
-	core_observability "github.com/ERONIS/wb-service/internal/core/observability"
+	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	core_wb "github.com/ERONIS/wb-service/internal/core/transport/wb"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
@@ -39,10 +39,7 @@ type DirectMediaTransport interface {
 	) (contentapi.UploadMediaFileResponse, error)
 }
 
-var ErrMediaActionConflict = fmt.Errorf(
-	"publication media action changed: %w",
-	core_errors.ErrConflict,
-)
+var ErrMediaActionConflict = core_errors.ErrConflict
 
 type MediaActionCandidate = ProductActionCandidate
 
@@ -366,57 +363,25 @@ func NewMediaDispatcher(
 		concurrency:        concurrency,
 		inFlight:           make(map[mediaActionKey]struct{}),
 		asyncErrors:        make(chan error, max(concurrency*4, 32)),
-		logger:             core_observability.Logger(loggers...),
+		logger:             core_logger.Fallback(loggers...),
 	}
 }
 
 func (dispatcher *MediaDispatcher) ProcessPending(ctx context.Context) (err error) {
-	startedAt := time.Now()
-	var interruptedDuration, listDuration, processDuration, lockWait time.Duration
-	interruptedCount, candidatesCount, scheduledCount := 0, 0, 0
-	inFlightCount := 0
-	defer func() {
-		logTiming := core_observability.LogTimingDebug
-		if interruptedCount > 0 || candidatesCount > 0 {
-			logTiming = core_observability.LogTiming
-		}
-		logTiming(
-			dispatcher.logger,
-			"cardpublication",
-			"media_dispatch_poll",
-			startedAt,
-			err,
-			zap.Duration("lock_wait_duration", lockWait),
-			zap.Bool("enabled", dispatcher.enabled),
-			zap.Int("interrupted_actions_count", interruptedCount),
-			zap.Int("candidate_actions_count", candidatesCount),
-			zap.Int("scheduled_actions_count", scheduledCount),
-			zap.Int("in_flight_actions_count", inFlightCount),
-			zap.Int("concurrency", dispatcher.concurrency),
-			zap.Duration("interrupted_duration", interruptedDuration),
-			zap.Duration("list_candidates_duration", listDuration),
-			zap.Duration("process_duration", processDuration),
-		)
-	}()
 	if ctx == nil {
 		return errors.New("process pending publication media: context is nil")
 	}
-	lockStartedAt := time.Now()
 	dispatcher.processMu.Lock()
-	lockWait = time.Since(lockStartedAt)
 	defer dispatcher.processMu.Unlock()
 
 	firstErr := dispatcher.drainAsyncErrors()
-	stepStartedAt := time.Now()
 	interrupted, err := dispatcher.repository.ListInterruptedMediaActions(
 		ctx,
 		productDispatchPageSize,
 	)
 	if err != nil {
-		interruptedDuration = time.Since(stepStartedAt)
 		return err
 	}
-	interruptedCount = len(interrupted)
 	for _, candidate := range interrupted {
 		if dispatcher.mediaActionInFlight(candidate) {
 			continue
@@ -430,9 +395,7 @@ func (dispatcher *MediaDispatcher) ProcessPending(ctx context.Context) (err erro
 			}
 		}
 	}
-	interruptedDuration = time.Since(stepStartedAt)
 	var candidates []MediaActionCandidate
-	stepStartedAt = time.Now()
 	if dispatcher.enabled {
 		candidates, err = dispatcher.repository.ListDispatchableMediaActions(
 			ctx,
@@ -445,22 +408,15 @@ func (dispatcher *MediaDispatcher) ProcessPending(ctx context.Context) (err erro
 		)
 	}
 	if err != nil {
-		listDuration = time.Since(stepStartedAt)
 		return errors.Join(firstErr, err)
 	}
-	listDuration = time.Since(stepStartedAt)
-	candidatesCount = len(candidates)
-	stepStartedAt = time.Now()
 	for _, candidate := range candidates {
 		if !dispatcher.reserveMediaAction(candidate) {
 			continue
 		}
-		scheduledCount++
 		dispatcher.inFlightWait.Add(1)
 		go dispatcher.processReservedMediaAction(ctx, candidate)
 	}
-	processDuration = time.Since(stepStartedAt)
-	inFlightCount = dispatcher.mediaActionsInFlight()
 	return firstErr
 }
 
@@ -548,7 +504,6 @@ func (dispatcher *MediaDispatcher) drainAsyncErrors() error {
 	}
 }
 
-// Wait lets the feature drain result writes before the database pool closes.
 func (dispatcher *MediaDispatcher) Wait() {
 	dispatcher.inFlightWait.Wait()
 }
@@ -556,89 +511,31 @@ func (dispatcher *MediaDispatcher) Wait() {
 func (dispatcher *MediaDispatcher) dispatch(
 	ctx context.Context,
 	candidate MediaActionCandidate,
-) (err error) {
-	startedAt := time.Now()
-	ctx = core_observability.WithCorrelation(ctx, core_observability.Correlation{
-		TransferID: int64(candidate.TransferID), ActionID: candidate.ActionID,
-	})
-	core_observability.LogStarted(dispatcher.logger, "cardpublication", "dispatch_media_action",
-		zap.Int64("transfer_id", int64(candidate.TransferID)), zap.Int64("action_id", candidate.ActionID),
-		zap.String("cabinet_id", string(candidate.CabinetID)))
-	var (
-		loadActionDuration     time.Duration
-		catalogDuration        time.Duration
-		buildDuration          time.Duration
-		beginAttemptDuration   time.Duration
-		mutationDuration       time.Duration
-		recordResultDuration   time.Duration
-		nmID                   int64
-		linksCount             int
-		result                 MediaMutationResult
-		finishedWithoutAttempt bool
-		recheckCode            string
-	)
-	defer func() {
-		core_observability.LogTiming(
-			dispatcher.logger,
-			"cardpublication",
-			"dispatch_media_action",
-			startedAt,
-			err,
-			zap.Int64("transfer_id", int64(candidate.TransferID)),
-			zap.Int64("action_id", candidate.ActionID),
-			zap.Int64("target_id", candidate.TargetID),
-			zap.String("cabinet_id", string(candidate.CabinetID)),
-			zap.Int64("nm_id", nmID),
-			zap.Int("links_count", linksCount),
-			zap.String("delivery", string(result.Delivery)),
-			zap.String("disposition", string(result.Disposition)),
-			zap.Int("http_status", result.HTTPStatus),
-			zap.String("outcome_class", string(result.OutcomeClass)),
-			zap.String("outcome_code", result.OutcomeCode),
-			zap.Bool("finished_without_attempt", finishedWithoutAttempt),
-			zap.String("recheck_code", recheckCode),
-			zap.Duration("load_action_duration", loadActionDuration),
-			zap.Duration("catalog_read_duration", catalogDuration),
-			zap.Duration("build_request_duration", buildDuration),
-			zap.Duration("begin_attempt_duration", beginAttemptDuration),
-			zap.Duration("mutation_duration", mutationDuration),
-			zap.Duration("record_result_duration", recordResultDuration),
-		)
-	}()
-	stepStartedAt := time.Now()
+) error {
 	action, err := dispatcher.loadLockedAction(ctx, candidate)
-	loadActionDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return err
 	}
-	nmID = action.NMID
-	stepStartedAt = time.Now()
 	observation, err := dispatcher.catalogReader.ReadActiveVendorCode(
 		ctx,
 		action.TargetID,
 		action.CabinetID,
 		action.Member.VendorCode,
 	)
-	catalogDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return err
 	}
-	stepStartedAt = time.Now()
 	recheck, err := BuildMediaRecheck(action, observation)
-	recheckCode = recheck.SafeCode
 	if err != nil {
-		buildDuration = time.Since(stepStartedAt)
 		return err
 	}
 	request, requestPayload, requestDigest, err := action.FinalRequest()
-	buildDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return err
 	}
-	linksCount = len(request.Data)
 
 	var attempt MediaAttempt
-	stepStartedAt = time.Now()
+	var finishedWithoutAttempt bool
 	err = dispatcher.uow.WithinTransaction(
 		ctx,
 		func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
@@ -738,7 +635,6 @@ func (dispatcher *MediaDispatcher) dispatch(
 			)
 		},
 	)
-	beginAttemptDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return err
 	}
@@ -748,9 +644,8 @@ func (dispatcher *MediaDispatcher) dispatch(
 	if attempt.ID == 0 {
 		return ErrMediaActionConflict
 	}
-	stepStartedAt = time.Now()
 	mutationCtx, cancelMutation := context.WithDeadline(ctx, action.CredentialExpiresAt)
-	result = executeMediaMutation(
+	result := executeMediaMutation(
 		mutationCtx,
 		dispatcher.transport,
 		action.CabinetID,
@@ -759,13 +654,9 @@ func (dispatcher *MediaDispatcher) dispatch(
 		dispatcher.mediaUploadMethod,
 	)
 	cancelMutation()
-	mutationDuration = time.Since(stepStartedAt)
-	stepStartedAt = time.Now()
 	resultCtx, cancel := publicationResultContext(ctx)
 	defer cancel()
-	err = dispatcher.recordResult(resultCtx, candidate, attempt, result)
-	recordResultDuration = time.Since(stepStartedAt)
-	return err
+	return dispatcher.recordResult(resultCtx, candidate, attempt, result)
 }
 
 func (dispatcher *MediaDispatcher) skip(

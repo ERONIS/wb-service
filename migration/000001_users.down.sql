@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS wb.telegram_active_screens;
+DROP TABLE IF EXISTS wb.users;
+DROP SCHEMA IF EXISTS wb CASCADE;

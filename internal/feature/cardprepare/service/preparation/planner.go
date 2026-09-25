@@ -16,8 +16,6 @@ import (
 
 const vatCharacteristicName = "ставка ндс"
 
-// Prepare is a deterministic, side-effect free card proposal builder. It has
-// no gateway dependency and therefore cannot dispatch a WB mutation.
 func Prepare(group SourceGroup, snapshot CatalogSnapshot) (Result, error) {
 	group, err := normalizeSourceGroup(group)
 	if err != nil {
@@ -288,9 +286,6 @@ func buildVariant(
 		len(values),
 	)
 	for _, specification := range schema.ordered {
-		// WB keeps deprecated characteristics in the subject schema with
-		// charcType=0. They must not be included in a card mutation, even when
-		// the source workbook still contains their old values.
 		if specification.CharacteristicType == 0 {
 			continue
 		}

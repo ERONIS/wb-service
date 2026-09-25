@@ -570,9 +570,6 @@ func (repository *Repository) LockValidLive(
 		(planState != "awaiting_authorization" && planState != "executing") {
 		return transfer_service.LiveAuthorizationEvidence{}, transfer_service.ErrLiveAuthorization
 	}
-	// Cabinet-copy is an explicitly selected, owner-scoped operation. Every
-	// regular XLSX fan-out action must still belong to a partner or admin at
-	// dispatch time, so revoking either privileged role prevents later WB mutation.
 	if !targetOwnerMayMutate(batchSourceKind, ownerRole) {
 		return transfer_service.LiveAuthorizationEvidence{}, transfer_service.ErrLiveAuthorization
 	}

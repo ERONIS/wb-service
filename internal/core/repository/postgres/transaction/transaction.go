@@ -12,8 +12,6 @@ import (
 
 const rollbackTimeout = 5 * time.Second
 
-// DBTX is the shared database surface accepted by business repositories.
-// Implementations must not begin nested transactions.
 type DBTX interface {
 	Exec(
 		ctx context.Context,

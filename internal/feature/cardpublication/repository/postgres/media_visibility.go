@@ -54,8 +54,6 @@ func (repository *Repository) ScheduleMediaVisibility(ctx context.Context, dbtx 
 	return nil
 }
 
-// Claims expire after a crash. The incremented revision fences late results from
-// earlier workers, including workers from a previous service process.
 func (repository *Repository) ClaimMediaVisibility(ctx context.Context, limit int, lease time.Duration) ([]service.MediaVisibilityJob, error) {
 	if limit <= 0 || limit > 100 || lease <= 0 {
 		return nil, errors.New("media visibility claim is invalid")
@@ -161,7 +159,5 @@ func (repository *Repository) UpdateMediaVisibility(ctx context.Context, dbtx tx
 	if !terminal {
 		return service.MediaGroupResult{GroupTargetID: action.Member.GroupTargetID}, nil
 	}
-	// HTTP evidence is already final. Only the action's visibility
-	// outcome changes; the attempt is never rewritten after its finished_at.
 	return finishMediaAction(ctx, dbtx, action, update.OutcomeClass, update.OutcomeCode)
 }

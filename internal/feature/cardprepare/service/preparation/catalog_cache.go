@@ -9,9 +9,6 @@ import (
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 )
 
-// ForBatch shares successful catalog reads within one preparation pass. Stable
-// references live for the pass; capacity is refreshed periodically so hundreds
-// of groups cannot enqueue identical limit requests.
 func (preparer *Preparer) ForBatch() *Preparer {
 	return &Preparer{
 		transport: &batchCatalog{
@@ -151,8 +148,6 @@ func cachedCatalogReadWithTTL[T any](ctx context.Context, cache *batchCatalog, c
 		value, err := read()
 		var payload []byte
 		if err == nil && cacheable(value) {
-			// Serialize a private copy so proposal normalization cannot mutate
-			// the cached value.
 			payload, _ = json.Marshal(value)
 		}
 		cache.mu.Lock()

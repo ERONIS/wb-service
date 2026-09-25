@@ -181,4 +181,3 @@ func normalizeAggregate(
 }
 
 var _ Reader = (*Service)(nil)
-

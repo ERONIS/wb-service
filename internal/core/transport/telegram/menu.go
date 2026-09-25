@@ -47,8 +47,6 @@ func (h *Handler) RegisterMainMenu() {
 	)
 }
 
-// handleStart keeps the chat clean and forces a fresh main menu and reply keyboard.
-// This ensures that clearing chat history in Telegram properly displays the menu again.
 func (h *Handler) handleStart(ctx tele.Context) error {
 	_ = ctx.Delete()
 	_ = InstallReplyKeyboard(ctx, replyKeyboardMessage, h.mainMenuReplyMarkup())

@@ -11,8 +11,6 @@ import (
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 )
 
-// Limit each planning wave to 30 groups so that WB catalog queries (/content/v2/get/cards/list)
-// complete quickly without triggering 60s gateway timeouts or rate limits.
 const publicationPlanningWaveGroupLimit = 30
 
 func (repository *Repository) ListAwaitingAuthorization(
@@ -220,8 +218,6 @@ func (repository *Repository) LoadPublicationPlanningSource(
 		)
 	}
 
-	// An empty source is valid when another planner claimed the selected wave
-	// after the transfer was listed.
 	if err := source.Validate(); err != nil {
 		return transfer_service.PublicationPlanningSource{}, err
 	}

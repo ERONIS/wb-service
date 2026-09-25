@@ -53,7 +53,6 @@ type Outcome struct {
 	Details      *OutcomeDetails
 }
 
-// OutcomeDetails carries diagnostic context for logs without changing the stored outcome code.
 type OutcomeDetails struct {
 	Reason                   string                             `json:"reason"`
 	SourceField              string                             `json:"source_field"`
@@ -77,9 +76,6 @@ type SourceItem struct {
 	Card     cardpipeline.Card
 }
 
-// CatalogSnapshot is immutable input obtained with safe WB reads. A nil
-// directory slice means it was not fetched; an empty non-nil slice means WB
-// returned an empty directory.
 type CatalogSnapshot struct {
 	Subjects        []contentapi.Subject
 	Characteristics []contentapi.SubjectCharacteristic

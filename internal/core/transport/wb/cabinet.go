@@ -9,8 +9,6 @@ import (
 	policy "github.com/ERONIS/wb-service/internal/core/transport/wb/policy"
 )
 
-// CabinetClient is a credential-bound generic executor. Endpoint DTO and
-// operation selection belong to a feature transport.
 type CabinetClient struct {
 	id       config.CabinetID
 	name     string

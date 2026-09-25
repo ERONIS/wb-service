@@ -1,8 +1,7 @@
 package publication
 
 import (
-	"fmt"
-
+	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	"github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
 
@@ -21,5 +20,5 @@ const (
 )
 
 func invalidTransfer(message string) error {
-	return fmt.Errorf("invalid transfer: %s", message)
+	return core_errors.InvalidArgument("invalid transfer: %s", message)
 }

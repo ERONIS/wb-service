@@ -6,9 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
-	core_observability "github.com/ERONIS/wb-service/internal/core/observability"
+	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 	"go.uber.org/zap"
@@ -194,28 +193,11 @@ func NewProcessor(
 		transferSource: transferSource,
 		resultApplier:  resultApplier,
 		uow:            uow,
-		logger:         core_observability.Logger(loggers...),
+		logger:         core_logger.Fallback(loggers...),
 	}
 }
 
 func (processor *Processor) ProcessPending(ctx context.Context) (err error) {
-	startedAt := time.Now()
-	pagesCount, transfersCount := 0, 0
-	defer func() {
-		logTiming := core_observability.LogTimingDebug
-		if transfersCount > 0 {
-			logTiming = core_observability.LogTiming
-		}
-		logTiming(
-			processor.logger,
-			"cardprepare",
-			"preparation_poll",
-			startedAt,
-			err,
-			zap.Int("pages_count", pagesCount),
-			zap.Int("transfers_count", transfersCount),
-		)
-	}()
 	if ctx == nil {
 		return errors.New("process pending card preparations: context is nil")
 	}
@@ -230,8 +212,6 @@ func (processor *Processor) ProcessPending(ctx context.Context) (err error) {
 		if err != nil {
 			return fmt.Errorf("list card preparation transfers: %w", err)
 		}
-		pagesCount++
-		transfersCount += len(transfers)
 		for _, transfer := range transfers {
 			if err := processor.processTransfer(ctx, transfer); err != nil {
 				if ctx.Err() != nil {
@@ -257,53 +237,10 @@ func (processor *Processor) processTransfer(
 	ctx context.Context,
 	transfer transfer_service.Transfer,
 ) (err error) {
-	startedAt := time.Now()
-	var (
-		startDuration        time.Duration
-		beginDuration        time.Duration
-		listWorksDuration    time.Duration
-		prepareWorksDuration time.Duration
-		applyResultsDuration time.Duration
-		worksWallDuration    time.Duration
-		worksCount           int
-		pendingWorksCount    int
-		skipped              bool
-	)
-	defer func() {
-		core_observability.LogTiming(
-			processor.logger,
-			"cardprepare",
-			"prepare_transfer",
-			startedAt,
-			err,
-			zap.Int64("transfer_id", int64(transfer.ID)),
-			zap.Int64("batch_id", int64(transfer.BatchID)),
-			zap.Int("items_count", transfer.ItemsCount),
-			zap.Int("groups_count", transfer.GroupsCount),
-			zap.Int("targets_count", transfer.TargetsCount),
-			zap.Int("works_count", worksCount),
-			zap.Int("pending_works_count", pendingWorksCount),
-			zap.Bool("skipped", skipped),
-			zap.Duration("start_preparation_duration", startDuration),
-			zap.Duration("begin_transfer_preparation_duration", beginDuration),
-			zap.Duration("list_works_duration", listWorksDuration),
-			zap.Duration("works_wall_duration", worksWallDuration),
-			zap.Duration("prepare_works_duration", prepareWorksDuration),
-			zap.Duration("apply_results_duration", applyResultsDuration),
-			zap.Int("preparation_concurrency", preparationConcurrency),
-		)
-	}()
 	if !preparationMayContinue(transfer.Phase) ||
 		transfer.Outcome != transfer_service.OutcomeRunning {
-		skipped = true
 		return nil
 	}
-	ctx = core_observability.WithCorrelation(ctx, core_observability.Correlation{
-		TransferID: int64(transfer.ID), BatchID: int64(transfer.BatchID),
-	})
-	core_observability.LogStarted(processor.logger, "cardprepare", "prepare_transfer",
-		zap.Int64("transfer_id", int64(transfer.ID)), zap.Int64("batch_id", int64(transfer.BatchID)))
-	stepStartedAt := time.Now()
 	if err := processor.coordinator.Start(ctx, StartPreparationCommand{
 		TransferID:           transfer.ID,
 		BatchID:              transfer.BatchID,
@@ -314,40 +251,21 @@ func (processor *Processor) processTransfer(
 		TargetsCount:         transfer.TargetsCount,
 		BatchChecksum:        transfer.BatchChecksum,
 	}); err != nil {
-		startDuration = time.Since(stepStartedAt)
 		return err
 	}
-	startDuration = time.Since(stepStartedAt)
-	stepStartedAt = time.Now()
 	if err := processor.transferSource.BeginPreparation(ctx, transfer.ID); err != nil {
-		beginDuration = time.Since(stepStartedAt)
 		return err
 	}
-	beginDuration = time.Since(stepStartedAt)
-	stepStartedAt = time.Now()
 	works, err := processor.repository.ListPreparationWork(ctx, transfer.ID)
-	listWorksDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return err
 	}
-	worksCount = len(works)
 	if int64(len(works)) != transfer.GroupTargetsCount {
 		return ErrPreparationMismatch
 	}
-	for _, work := range works {
-		if work.Status == WorkStatusPending {
-			pendingWorksCount++
-		}
-	}
 	works = fairPreparationOrder(works)
-	worksStartedAt := time.Now()
 	batchPreparer := processor.preparer.ForBatch()
-	type workResult struct {
-		prepareDuration time.Duration
-		applyDuration   time.Duration
-		err             error
-	}
-	results := make([]workResult, len(works))
+	results := make([]error, len(works))
 	var group errgroup.Group
 	group.SetLimit(preparationConcurrency)
 	for index, work := range works {
@@ -358,13 +276,10 @@ func (processor *Processor) processTransfer(
 		})
 	}
 	_ = group.Wait()
-	worksWallDuration = time.Since(worksStartedAt)
 	var firstErr error
-	for _, result := range results {
-		prepareWorksDuration += result.prepareDuration
-		applyResultsDuration += result.applyDuration
-		if firstErr == nil && result.err != nil {
-			firstErr = result.err
+	for _, resErr := range results {
+		if firstErr == nil && resErr != nil {
+			firstErr = resErr
 		}
 	}
 	if ctx.Err() != nil {
@@ -412,41 +327,31 @@ func (processor *Processor) processPreparationWork(
 	ctx context.Context,
 	work PreparationWork,
 	preparer *Preparer,
-) (result struct {
-	prepareDuration time.Duration
-	applyDuration   time.Duration
-	err             error
-}) {
+) error {
 	if work.Status == WorkStatusPending {
-		startedAt := time.Now()
 		stored, err := processor.prepareWork(ctx, work, preparer)
-		result.prepareDuration = time.Since(startedAt)
 		if err != nil {
-			result.err = fmt.Errorf(
+			return fmt.Errorf(
 				"prepare group-target ID='%d': %w",
 				work.GroupTargetID,
 				err,
 			)
-			return result
 		}
 		work = stored
 	}
 	command, err := work.TransferResult()
 	if err != nil {
-		result.err = err
-		return result
+		return err
 	}
-	startedAt := time.Now()
 	err = processor.resultApplier.Apply(ctx, command)
-	result.applyDuration = time.Since(startedAt)
 	if err != nil {
-		result.err = fmt.Errorf(
+		return fmt.Errorf(
 			"apply group-target ID='%d' result: %w",
 			work.GroupTargetID,
 			err,
 		)
 	}
-	return result
+	return nil
 }
 
 func (processor *Processor) prepareWork(
@@ -454,42 +359,11 @@ func (processor *Processor) prepareWork(
 	work PreparationWork,
 	preparer *Preparer,
 ) (stored PreparationWork, err error) {
-	startedAt := time.Now()
-	ctx = core_observability.WithCorrelation(ctx, core_observability.Correlation{
-		TransferID: int64(work.TransferID), GroupTargetID: work.GroupTargetID,
-	})
-	core_observability.LogStarted(processor.logger, "cardprepare", "prepare_group_target",
-		zap.Int64("transfer_id", int64(work.TransferID)), zap.Int64("group_target_id", work.GroupTargetID),
-		zap.String("cabinet_id", string(work.CabinetID)))
-	var loadSourceDuration, prepareTargetDuration, saveResultDuration time.Duration
-	itemsCount := 0
-	defer func() {
-		core_observability.LogTiming(
-			processor.logger,
-			"cardprepare",
-			"prepare_group_target",
-			startedAt,
-			err,
-			zap.Int64("transfer_id", int64(work.TransferID)),
-			zap.Int64("group_target_id", work.GroupTargetID),
-			zap.Int64("target_id", work.TargetID),
-			zap.String("cabinet_id", string(work.CabinetID)),
-			zap.Int("items_count", itemsCount),
-			zap.String("outcome_code", string(stored.OutcomeCode)),
-			zap.Int("outcome_item_position", stored.OutcomeItem),
-			zap.String("outcome_field", stored.OutcomeField),
-			zap.Duration("load_source_duration", loadSourceDuration),
-			zap.Duration("prepare_target_duration", prepareTargetDuration),
-			zap.Duration("save_result_duration", saveResultDuration),
-		)
-	}()
-	stepStartedAt := time.Now()
 	source, err := processor.transferSource.LoadPreparationSource(
 		ctx,
 		work.TransferID,
 		work.GroupTargetID,
 	)
-	loadSourceDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return PreparationWork{}, err
 	}
@@ -498,7 +372,6 @@ func (processor *Processor) prepareWork(
 		CabinetID(source.CabinetID) != work.CabinetID {
 		return PreparationWork{}, ErrPreparationMismatch
 	}
-	itemsCount = len(source.Items)
 
 	group := SourceGroup{Items: make([]SourceItem, len(source.Items))}
 	members := make([]PreparedMember, len(source.Items))
@@ -510,9 +383,7 @@ func (processor *Processor) prepareWork(
 			VendorCode:     item.VendorCode,
 		}
 	}
-	stepStartedAt = time.Now()
 	result, err := preparer.PrepareTarget(ctx, work.CabinetID, group)
-	prepareTargetDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return PreparationWork{}, err
 	}
@@ -533,7 +404,6 @@ func (processor *Processor) prepareWork(
 	if err := command.Validate(); err != nil {
 		return PreparationWork{}, err
 	}
-	stepStartedAt = time.Now()
 	if err := processor.uow.WithinTransaction(
 		ctx,
 		func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
@@ -542,10 +412,8 @@ func (processor *Processor) prepareWork(
 			return err
 		},
 	); err != nil {
-		saveResultDuration = time.Since(stepStartedAt)
 		return PreparationWork{}, fmt.Errorf("save card preparation result: %w", err)
 	}
-	saveResultDuration = time.Since(stepStartedAt)
 	return stored, nil
 }
 

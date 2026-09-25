@@ -12,8 +12,6 @@ import (
 	"github.com/ERONIS/wb-service/internal/core/canonicalhash"
 )
 
-// DecodeExactJSON decodes a canonical JSON payload and rejects alternate
-// encodings. Publication journals rely on byte-for-byte stable requests.
 func DecodeExactJSON(payload []byte, target any) error {
 	if len(payload) == 0 || target == nil {
 		return errors.New("exact JSON payload is invalid")
@@ -31,7 +29,6 @@ func DecodeExactJSON(payload []byte, target any) error {
 	return nil
 }
 
-// DigestParts builds a domain-separated digest for journal evidence.
 func DigestParts(domain string, parts ...[]byte) Digest {
 	builder := canonicalhash.NewSHA256(domain)
 	for _, part := range parts {
@@ -40,7 +37,6 @@ func DigestParts(domain string, parts ...[]byte) Digest {
 	return Digest(builder.Sum())
 }
 
-// DigestMembers hashes the stable identity and order of action members.
 func DigestMembers(members []ActionMemberDraft) Digest {
 	parts := make([][]byte, 0, len(members)*4)
 	for _, member := range members {

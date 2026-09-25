@@ -19,8 +19,6 @@ type Reader interface {
 	) ([]PreparedItem, error)
 }
 
-// OwnerCabinetReader is implemented by runtime readers that can filter the
-// shared WB client registry through the durable Telegram ownership binding.
 type OwnerCabinetReader interface {
 	CabinetsForOwner(context.Context, int64) ([]Cabinet, error)
 }

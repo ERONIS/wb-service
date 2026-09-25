@@ -53,7 +53,6 @@ func Prepare(
 	}, nil
 }
 
-// MultipartFile is the single-file form accepted by WB media upload methods.
 type MultipartFile struct {
 	FieldName string
 	FileName  string

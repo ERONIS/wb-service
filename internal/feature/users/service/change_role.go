@@ -44,11 +44,10 @@ func (s *UsersService) changeRole(
 		return domain.User{}, fmt.Errorf("require admin: %w", err)
 	}
 	if targetTelegramID <= 0 || !nextRole.IsValid() {
-		return domain.User{}, fmt.Errorf(
-			"invalid role change target TelegramID='%d', role='%s': %w",
+		return domain.User{}, core_errors.InvalidArgument(
+			"invalid role change target TelegramID='%d', role='%s'",
 			targetTelegramID,
 			nextRole,
-			core_errors.ErrInvalidArgument,
 		)
 	}
 
@@ -58,24 +57,21 @@ func (s *UsersService) changeRole(
 	}
 	if target.IsAdmin() {
 		if nextRole == domain.RoleAdmin {
-			return domain.User{}, fmt.Errorf(
-				"user with TelegramID='%d' is already admin: %w",
+			return domain.User{}, core_errors.Conflict(
+				"user with TelegramID='%d' is already admin",
 				targetTelegramID,
-				core_errors.ErrConflict,
 			)
 		}
-		return domain.User{}, fmt.Errorf(
-			"admin role cannot be changed for TelegramID='%d': %w",
+		return domain.User{}, core_errors.Forbidden(
+			"admin role cannot be changed for TelegramID='%d'",
 			targetTelegramID,
-			core_errors.ErrForbidden,
 		)
 	}
 	if target.Role == nextRole {
-		return domain.User{}, fmt.Errorf(
-			"user with TelegramID='%d' already has role='%s': %w",
+		return domain.User{}, core_errors.Conflict(
+			"user with TelegramID='%d' already has role='%s'",
 			targetTelegramID,
 			nextRole,
-			core_errors.ErrConflict,
 		)
 	}
 	if err := target.ChangeRole(nextRole); err != nil {

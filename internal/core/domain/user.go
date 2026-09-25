@@ -1,7 +1,6 @@
 package domain
 
 import (
-	"fmt"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -74,43 +73,23 @@ func CreateUser(
 
 func (u User) Validate() error {
 	if u.TelegramID <= 0 {
-		return fmt.Errorf(
-			"invalid TelegramID '%d': %w",
-			u.TelegramID,
-			core_errors.ErrInvalidArgument,
-		)
+		return core_errors.InvalidArgument("invalid TelegramID '%d'", u.TelegramID)
 	}
 
-	fullNameLength := utf8.RuneCountInString(
-		strings.TrimSpace(u.FullName),
-	)
-
+	fullNameLength := utf8.RuneCountInString(strings.TrimSpace(u.FullName))
 	if fullNameLength < 3 || fullNameLength > 100 {
-		return fmt.Errorf(
-			"invalid FullName length '%d': %w",
-			fullNameLength,
-			core_errors.ErrInvalidArgument,
-		)
+		return core_errors.InvalidArgument("invalid FullName length '%d'", fullNameLength)
 	}
 
 	if !u.Role.IsValid() {
-		return fmt.Errorf(
-			"invalid user role '%s': %w",
-			u.Role,
-			core_errors.ErrInvalidArgument,
-		)
+		return core_errors.InvalidArgument("invalid user role '%s'", u.Role)
 	}
 
 	if u.TelegramNickname != nil {
 		nickname := strings.TrimSpace(*u.TelegramNickname)
 		nicknameLength := utf8.RuneCountInString(nickname)
-
 		if nicknameLength == 0 || nicknameLength > 32 {
-			return fmt.Errorf(
-				"invalid TelegramNickname length '%d': %w",
-				nicknameLength,
-				core_errors.ErrInvalidArgument,
-			)
+			return core_errors.InvalidArgument("invalid TelegramNickname length '%d'", nicknameLength)
 		}
 	}
 
@@ -119,15 +98,10 @@ func (u User) Validate() error {
 
 func (u *User) ChangeRole(role UserRole) error {
 	if !role.IsValid() {
-		return fmt.Errorf(
-			"invalid user role '%s': %w",
-			role,
-			core_errors.ErrInvalidArgument,
-		)
+		return core_errors.InvalidArgument("invalid user role '%s'", role)
 	}
 
 	u.Role = role
-
 	return nil
 }
 

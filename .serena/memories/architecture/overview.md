@@ -1,18 +1,50 @@
 # Architecture & Design Invariants
 
-## Modular Structure
-- Two distinct layers:
-  - `internal/core`: Process-wide infrastructure, external API clients, DB pool, base domain models, hashing primitives, logger.
-  - `internal/feature`: Autonomous business domain modules (`users`, `wbcabinet`, `cardimport`, `cardedit`, `cardprepare`, `cardpublication`, `transfer`, `cabinetcopy`, `statistics`).
+## System Summary
+- Multi-cabinet Wildberries automation platform in Go 1.26 with PostgreSQL 18 and Telegram Bot API.
+- Implements resilient e-commerce product lifecycle: Excel import / cross-cabinet copy, preparation & WB schema validation, authorization, publication dispatch, media upload tracking, error feed reconciliation, and performance metrics.
 
-## Key Invariants
-- **Credential Isolation**: Feature modules NEVER receive raw API tokens, raw HTTP clients, or arbitrary URL paths. They only interact with WB through `internal/core/transport/wb` executors and strongly typed operations.
-- **Dynamic Registry**: WB cabinets are registered dynamically via `CredentialCandidate`. The candidate is isolated until `wbcabinet` verifies JWT claims, seller identity, and permissions.
-- **Transaction Boundaries**: Mutation operations must pass through Unit of Work (`internal/core/repository/postgres/transaction`), ensuring atomic state transitions in PostgreSQL.
-- **Idempotency & Hashing**: All domain mutations and batches generate canonical SHA-256 hashes (`internal/core/canonicalhash`) with length-prefixed encoding. Used to prevent duplicate executions and track state modifications.
-- **Composition Root**: Cross-feature wiring occurs exclusively in `cmd/wb-service/main.go`. Features do not import each other cyclically; they expose contracts and interfaces.
+## Layered Topology
+1. **Composition Root (`cmd/wb-service/main.go`)**:
+   - Single wiring point instantiating infrastructure, features, and background loops.
+   - Features communicate via contracts/interfaces; zero cyclic cross-feature imports.
+2. **Infrastructure Core (`internal/core`)**:
+   - `core/logger`: Zap structured JSON logger with trace/attempt logging.
+   - `core/repository/postgres`: Connection pooling (`pgx/v5` + `puddle/v2`) and transactional Unit of Work (`core_postgres_transaction.UnitOfWork`).
+   - `core/transport/wb`: Kubernetes `client-go` style HTTP client managing Wildberries Content, General, and Prices APIs.
+   - `core/transport/telegram`: Long-polling / webhook engine on `telebot.v3`, screen state persistence, and role-based middleware.
+   - `core/canonicalhash`: Deterministic SHA-256 with length-prefixed encoding for batch hashing, idempotency keys, and payload validation.
+   - `core/domain`: Base types (`CabinetID`, `SellerKey`, `TransferID`, `Digest`, `User`).
+   - `core/errors`: Centralized error taxonomy (`core_errors`). Provides domain/HTTP sentinel errors (`ErrNotFound`, `ErrInvalidArgument`, `ErrConflict`, `ErrForbidden`, `ErrUnauthorized`, `ErrAlreadyExists`, `ErrRateLimited`, `ErrQueueFull`, `ErrCapacityExceeded`, `ErrUnavailable`, `ErrTimeout`, etc.) and re-exports stdlib `errors` functions (`Is`, `As`, `New`, `Join`, `Unwrap`). Feature modules wrap core sentinels via `%w`.
+3. **Business Feature Layer (`internal/feature`)**:
+   - 9 isolated feature packages: `wbcabinet`, `cardimport`, `cardedit`, `cardprepare`, `cardpublication`, `transfer`, `cabinetcopy`, `statistics`, `users`.
+   - Each feature encapsulates: `transport` (WB adapters / Telegram menus), `service` (domain logic / state machines), `repository` (Postgres queries within UoW).
 
-## Domain References
-- WB Client details: `mem:core/wb_client`
-- Card transfer lifecycle: `mem:pipeline/lifecycle`
-- Functional modules: `mem:features/modules`
+## Background Workers Topology (in `main.go`)
+- Service runs 4 concurrent daemon goroutines orchestrated by `sync.WaitGroup` and context cancellation:
+  1. `wbCabinetFeature.RunRestoreRetry(ctx, 30s)`: Retries restoring/authenticating cabinets that failed token verification or ping on startup.
+  2. `statisticsFeature.RunAutoAttentionResolver(ctx, 10s)`: Background poller auto-resolving pending attention items and timeout reconciliations.
+  3. `cardpublicationFeature.RunMediaPolling(ctx)`: Polls until published cards register on WB, then uploads media files (photos/videos) to `/content/v2/cards/upload/add`.
+  4. `transferFeature.RunPolling(ctx, processors...)`: Master polling loop executing 5 chained pipeline stages:
+     - `cardprepareFeature.Processor()`: Evaluates pending transfers and builds WB-ready payloads.
+     - `transferFeature.AutomaticAuthorizationProcessor()`: Verifies live credentials before dispatch.
+     - `cardpublicationFeature.Processor()`: Plans incremental batches respecting WB size limits.
+     - `cardpublicationFeature.ProductDispatcher()`: Dispatches card upload requests to Content API.
+     - `cardpublicationFeature.ErrorFeed()`: Ingests `/content/v2/cards/error/list` and correlates errors.
+
+## Architectural Invariants
+- **Credential Isolation**: Feature modules NEVER touch raw API keys or construct unmanaged HTTP requests. All external WB communication goes through `internal/core/transport/wb` with token-bucket rate limiting (`flowcontrol`) and scoped authorization headers.
+- **Dynamic Cabinet Lifecycle**: Cabinets enter via `CredentialCandidate` (from `.env.wb` or Telegram). Activation requires JWT validation, `/ping`, and seller profile query. Dynamic hot-reload into `Clientset` without restarts.
+- **Atomic State Transitions**: All mutations must run inside Unit of Work transactions (`uow.Do(...)`).
+- **Idempotency & Cryptographic Verification**: Batches, transfer roots, and requests use canonical hashing (`canonicalhash.Digest`). Prevents duplicate submission and tracks payload drift.
+- **Strict Safe-Retry Policy**: Automated HTTP retries with exponential backoff are strictly limited to idempotent read/GET calls. Mutations (POST/PUT/DELETE) fail immediately upon ambiguous network delivery to prevent duplicate cards or charges.
+- **Audit Immutability**: Historical tables and attempt logs enforce DB triggers preventing `UPDATE` on identity columns and `DELETE` on execution facts (`reject_publication_fact_delete`).
+
+## Related Memories
+- Wildberries client internals: `mem:core/wb_client`
+- Telegram bot architecture: `mem:core/telegram`
+- Database schema & tables: `mem:database/schema`
+- End-to-end card transfer lifecycle: `mem:pipeline/lifecycle`
+- Transfer simplification & state consolidation plan: `mem:architecture/transfer_simplification_plan`
+- Detailed feature modules: `mem:features/modules`
+- Operational commands & runtime: `mem:operations/run_and_build`

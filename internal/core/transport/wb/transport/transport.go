@@ -52,8 +52,6 @@ func configureWBTransport(transport *http.Transport) {
 	if transport == nil {
 		return
 	}
-	// Wildberries API gateways often fail or reset multiplexed HTTP/2 streams
-	// with PROTOCOL_ERROR. Disabling HTTP/2 enforces reliable HTTP/1.1 keep-alive.
 	transport.ForceAttemptHTTP2 = false
 	transport.TLSNextProto = make(map[string]func(string, *tls.Conn) http.RoundTripper)
 	if transport.TLSClientConfig == nil {

@@ -35,8 +35,6 @@ type Media struct {
 	Video  string   `json:"video"`
 }
 
-// Card is the normalized immutable payload passed between card pipeline
-// stages after source rows have been aggregated.
 type Card struct {
 	SourceRows []int  `json:"sourceRows"`
 	Group      string `json:"group"`

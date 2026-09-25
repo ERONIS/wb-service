@@ -72,9 +72,6 @@ func (service *Service) SetNotifier(notifier Notifier) {
 	service.notifier = notifier
 }
 
-// Find searches the exact seller article in every active cabinet currently
-// owned by the actor. Any cabinet read failure aborts the selection so that a
-// confirmation never silently covers only a subset of the owner's cabinets.
 func (service *Service) Find(
 	ctx context.Context,
 	ownerTelegramID int64,

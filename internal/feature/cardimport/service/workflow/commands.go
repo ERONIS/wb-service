@@ -50,8 +50,6 @@ func (c SessionCommand) validate() error {
 	return nil
 }
 
-// ContinueCommand confirms that the user wants to keep importing all valid
-// cards while skipping rows and cards that caused blocking errors.
 type ContinueCommand struct {
 	AuthorTelegramID int64
 	SessionID        SessionID

@@ -17,9 +17,12 @@ Go service automating multi-cabinet Wildberries product operations: card import 
 ## Knowledge Graph Navigation
 Read specialized domain memories for details:
 - Architectural patterns, boundaries and invariants: `mem:architecture/overview`
+- Planned transfer architecture simplification and state consolidation: `mem:architecture/transfer_simplification_plan`
+- Concrete code patterns and implementation mechanics: `mem:architecture/code_patterns`
 - Wildberries Core transport, rate limiting and clientset: `mem:core/wb_client`
 - Telegram bot engine, screen persistence and routing: `mem:core/telegram`
 - Database schema, tables, transaction/UoW management: `mem:database/schema`
 - End-to-end card transfer state machine and lifecycle: `mem:pipeline/lifecycle`
 - Functional business modules (import, edit, prepare, copy, stats, users): `mem:features/modules`
 - Environment setup, docker compose, migrations, build and make targets: `mem:operations/run_and_build`
+- Mandatory Serena usage, memory selection, safety, and maintenance rules: `mem:memory_maintenance`

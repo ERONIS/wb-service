@@ -28,9 +28,7 @@ type MutationTargetRegistry struct {
 	transport  TargetTransport
 	cohortName string
 	now        func() time.Time
-	// snapshot is kept as a compatibility seam for deterministic unit tests
-	// and legacy fixed cohorts. Runtime construction leaves it nil.
-	snapshot *MutationTargetSnapshot
+	snapshot   *MutationTargetSnapshot
 }
 
 func NewMutationTargetRegistry(
@@ -51,8 +49,6 @@ func NewMutationTargetRegistry(
 	}
 }
 
-// MutationSnapshot resolves the active verified cabinets of one Telegram
-// owner. The returned snapshot is subsequently frozen in transfer_targets.
 func (registry *MutationTargetRegistry) MutationSnapshot(
 	ctx context.Context,
 	ownerTelegramID int64,
@@ -73,8 +69,6 @@ func (registry *MutationTargetRegistry) MutationSnapshot(
 	return registry.snapshotForCredentials(credentials)
 }
 
-// FanoutMutationSnapshot resolves all active verified cabinets whose current
-// owner has the partner or admin role. The result is frozen in transfer_targets.
 func (registry *MutationTargetRegistry) FanoutMutationSnapshot(
 	ctx context.Context,
 ) (MutationTargetSnapshot, error) {
@@ -103,8 +97,6 @@ func (registry *MutationTargetRegistry) MutationSnapshotForOwner(
 	return selectMutationTargets(base, cabinetIDs, registry.now().UTC())
 }
 
-// MutationSnapshotFor preserves the fixed-cohort selection API used by the
-// cabinet-copy tests. Runtime service code uses MutationSnapshotForOwner.
 func (registry *MutationTargetRegistry) MutationSnapshotFor(
 	ctx context.Context,
 	cabinetIDs []CabinetID,
@@ -130,8 +122,6 @@ func (registry *MutationTargetRegistry) MutationSnapshotFor(
 	return selectMutationTargets(base, cabinetIDs, registry.now().UTC())
 }
 
-// AllTargets is used only by global WB error-feed polling. Regular fan-out
-// creation uses FanoutMutationSnapshot; exact cabinet-copy remains owner scoped.
 func (registry *MutationTargetRegistry) AllTargets(
 	ctx context.Context,
 ) ([]MutationTarget, error) {

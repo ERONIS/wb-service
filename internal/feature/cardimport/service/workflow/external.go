@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -36,11 +35,11 @@ func (draft ExternalBatchDraft) Validate() error {
 		draft.GroupsCount <= 0 || draft.GroupsCount > len(draft.Items) ||
 		draft.Checksum == (Digest{}) || draft.AuthorSnapshot.TelegramUserID <= 0 ||
 		strings.TrimSpace(draft.AuthorSnapshot.DisplayName) == "" {
-		return fmt.Errorf("external card batch draft is invalid: %w", core_errors.ErrInvalidArgument)
+		return core_errors.InvalidArgument("external card batch draft is invalid")
 	}
 	for index, item := range draft.Items {
 		if item.Position != index+1 || item.SourceFileID != FileID(draft.SourceReferenceID) {
-			return fmt.Errorf("external card batch item %d is invalid: %w", index+1, core_errors.ErrInvalidArgument)
+			return core_errors.InvalidArgument("external card batch item %d is invalid", index+1)
 		}
 		if err := item.Validate(); err != nil {
 			return err
@@ -48,7 +47,7 @@ func (draft ExternalBatchDraft) Validate() error {
 	}
 	checksum, err := BatchChecksum(draft.Purpose, draft.GroupsCount, draft.Items)
 	if err != nil || checksum != draft.Checksum {
-		return fmt.Errorf("external card batch checksum is invalid: %w", core_errors.ErrConflict)
+		return core_errors.Conflict("external card batch checksum is invalid")
 	}
 	return nil
 }
@@ -58,15 +57,15 @@ func (service *Service) CreateExternalBatch(
 	actor TrustedActor,
 	command CreateExternalBatchCommand,
 ) (BatchHeader, error) {
-	if ctx == nil {
-		return BatchHeader{}, errors.New("create external card batch: context is nil")
+	if err := core_errors.RequireContext(ctx); err != nil {
+		return BatchHeader{}, err
 	}
 	actor = actor.Normalized()
 	if err := actor.Validate(); err != nil {
 		return BatchHeader{}, err
 	}
 	if command.SourceKind != BatchSourceWBCabinet || command.SourceReferenceID <= 0 || len(command.Cards) == 0 {
-		return BatchHeader{}, fmt.Errorf("external card batch command is invalid: %w", core_errors.ErrInvalidArgument)
+		return BatchHeader{}, core_errors.InvalidArgument("external card batch command is invalid")
 	}
 
 	items := make([]BatchItem, len(command.Cards))
@@ -76,7 +75,7 @@ func (service *Service) CreateExternalBatch(
 		card.SourceRows = []int{index + 1}
 		card.Variant.VendorCode = strings.TrimSpace(card.Variant.VendorCode)
 		if card.Variant.VendorCode == "" {
-			return BatchHeader{}, fmt.Errorf("external card at position %d has empty vendor code: %w", index+1, core_errors.ErrInvalidArgument)
+			return BatchHeader{}, core_errors.InvalidArgument("external card at position %d has empty vendor code", index+1)
 		}
 		key := NewSourceGroupKey(
 			FileID(command.SourceReferenceID),

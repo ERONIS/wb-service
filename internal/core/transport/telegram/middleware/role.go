@@ -78,7 +78,7 @@ func (a *RoleAccess) getRole(
 		telegramID,
 	)
 	if err != nil {
-		if errors.Is(err, core_errors.ErrNotFound) {
+		if core_errors.IsNotFound(err) {
 			return "", false, nil
 		}
 

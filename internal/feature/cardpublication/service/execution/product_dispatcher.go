@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	core_observability "github.com/ERONIS/wb-service/internal/core/observability"
+	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 	"go.uber.org/zap"
@@ -62,87 +62,50 @@ func NewProductDispatcher(
 		reconciliationTimeout: reconciliationTimeout,
 		concurrency:           concurrency,
 		now:                   time.Now,
-		logger:                core_observability.Logger(loggers...),
+		logger:                core_logger.Fallback(loggers...),
 	}
 }
 
-func (dispatcher *ProductDispatcher) ProcessPending(ctx context.Context) (err error) {
-	startedAt := time.Now()
-	var interruptedDuration, reconciliationDuration, listDuration, dispatchDuration, lockWait time.Duration
-	interruptedCount, dispatchableCount := 0, 0
-	defer func() {
-		logTiming := core_observability.LogTimingDebug
-		if interruptedCount > 0 || dispatchableCount > 0 {
-			logTiming = core_observability.LogTiming
-		}
-		logTiming(
-			dispatcher.logger,
-			"cardpublication",
-			"product_dispatch_poll",
-			startedAt,
-			err,
-			zap.Duration("lock_wait_duration", lockWait),
-			zap.Int("interrupted_actions_count", interruptedCount),
-			zap.Int("dispatchable_actions_count", dispatchableCount),
-			zap.Int("concurrency", dispatcher.concurrency),
-			zap.Duration("interrupted_duration", interruptedDuration),
-			zap.Duration("reconciliation_duration", reconciliationDuration),
-			zap.Duration("list_dispatchable_duration", listDuration),
-			zap.Duration("dispatch_duration", dispatchDuration),
-		)
-	}()
+func (dispatcher *ProductDispatcher) ProcessPending(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("process pending product dispatch: context is nil")
 	}
-	lockStartedAt := time.Now()
 	dispatcher.processMu.Lock()
-	lockWait = time.Since(lockStartedAt)
 	defer dispatcher.processMu.Unlock()
 
 	var firstErr error
-	stepStartedAt := time.Now()
 	interrupted, err := dispatcher.repository.ListInterruptedProductActions(
 		ctx,
 		productDispatchPageSize,
 	)
 	if err != nil {
-		interruptedDuration = time.Since(stepStartedAt)
 		return err
 	}
-	interruptedCount = len(interrupted)
 	for _, candidate := range interrupted {
 		if err := dispatcher.recordInterrupted(ctx, candidate); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
-	interruptedDuration = time.Since(stepStartedAt)
-	stepStartedAt = time.Now()
 	candidates, err := dispatcher.repository.ListDispatchableProductActions(
 		ctx,
 		productDispatchPageSize,
 	)
-	listDuration = time.Since(stepStartedAt)
 	if err != nil {
 		if firstErr != nil {
 			return errors.Join(firstErr, err)
 		}
 		return err
 	}
-	dispatchableCount = len(candidates)
 	var reconciliationErr, dispatchErr error
 	var wait sync.WaitGroup
 	wait.Add(2)
 	go func() {
 		defer wait.Done()
-		startedAt := time.Now()
 		reconciliationErr = dispatcher.reconcilePending(ctx)
-		reconciliationDuration = time.Since(startedAt)
 	}()
 	go func() {
 		defer wait.Done()
-		startedAt := time.Now()
 		dispatchErr = dispatcher.dispatchCandidates(ctx, candidates)
-		dispatchDuration = time.Since(startedAt)
 	}()
 	wait.Wait()
 	return errors.Join(firstErr, reconciliationErr, dispatchErr)
@@ -204,72 +167,22 @@ func (dispatcher *ProductDispatcher) dispatch(
 	ctx context.Context,
 	candidate ProductActionCandidate,
 	observation CatalogObservation,
-) (err error) {
-	startedAt := time.Now()
-	ctx = core_observability.WithCorrelation(ctx, core_observability.Correlation{
-		TransferID: int64(candidate.TransferID), ActionID: candidate.ActionID,
-	})
-	core_observability.LogStarted(dispatcher.logger, "cardpublication", "dispatch_product_action",
-		zap.Int64("transfer_id", int64(candidate.TransferID)), zap.Int64("action_id", candidate.ActionID),
-		zap.String("cabinet_id", string(candidate.CabinetID)))
+) error {
 	var (
-		loadActionDuration   time.Duration
-		buildRecheckDuration time.Duration
-		beginAttemptDuration time.Duration
-		mutationDuration     time.Duration
-		recordResultDuration time.Duration
-		actionKind           ActionKind
-		membersCount         int
-		result               SubmissionResult
 		planSuperseded       bool
 		planStopped          bool
 		authorizationExpired bool
 	)
-	defer func() {
-		core_observability.LogTiming(
-			dispatcher.logger,
-			"cardpublication",
-			"dispatch_product_action",
-			startedAt,
-			err,
-			zap.Int64("transfer_id", int64(candidate.TransferID)),
-			zap.Int64("action_id", candidate.ActionID),
-			zap.Int64("target_id", candidate.TargetID),
-			zap.String("cabinet_id", string(candidate.CabinetID)),
-			zap.String("action_kind", string(actionKind)),
-			zap.Int("members_count", membersCount),
-			zap.Bool("plan_superseded", planSuperseded),
-			zap.Bool("plan_stopped", planStopped),
-			zap.Bool("authorization_expired", authorizationExpired),
-			zap.Bool("catalog_batch_read", true),
-			zap.String("delivery", string(result.Delivery)),
-			zap.String("disposition", string(result.Disposition)),
-			zap.Int("http_status", result.HTTPStatus),
-			zap.String("outcome_code", result.SafeCode),
-			zap.Duration("load_action_duration", loadActionDuration),
-			zap.Duration("build_recheck_duration", buildRecheckDuration),
-			zap.Duration("begin_attempt_duration", beginAttemptDuration),
-			zap.Duration("mutation_duration", mutationDuration),
-			zap.Duration("record_result_duration", recordResultDuration),
-		)
-	}()
-	stepStartedAt := time.Now()
 	snapshot, err := dispatcher.loadLockedAction(ctx, candidate)
-	loadActionDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return err
 	}
-	actionKind = snapshot.Kind
-	membersCount = len(snapshot.Members)
-	stepStartedAt = time.Now()
 	recheck, err := BuildTargetedRecheck(snapshot, observation)
-	buildRecheckDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return err
 	}
 
 	var attempt ProductAttempt
-	stepStartedAt = time.Now()
 	err = dispatcher.uow.WithinTransaction(
 		ctx,
 		func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
@@ -433,7 +346,6 @@ func (dispatcher *ProductDispatcher) dispatch(
 			)
 		},
 	)
-	beginAttemptDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return err
 	}
@@ -450,15 +362,10 @@ func (dispatcher *ProductDispatcher) dispatch(
 		return ErrProductActionConflict
 	}
 
-	stepStartedAt = time.Now()
-	result = executeProductMutation(ctx, dispatcher.transport, snapshot)
-	mutationDuration = time.Since(stepStartedAt)
-	stepStartedAt = time.Now()
+	result := executeProductMutation(ctx, dispatcher.transport, snapshot)
 	resultCtx, cancel := publicationResultContext(ctx)
 	defer cancel()
-	err = dispatcher.recordSubmission(resultCtx, candidate, attempt, result)
-	recordResultDuration = time.Since(stepStartedAt)
-	return err
+	return dispatcher.recordSubmission(resultCtx, candidate, attempt, result)
 }
 
 func (dispatcher *ProductDispatcher) recordInterrupted(

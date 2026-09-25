@@ -1,7 +1,6 @@
 package cardedit_telegram_transport
 
 import (
-	"errors"
 	"fmt"
 	"html"
 	"strings"
@@ -180,9 +179,9 @@ func (handler *Handler) receiveDocument(ctx tele.Context) (bool, error) {
 	})
 	if err != nil {
 		switch {
-		case errors.Is(err, cardedit_service.ErrAlreadyActive):
+		case core_errors.Is(err, cardedit_service.ErrAlreadyActive):
 			return handler.documentError(ctx, telegramID, current, "⚠️ Эта карточка уже редактируется. Дождитесь результата и попробуйте продолжить.")
-		case errors.Is(err, cardedit_service.ErrQueueFull):
+		case core_errors.Is(err, cardedit_service.ErrQueueFull):
 			return handler.documentError(ctx, telegramID, current, "⚠️ Очередь редактирования заполнена. Попробуйте продолжить позже.")
 		default:
 			return handler.documentError(ctx, telegramID, current, "❌ Не удалось запустить редактирование. Попробуйте продолжить позже.")
@@ -220,11 +219,5 @@ func (handler *Handler) documentError(
 }
 
 func sendError(ctx tele.Context, err error) error {
-	return core_transport_telegram.NotifyError(
-		ctx,
-		err,
-		core_transport_telegram.OnError(nil, "cardedit.internal", "❌ Не удалось выполнить редактирование. Попробуйте позже."),
-		core_transport_telegram.OnError(core_errors.ErrForbidden, "cardedit.forbidden", "⛔ Недостаточно прав."),
-		core_transport_telegram.OnError(core_errors.ErrInvalidArgument, "cardedit.invalid", "⚠️ Проверьте введённые данные."),
-	)
+	return core_transport_telegram.NotifyServiceError(ctx, err)
 }

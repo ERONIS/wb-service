@@ -14,8 +14,6 @@ type MediaVisibility struct {
 	VideoVisible bool
 }
 
-// CheckMediaVisibility makes one fresh observation. Previously cached photos
-// must not decide whether an asynchronous WB media request has completed.
 func (reader *CatalogReader) CheckMediaVisibility(ctx context.Context, cabinetID CabinetID,
 	vendorCode string, nmID int64, expectedPhotos int, expectedVideo bool,
 ) (MediaVisibility, error) {

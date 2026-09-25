@@ -11,9 +11,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ContinueAfterErrors keeps safely parsed cards and removes data involved in
-// blocking issues. The session stays collecting, so an entirely invalid file
-// can be replaced without cancelling the whole upload.
 func (r *Repository) ContinueAfterErrors(
 	ctx context.Context,
 	command cardimport_service.ContinueCommand,
@@ -65,8 +62,6 @@ func (r *Repository) ContinueAfterErrors(
 	}
 
 	statements := []string{
-		// A row-level error only removes a card built from that row. A file-level
-		// error has no row number and therefore makes the whole file unusable.
 		`DELETE FROM wb.card_import_items AS item
 		 USING wb.card_import_files AS file
 		 WHERE item.session_id = $1
@@ -83,7 +78,6 @@ func (r *Repository) ContinueAfterErrors(
 		             OR issue.row_number = ANY(item.source_rows)
 		         )
 		   );`,
-		// For duplicates, deterministically keep the first uploaded card.
 		`WITH ranked AS (
 		    SELECT
 		        id,

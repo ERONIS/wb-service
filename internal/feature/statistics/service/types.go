@@ -1,9 +1,10 @@
 package statistics_service
 
 import (
-	"errors"
 	"strings"
 	"time"
+
+	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 )
 
 const (
@@ -14,9 +15,9 @@ const (
 )
 
 var (
-	ErrInvalidFilter     = errors.New("invalid statistics filter")
-	ErrOperationNotFound = errors.New("statistics operation not found")
-	ErrActionNotFound    = errors.New("statistics action not found")
+	ErrInvalidFilter     = core_errors.ErrInvalidArgument
+	ErrOperationNotFound = core_errors.ErrNotFound
+	ErrActionNotFound    = core_errors.ErrNotFound
 )
 
 type OperationFilter struct {

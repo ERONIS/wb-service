@@ -279,5 +279,3 @@ func (repository *Repository) RequeueCardForCreation(
 	}
 	return tx.Commit(ctx)
 }
-
-

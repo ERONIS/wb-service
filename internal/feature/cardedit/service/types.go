@@ -2,19 +2,19 @@ package cardedit_service
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
+	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 )
 
 var (
-	ErrAlreadyActive = errors.New("card edit is already active")
-	ErrQueueFull     = errors.New("card edit queue is full")
-	ErrCardNotFound  = errors.New("card was not found")
-	ErrUnsafeUpdate  = errors.New("card cannot be updated safely")
+	ErrAlreadyActive = core_errors.ErrConflict
+	ErrQueueFull     = core_errors.ErrQueueFull
+	ErrCardNotFound  = core_errors.ErrNotFound
+	ErrUnsafeUpdate  = core_errors.ErrConflict
 )
 
 type Cabinet struct {
@@ -99,13 +99,13 @@ type Config struct {
 func (config Config) Validate() error {
 	switch {
 	case config.PollInterval <= 0 || config.PollInterval > time.Hour:
-		return errors.New("card edit poll interval must be between zero and one hour")
+		return core_errors.InvalidArgument("card edit poll interval must be between zero and one hour")
 	case config.MaxAttempts <= 0 || config.MaxAttempts > 120:
-		return errors.New("card edit max attempts must be between 1 and 120")
+		return core_errors.InvalidArgument("card edit max attempts must be between 1 and 120")
 	case config.Workers <= 0 || config.Workers > 20:
-		return errors.New("card edit workers must be between 1 and 20")
+		return core_errors.InvalidArgument("card edit workers must be between 1 and 20")
 	case config.QueueSize < config.Workers || config.QueueSize > 1000:
-		return errors.New("card edit queue size must be between workers and 1000")
+		return core_errors.InvalidArgument("card edit queue size must be between workers and 1000")
 	default:
 		return nil
 	}

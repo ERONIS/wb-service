@@ -2,7 +2,6 @@ package users_service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
@@ -14,11 +13,7 @@ func (s *UsersService) IsAdmin(
 	telegramID int64,
 ) (bool, error) {
 	if telegramID <= 0 {
-		return false, fmt.Errorf(
-			"invalid TelegramID='%d': %w",
-			telegramID,
-			core_errors.ErrInvalidArgument,
-		)
+		return false, core_errors.InvalidArgument("invalid TelegramID='%d'", telegramID)
 	}
 
 	user, err := s.usersRepository.GetUserByTelegramID(
@@ -26,7 +21,7 @@ func (s *UsersService) IsAdmin(
 		telegramID,
 	)
 	if err != nil {
-		if errors.Is(err, core_errors.ErrNotFound) {
+		if core_errors.IsNotFound(err) {
 			return false, nil
 		}
 

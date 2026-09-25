@@ -150,7 +150,16 @@ added_modes:
 
 # initial prompt for the project. It will always be given to the LLM upon activating the project
 # (contrary to the memories, which are loaded on demand).
-initial_prompt: ""
+initial_prompt: >-
+  Serena is the durable project knowledge base and must be used throughout repository work.
+  Start by reading mem:core and the memories relevant to the task. Prefer Serena's symbolic
+  navigation and editing tools when applicable. Before finishing, perform a memory checkpoint:
+  add or update stable, non-obvious architecture decisions, invariants, domain rules, workflows,
+  schema relationships, operational commands, testing conventions, and recurring pitfalls learned
+  or changed during the task. Keep existing memories current and linked from mem:core or their
+  nearest parent. Never store secrets, credentials, personal data, environment values, transient
+  status, one-off debug output, or obvious and volatile line-level details. Follow
+  mem:memory_maintenance for memory structure and style.
 
 # time budget (seconds) per tool call for the retrieval of additional symbol information
 # such as docstrings or parameter information.

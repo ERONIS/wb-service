@@ -23,18 +23,11 @@ func (s *UsersService) DeleteUser(
 	}
 
 	if targetTelegramID <= 0 {
-		return fmt.Errorf(
-			"invalid target TelegramID='%d': %w",
-			targetTelegramID,
-			core_errors.ErrInvalidArgument,
-		)
+		return core_errors.InvalidArgument("invalid target TelegramID='%d'", targetTelegramID)
 	}
 
 	if adminTelegramID == targetTelegramID {
-		return fmt.Errorf(
-			"admin cannot delete himself: %w",
-			core_errors.ErrForbidden,
-		)
+		return core_errors.Forbidden("admin cannot delete himself")
 	}
 
 	target, err := s.usersRepository.GetUserByTelegramID(
@@ -49,10 +42,7 @@ func (s *UsersService) DeleteUser(
 	}
 
 	if target.IsAdmin() {
-		return fmt.Errorf(
-			"admin cannot delete another admin: %w",
-			core_errors.ErrForbidden,
-		)
+		return core_errors.Forbidden("admin cannot delete another admin")
 	}
 
 	if err := s.usersRepository.DeleteUser(

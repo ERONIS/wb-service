@@ -66,8 +66,6 @@ func Register(
 	return handler
 }
 
-// RenderChat updates the tracked menu without depending on the lifetime of an
-// incoming Telegram update. Background jobs use it after durable work ends.
 func (h *Handler) RenderChat(
 	chatID int64,
 	text string,
@@ -117,8 +115,6 @@ func NewHandler(
 	return handler
 }
 
-// RegisterFlowCleanup registers feature state cleanup for explicit flow exits
-// such as returning to the main menu or starting another exclusive flow.
 func (h *Handler) RegisterFlowCleanup(key string, cleanup func(int64)) {
 	key = strings.TrimSpace(key)
 	if key == "" || cleanup == nil {
@@ -140,8 +136,6 @@ func (h *Handler) RegisterTextFlow(
 	h.registerFlow(h.textHandlers, "text", key, minimumRole, handler)
 }
 
-// RegisterDocumentFlow attaches document handling to the same owner key used
-// by BeginTextFlow. This keeps multi-step text/document workflows exclusive.
 func (h *Handler) RegisterDocumentFlow(
 	key string,
 	minimumRole domain.UserRole,
@@ -168,8 +162,6 @@ func (h *Handler) registerFlow(
 	flows[key] = inputFlow{minimumRole: minimumRole, handler: handler}
 }
 
-// RegisterDocumentFallback registers the handler used when no exclusive flow
-// is active. It is intended for uploads that may begin from any screen.
 func (h *Handler) RegisterDocumentFallback(
 	minimumRole domain.UserRole,
 	handler tele.HandlerFunc,

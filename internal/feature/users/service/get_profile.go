@@ -8,8 +8,6 @@ import (
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 )
 
-// GetProfile returns the user profile for a Telegram identity supplied by an
-// authenticated transport.
 func (s *UsersService) GetProfile(
 	ctx context.Context,
 	telegramID int64,

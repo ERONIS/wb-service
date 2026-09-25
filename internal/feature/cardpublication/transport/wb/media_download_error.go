@@ -10,8 +10,6 @@ import (
 	core_wb "github.com/ERONIS/wb-service/internal/core/transport/wb"
 )
 
-// A download can be retried without sending anything to WB. Retain status and
-// Retry-After so the workflow can distinguish a busy origin from a missing file.
 type mediaDownloadError struct {
 	status int
 	delay  time.Duration

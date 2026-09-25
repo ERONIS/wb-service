@@ -151,8 +151,6 @@ func (s *Service) Cancel(
 	return nil
 }
 
-// Continue skips blocking rows/cards, keeps the successfully parsed cards and
-// leaves the upload session open when nothing valid remains.
 func (s *Service) Continue(
 	ctx context.Context,
 	command ContinueCommand,

@@ -12,10 +12,6 @@ import (
 
 const mediaRequestAttempts = 5
 
-// Retries belong to this workflow, not to all WB mutations. A file retry uses
-// the same bytes, nmID and photo number: WB replaces that slot rather than
-// appending another photo. Already accepted files are not sent again.
-// https://dev.wildberries.ru/en/news/101
 func retryMediaRequest[T any](ctx context.Context, wait func(context.Context, time.Duration) error,
 	call func() (T, error),
 ) (T, error) {
@@ -42,7 +38,6 @@ func retryMediaRequest[T any](ctx context.Context, wait func(context.Context, ti
 			return result, errors.Join(dispatchedErr, err)
 		}
 		if waitErr := wait(ctx, delay); waitErr != nil {
-			// Keep the last delivery evidence when shutdown interrupts backoff.
 			return result, errors.Join(dispatchedErr, err, waitErr)
 		}
 	}

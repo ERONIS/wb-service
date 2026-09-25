@@ -1,5 +1,3 @@
-// Package domain contains credential-safe value objects shared by WB
-// domain features and the WB transport. None of these values exposes a token.
 package domain
 
 import "crypto/sha256"

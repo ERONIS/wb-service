@@ -1,16 +1,15 @@
 package model
 
 import (
-	"errors"
-	"fmt"
 	"strings"
 	"time"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
+	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 )
 
-var ErrCapacityExceeded = errors.New("transfer capacity exceeded")
+var ErrCapacityExceeded = core_errors.CapacityExceeded("transfer capacity exceeded")
 
 type TransferID = cardpipeline.TransferID
 type Digest = cardpipeline.Digest
@@ -350,9 +349,9 @@ func isZeroDigest(digest Digest) bool {
 }
 
 func invalidTransfer(message string) error {
-	return fmt.Errorf("invalid transfer: %s", message)
+	return core_errors.InvalidArgument("invalid transfer: %s", message)
 }
 
 func invalidTargetSnapshot(message string) error {
-	return fmt.Errorf("invalid mutation target snapshot: %s", message)
+	return core_errors.InvalidArgument("invalid mutation target snapshot: %s", message)
 }

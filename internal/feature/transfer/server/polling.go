@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ERONIS/wb-service/internal/core/observability"
+	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	"go.uber.org/zap"
 )
 
@@ -56,14 +56,12 @@ func (polling *Polling) Run(ctx context.Context, onError ErrorHandler, loggers .
 	if ctx == nil {
 		return errors.New("run transfer polling: context is nil")
 	}
-	logger := observability.Logger(loggers...)
+	logger := core_logger.Fallback(loggers...)
 	var errorMu sync.Mutex
 	reportError := func(err error) {
 		if err == nil || ctx.Err() != nil || onError == nil {
 			return
 		}
-		// Error handlers were called serially by the old polling loop. Preserve
-		// that contract while the processors themselves run independently.
 		errorMu.Lock()
 		defer errorMu.Unlock()
 		onError(err)
@@ -77,9 +75,6 @@ func (polling *Polling) Run(ctx context.Context, onError ErrorHandler, loggers .
 			defer wait.Done()
 			var wake <-chan struct{}
 			if index == 0 {
-				// A finalized batch only needs to wake the workflow/discovery
-				// processor. Downstream processors observe its committed state on
-				// their own ticks and never wait behind its work.
 				wake = polling.wake
 			}
 			polling.runProcessor(ctx, logger, index, processor, wake, reportError)
@@ -123,26 +118,6 @@ func (polling *Polling) runProcessor(
 		}
 		processorLogger.Debug("Transfer polling processor started")
 		err := processor.ProcessPending(ctx)
-		observability.LogTimingDebug(
-			processorLogger,
-			"transfer",
-			"poll_processor",
-			startedAt,
-			err,
-			zap.Duration("poll_interval", polling.interval),
-			zap.Duration("schedule_delay", scheduleDelay),
-		)
-		observability.LogTimingDebug(
-			processorLogger,
-			"transfer",
-			"poll_cycle",
-			startedAt,
-			err,
-			zap.Int("processors_count", len(polling.processors)),
-			zap.Duration("poll_interval", polling.interval),
-			zap.Duration("schedule_delay", scheduleDelay),
-			zap.Bool("interval_exceeded", time.Since(startedAt) > polling.interval),
-		)
 		if err != nil {
 			reportError(err)
 		}

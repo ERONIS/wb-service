@@ -78,7 +78,7 @@ func (actor LiveTrustedActor) normalized() LiveTrustedActor {
 func (actor LiveTrustedActor) validate() error {
 	if actor.TelegramUserID <= 0 || actor.DisplayName == "" ||
 		len([]rune(actor.DisplayName)) > 100 {
-		return fmt.Errorf("trusted live actor is invalid: %w", core_errors.ErrInvalidArgument)
+		return core_errors.InvalidArgument("trusted live actor is invalid")
 	}
 	return nil
 }
@@ -90,14 +90,11 @@ func (actor LiveTrustedActor) digest() Digest {
 }
 
 type AuthorizationPlanSummary struct {
-	TransferID    TransferID
-	PlanID        int64
-	PlanDigest    Digest
-	TargetSetRoot Digest
-	PlanRevision  int64
-	// LatestAuthorizationID is the persisted renewal generation. Automatic
-	// authorization keys include it so retries for the same generation replay,
-	// while a plan whose previous authorization expired receives a fresh key.
+	TransferID            TransferID
+	PlanID                int64
+	PlanDigest            Digest
+	TargetSetRoot         Digest
+	PlanRevision          int64
 	LatestAuthorizationID LiveAuthorizationID
 	TargetsCount          int
 	CreateActions         int
@@ -205,7 +202,7 @@ func (command RequestLiveCommand) validate() error {
 	if command.TransferID <= 0 || command.PlanDigest == (Digest{}) ||
 		command.IdempotencyKey == "" ||
 		len(command.IdempotencyKey) > MaxLiveIdempotencyKeyLength {
-		return fmt.Errorf("request live command is invalid: %w", core_errors.ErrInvalidArgument)
+		return core_errors.InvalidArgument("request live command is invalid")
 	}
 	return nil
 }
@@ -235,7 +232,7 @@ func (command ApproveLiveCommand) validate() error {
 		command.ExpectedRevision < 0 || command.ExpectedPlanDigest == (Digest{}) ||
 		command.IdempotencyKey == "" ||
 		len(command.IdempotencyKey) > MaxLiveIdempotencyKeyLength {
-		return fmt.Errorf("approve live command is invalid: %w", core_errors.ErrInvalidArgument)
+		return core_errors.InvalidArgument("approve live command is invalid")
 	}
 	return nil
 }
@@ -274,7 +271,7 @@ func (command ChangeLiveAuthorizationStateCommand) validate() error {
 	if command.TransferID <= 0 || command.AuthorizationID <= 0 ||
 		command.ExpectedRevision < 0 || command.ExpectedPlanDigest == (Digest{}) ||
 		command.SafeReasonCode == "" || len(command.SafeReasonCode) > 128 {
-		return fmt.Errorf("change live authorization state command is invalid: %w", core_errors.ErrInvalidArgument)
+		return core_errors.InvalidArgument("change live authorization state command is invalid")
 	}
 	return nil
 }
@@ -301,7 +298,7 @@ func (command RevokeLiveCommand) validate() error {
 		command.ExpectedRevision < 0 || command.SafeReasonCode == "" ||
 		len(command.SafeReasonCode) > 128 || command.IdempotencyKey == "" ||
 		len(command.IdempotencyKey) > MaxLiveIdempotencyKeyLength {
-		return fmt.Errorf("revoke live command is invalid: %w", core_errors.ErrInvalidArgument)
+		return core_errors.InvalidArgument("revoke live command is invalid")
 	}
 	return nil
 }
@@ -491,9 +488,6 @@ func (service *LiveAuthorizationService) Request(
 	return authorization, nil
 }
 
-// Authorize records request and approval in one transaction. It is used when
-// finalizing a transfer is itself the user's durable consent to publish the
-// exact plan produced from that transfer.
 func (service *LiveAuthorizationService) Authorize(
 	ctx context.Context,
 	actor LiveTrustedActor,
@@ -680,8 +674,6 @@ func (service *LiveAuthorizationService) LockValid(
 	return service.repository.LockValidLive(ctx, tx, service.now().UTC(), check)
 }
 
-// SupersedeWithin invalidates an exact authorization in the caller's
-// transaction when its immutable plan is replaced before dispatch begins.
 func (service *LiveAuthorizationService) SupersedeWithin(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
@@ -690,8 +682,6 @@ func (service *LiveAuthorizationService) SupersedeWithin(
 	return service.changeStateWithin(ctx, tx, LiveAuthorizationSuperseded, command)
 }
 
-// CloseWithin closes an exact authorization in the caller's transaction after
-// every action covered by its plan has reached a terminal result.
 func (service *LiveAuthorizationService) CloseWithin(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,

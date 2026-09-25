@@ -7,11 +7,9 @@ import (
 	"sort"
 	"time"
 
-	core_observability "github.com/ERONIS/wb-service/internal/core/observability"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
-	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -126,61 +124,8 @@ func (dispatcher *ProductDispatcher) reconcile(
 	candidate ProductActionCandidate,
 	observation CatalogObservation,
 	now time.Time,
-) (err error) {
-	startedAt := time.Now()
-	ctx = core_observability.WithCorrelation(ctx, core_observability.Correlation{
-		TransferID: int64(candidate.TransferID), ActionID: candidate.ActionID,
-	})
-	core_observability.LogStarted(dispatcher.logger, "cardpublication", "reconcile_product_action",
-		zap.Int64("transfer_id", int64(candidate.TransferID)), zap.Int64("action_id", candidate.ActionID),
-		zap.String("cabinet_id", string(candidate.CabinetID)))
-	var (
-		loadActionDuration   time.Duration
-		buildDuration        time.Duration
-		loadErrorsDuration   time.Duration
-		classifyDuration     time.Duration
-		persistDuration      time.Duration
-		attemptAge           time.Duration
-		membersCount         int
-		pendingMembersCount  int
-		resolvedMembersCount int
-		matchesCount         int
-		complete             bool
-		actionClass          transfer_service.ResultClass
-		actionCode           string
-	)
-	defer func() {
-		core_observability.LogTiming(
-			dispatcher.logger,
-			"cardpublication",
-			"reconcile_product_action",
-			startedAt,
-			err,
-			zap.Int64("transfer_id", int64(candidate.TransferID)),
-			zap.Int64("action_id", candidate.ActionID),
-			zap.Int64("target_id", candidate.TargetID),
-			zap.String("cabinet_id", string(candidate.CabinetID)),
-			zap.Int("members_count", membersCount),
-			zap.Int("pending_members_count", pendingMembersCount),
-			zap.Int("resolved_members_count", resolvedMembersCount),
-			zap.Int("error_matches_count", matchesCount),
-			zap.Bool("complete", complete),
-			zap.Bool("catalog_batch_read", true),
-			zap.Duration("attempt_age", attemptAge),
-			zap.Duration("reconciliation_delay", dispatcher.reconciliationDelay),
-			zap.Duration("reconciliation_timeout", dispatcher.reconciliationTimeout),
-			zap.String("outcome_class", string(actionClass)),
-			zap.String("outcome_code", actionCode),
-			zap.Duration("load_action_duration", loadActionDuration),
-			zap.Duration("build_evidence_duration", buildDuration),
-			zap.Duration("load_error_matches_duration", loadErrorsDuration),
-			zap.Duration("classify_duration", classifyDuration),
-			zap.Duration("persist_duration", persistDuration),
-		)
-	}()
-	stepStartedAt := time.Now()
+) error {
 	action, err := dispatcher.loadLockedAction(ctx, candidate)
-	loadActionDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return err
 	}
@@ -208,26 +153,18 @@ func (dispatcher *ProductDispatcher) reconcile(
 			return err
 		}
 	}
-	membersCount = len(action.Members)
-	pendingMembersCount = len(action.PendingMembers())
 	effectiveAttemptStartedAt := action.AttemptStartedAt
 	if action.EmptyResponseRetry.ID > 0 {
 		effectiveAttemptStartedAt = action.EmptyResponseRetry.StartedAt
 	}
-	attemptAge = now.Sub(effectiveAttemptStartedAt)
-	stepStartedAt = time.Now()
 	targeted, err := BuildTargetedRecheck(action, observation)
-	buildDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return err
 	}
-	stepStartedAt = time.Now()
 	matches, err := dispatcher.repository.LoadErrorBatchMatches(ctx, action)
-	loadErrorsDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return err
 	}
-	matchesCount = len(matches)
 	if shouldRetryEmptyProductResponse(
 		action,
 		observation,
@@ -235,25 +172,21 @@ func (dispatcher *ProductDispatcher) reconcile(
 		now,
 		emptyResponseProductRetryDelay,
 	) {
-		stepStartedAt = time.Now()
-		err = dispatcher.retryAfterEmptyResponse(ctx, candidate, action, targeted)
-		persistDuration = time.Since(stepStartedAt)
-		return err
+		return dispatcher.retryAfterEmptyResponse(ctx, candidate, action, targeted)
 	}
-	stepStartedAt = time.Now()
 	var memberResults []MemberReconciliationResult
 	var completeResult bool
-	var resultClass transfer_service.ResultClass
-	var resultCode string
+	var actionClass transfer_service.ResultClass
+	var actionCode string
 	if retryResponseProvedRejection(action.EmptyResponseRetry) {
 		memberResults = rejectedRetryResults(action)
 		completeResult = true
-		resultClass = transfer_service.ResultRejected
-		resultCode = "PRODUCT_RETRY_REJECTED_BY_WB"
+		actionClass = transfer_service.ResultRejected
+		actionCode = "PRODUCT_RETRY_REJECTED_BY_WB"
 	} else {
 		deadlineAction := action
 		deadlineAction.AttemptStartedAt = effectiveAttemptStartedAt
-		memberResults, completeResult, resultClass, resultCode = reconcileProductEvidence(
+		memberResults, completeResult, actionClass, actionCode = reconcileProductEvidence(
 			deadlineAction,
 			observation,
 			matches,
@@ -261,25 +194,17 @@ func (dispatcher *ProductDispatcher) reconcile(
 			dispatcher.reconciliationTimeout,
 		)
 	}
-	resolvedMembersCount = len(memberResults)
-	classifyDuration = time.Since(stepStartedAt)
-	complete = completeResult
-	actionClass = resultClass
-	actionCode = resultCode
-	stepStartedAt = time.Now()
-	if !complete {
-		err = dispatcher.recordIncompleteReconciliation(
+	if !completeResult {
+		return dispatcher.recordIncompleteReconciliation(
 			ctx,
 			candidate,
 			action,
 			targeted,
 			memberResults,
 		)
-		persistDuration = time.Since(stepStartedAt)
-		return err
 	}
 
-	err = dispatcher.uow.WithinTransaction(
+	return dispatcher.uow.WithinTransaction(
 		ctx,
 		func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
 			locked, err := dispatcher.repository.LockProductAction(ctx, tx, candidate)
@@ -357,8 +282,6 @@ func (dispatcher *ProductDispatcher) reconcile(
 			return dispatcher.closeAuthorizationIfPlanTerminal(ctx, tx, locked)
 		},
 	)
-	persistDuration = time.Since(stepStartedAt)
-	return err
 }
 
 func shouldRetryEmptyProductResponse(
@@ -408,27 +331,9 @@ func (dispatcher *ProductDispatcher) retryAfterEmptyResponse(
 	candidate ProductActionCandidate,
 	snapshot ProductAction,
 	targeted TargetedRecheck,
-) (err error) {
-	startedAt := time.Now()
+) error {
 	var retry ProductRetry
-	var result SubmissionResult
-	defer func() {
-		core_observability.LogTiming(
-			dispatcher.logger,
-			"cardpublication",
-			"retry_product_after_empty_response",
-			startedAt,
-			err,
-			zap.Int64("transfer_id", int64(candidate.TransferID)),
-			zap.Int64("action_id", candidate.ActionID),
-			zap.String("cabinet_id", string(candidate.CabinetID)),
-			zap.Int64("retry_id", retry.ID),
-			zap.String("delivery", string(result.Delivery)),
-			zap.String("disposition", string(result.Disposition)),
-			zap.String("outcome_code", result.SafeCode),
-		)
-	}()
-	err = dispatcher.uow.WithinTransaction(
+	err := dispatcher.uow.WithinTransaction(
 		ctx,
 		func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
 			action, err := dispatcher.repository.LockProductAction(ctx, tx, candidate)
@@ -470,7 +375,7 @@ func (dispatcher *ProductDispatcher) retryAfterEmptyResponse(
 		return err
 	}
 
-	result = executeProductMutation(ctx, dispatcher.transport, snapshot)
+	result := executeProductMutation(ctx, dispatcher.transport, snapshot)
 	resultCtx, cancel := publicationResultContext(ctx)
 	defer cancel()
 	return dispatcher.recordProductRetry(resultCtx, candidate, retry, result)

@@ -1,5 +1,3 @@
-// Package canonicalhash provides the stable length-prefixed SHA-256 encoding
-// used for persisted identities, idempotency keys and workflow roots.
 package canonicalhash
 
 import (
