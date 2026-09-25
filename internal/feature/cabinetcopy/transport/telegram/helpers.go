@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"strings"
 
-	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
 	cabinetcopy_service "github.com/ERONIS/wb-service/internal/feature/cabinetcopy/service"
 
@@ -56,13 +55,9 @@ func cabinetName(cabinets []cabinetcopy_service.Cabinet, id cabinetcopy_service.
 func escaped(value string) string { return html.EscapeString(strings.TrimSpace(value)) }
 
 func presentError(ctx tele.Context, err error) error {
-	return core_transport_telegram.NotifyError(
+	return core_transport_telegram.NotifyServiceError(
 		ctx,
 		err,
-		core_transport_telegram.OnError(nil, "cabcopy.internal", "❌ Не удалось выполнить действие. Попробуйте ещё раз."),
 		core_transport_telegram.OnError(cabinetcopy_service.ErrNotEnoughCards, "cabcopy.not_enough", "⚠️ По выбранным тегам найдено меньше карточек, чем указано. Начните заново с меньшим количеством."),
-		core_transport_telegram.OnError(core_errors.ErrConflict, "cabcopy.conflict", "⚠️ Экран устарел. Откройте функцию заново."),
-		core_transport_telegram.OnError(core_errors.ErrInvalidArgument, "cabcopy.invalid", "⚠️ Проверьте выбранные данные."),
-		core_transport_telegram.OnError(core_errors.ErrNotFound, "cabcopy.not_found", "⚠️ Сеанс не найден. Откройте функцию заново."),
 	)
 }

@@ -2,15 +2,13 @@ package workflow
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
-	core_observability "github.com/ERONIS/wb-service/internal/core/observability"
+	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	"go.uber.org/zap"
 )
@@ -56,7 +54,7 @@ func New(
 		targetRegistry: targetRegistry,
 		uow:            uow,
 		capacity:       capacity,
-		logger:         core_observability.Logger(loggers...),
+		logger:         core_logger.Fallback(loggers...),
 	}
 }
 
@@ -69,14 +67,13 @@ func (service *Service) Start(
 	return service.start(ctx, batchID, nil)
 }
 
-// StartToCabinet starts the existing transfer pipeline for one exact target.
 func (service *Service) StartToCabinet(
 	ctx context.Context,
 	batchID cardpipeline.BatchID,
 	cabinetID CabinetID,
 ) (TransferID, error) {
 	if strings.TrimSpace(string(cabinetID)) != string(cabinetID) || cabinetID == "" {
-		return 0, fmt.Errorf("invalid transfer cabinet ID %q: %w", cabinetID, core_errors.ErrInvalidArgument)
+		return 0, core_errors.InvalidArgument("invalid transfer cabinet ID %q", cabinetID)
 	}
 	return service.start(ctx, batchID, []CabinetID{cabinetID})
 }
@@ -85,120 +82,56 @@ func (service *Service) start(
 	ctx context.Context,
 	batchID cardpipeline.BatchID,
 	targetCabinetIDs []CabinetID,
-) (transferID TransferID, err error) {
-	startedAt := time.Now()
-	ctx = core_observability.WithCorrelation(ctx, core_observability.Correlation{BatchID: int64(batchID)})
-	var (
-		findExistingDuration time.Duration
-		verifyStoredDuration time.Duration
-		readBatchDuration    time.Duration
-		readTargetsDuration  time.Duration
-		capacityDuration     time.Duration
-		persistDuration      time.Duration
-		targetsCount         int
-		itemsCount           int
-		groupsCount          int
-		reused               bool
-	)
-	defer func() {
-		core_observability.LogTiming(
-			service.logger,
-			"transfer",
-			"start",
-			startedAt,
-			err,
-			zap.Int64("batch_id", int64(batchID)),
-			zap.Int64("transfer_id", int64(transferID)),
-			zap.Int("requested_targets_count", len(targetCabinetIDs)),
-			zap.Int("targets_count", targetsCount),
-			zap.Int("items_count", itemsCount),
-			zap.Int("groups_count", groupsCount),
-			zap.Bool("reused", reused),
-			zap.Duration("find_existing_duration", findExistingDuration),
-			zap.Duration("verify_stored_targets_duration", verifyStoredDuration),
-			zap.Duration("read_batch_duration", readBatchDuration),
-			zap.Duration("read_targets_duration", readTargetsDuration),
-			zap.Duration("capacity_check_duration", capacityDuration),
-			zap.Duration("persist_duration", persistDuration),
-		)
-	}()
+) (TransferID, error) {
 	if batchID <= 0 {
-		return 0, fmt.Errorf(
-			"invalid transfer batch ID '%d': %w",
-			batchID,
-			core_errors.ErrInvalidArgument,
-		)
+		return 0, core_errors.InvalidArgument("invalid transfer batch ID '%d'", batchID)
 	}
 
-	stepStartedAt := time.Now()
 	existing, err := service.repository.FindByBatch(ctx, batchID)
-	findExistingDuration = time.Since(stepStartedAt)
 	if err == nil {
-		itemsCount = existing.ItemsCount
-		groupsCount = existing.GroupsCount
-		targetsCount = existing.TargetsCount
 		if len(targetCabinetIDs) > 0 {
-			stepStartedAt = time.Now()
 			if err := service.verifyStoredTargets(ctx, existing.ID, targetCabinetIDs); err != nil {
-				verifyStoredDuration = time.Since(stepStartedAt)
 				return 0, err
 			}
-			verifyStoredDuration = time.Since(stepStartedAt)
 		}
-		transferID = existing.ID
-		reused = true
-		return transferID, nil
+		return existing.ID, nil
 	}
-	if !errors.Is(err, core_errors.ErrNotFound) {
+	if !core_errors.IsNotFound(err) {
 		return 0, fmt.Errorf("find existing transfer: %w", err)
 	}
 
-	stepStartedAt = time.Now()
 	batch, err := service.batchReader.GetBatch(ctx, batchID)
-	readBatchDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return 0, fmt.Errorf("read transfer batch: %w", err)
 	}
 	if err := validateStartBatch(batch); err != nil {
 		return 0, err
 	}
-	itemsCount = batch.ItemsCount
-	groupsCount = batch.GroupsCount
-	core_observability.LogStarted(service.logger, "transfer", "start",
-		zap.Int64("batch_id", int64(batchID)), zap.Int("items_count", itemsCount),
-		zap.Duration("batch_age", time.Since(batch.FinalizedAt)))
 
 	var snapshot MutationTargetSnapshot
 	if len(targetCabinetIDs) == 0 {
-		stepStartedAt = time.Now()
 		snapshot, err = service.targetRegistry.FanoutMutationSnapshot(ctx)
 	} else {
-		stepStartedAt = time.Now()
 		snapshot, err = service.targetRegistry.MutationSnapshotForOwner(
 			ctx,
 			batch.AuthorSnapshot.TelegramUserID,
 			targetCabinetIDs,
 		)
 	}
-	readTargetsDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return 0, fmt.Errorf("read mutation target snapshot: %w", err)
 	}
-	targetsCount = len(snapshot.Targets)
-	stepStartedAt = time.Now()
 	capacity, err := service.capacity.Check(
 		batch.ItemsCount,
 		batch.GroupsCount,
 		len(snapshot.Targets),
 	)
-	capacityDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return 0, fmt.Errorf("check transfer capacity: %w", err)
 	}
 	root := TargetSetRoot(snapshot)
 
 	var transfer Transfer
-	stepStartedAt = time.Now()
 	err = service.uow.WithinTransaction(
 		ctx,
 		func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
@@ -220,13 +153,11 @@ func (service *Service) start(
 			return service.verifyStoredTargets(ctx, transfer.ID, targetCabinetIDs)
 		},
 	)
-	persistDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return 0, fmt.Errorf("create transfer: %w", err)
 	}
 
-	transferID = transfer.ID
-	return transferID, nil
+	return transfer.ID, nil
 }
 
 func (service *Service) verifyStoredTargets(
@@ -239,7 +170,7 @@ func (service *Service) verifyStoredTargets(
 		return fmt.Errorf("read stored transfer targets: %w", err)
 	}
 	if len(stored) != len(expected) {
-		return fmt.Errorf("transfer target set differs from requested target: %w", core_errors.ErrConflict)
+		return core_errors.Conflict("transfer target set differs from requested target")
 	}
 	wanted := make(map[CabinetID]struct{}, len(expected))
 	for _, cabinetID := range expected {
@@ -247,7 +178,7 @@ func (service *Service) verifyStoredTargets(
 	}
 	for _, cabinetID := range stored {
 		if _, exists := wanted[cabinetID]; !exists {
-			return fmt.Errorf("transfer target set differs from requested target: %w", core_errors.ErrConflict)
+			return core_errors.Conflict("transfer target set differs from requested target")
 		}
 	}
 	return nil

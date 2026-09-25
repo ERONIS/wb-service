@@ -6,9 +6,6 @@ import (
 	policy "github.com/ERONIS/wb-service/internal/core/transport/wb/policy"
 )
 
-// ExecuteResponse performs one closed WB operation and returns its complete raw
-// response DTO. Operation selection and response interpretation stay in the
-// calling feature transport and service.
 func ExecuteResponse[Response any](
 	ctx context.Context,
 	executor Executor,

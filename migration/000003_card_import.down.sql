@@ -1,0 +1,15 @@
+DROP TRIGGER IF EXISTS cabinet_copy_items_reject_mutation ON wb.cabinet_copy_items;
+DROP TABLE IF EXISTS wb.cabinet_copy_items;
+DROP TABLE IF EXISTS wb.cabinet_copy_sessions;
+DROP TRIGGER IF EXISTS card_batch_items_reject_mutation ON wb.card_batch_items;
+DROP TRIGGER IF EXISTS card_batch_items_validate_insert ON wb.card_batch_items;
+DROP TRIGGER IF EXISTS card_batches_reject_mutation ON wb.card_batches;
+DROP FUNCTION IF EXISTS wb.validate_card_batch_item_insert;
+DROP FUNCTION IF EXISTS wb.reject_frozen_card_batch_mutation;
+DROP TABLE IF EXISTS wb.card_batch_items;
+ALTER TABLE wb.card_import_sessions DROP CONSTRAINT IF EXISTS card_import_sessions_finalized_batch_fk;
+DROP TABLE IF EXISTS wb.card_batches;
+DROP TABLE IF EXISTS wb.card_import_items;
+DROP TABLE IF EXISTS wb.card_import_issues;
+DROP TABLE IF EXISTS wb.card_import_files;
+DROP TABLE IF EXISTS wb.card_import_sessions;

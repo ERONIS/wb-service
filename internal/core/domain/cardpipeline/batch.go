@@ -50,10 +50,7 @@ type BatchCursor struct {
 
 func (cursor BatchCursor) Validate() error {
 	if cursor.FinalizedAt.IsZero() || cursor.BatchID <= 0 {
-		return fmt.Errorf(
-			"invalid finalized batch cursor: %w",
-			core_errors.ErrInvalidArgument,
-		)
+		return core_errors.InvalidArgument("invalid finalized batch cursor")
 	}
 	return nil
 }
@@ -224,9 +221,5 @@ func equalRows(left, right []int) bool {
 }
 
 func invalidBatch(message string) error {
-	return fmt.Errorf(
-		"invalid card pipeline batch: %s: %w",
-		message,
-		core_errors.ErrInvalidArgument,
-	)
+	return core_errors.InvalidArgument("invalid card pipeline batch: %s", message)
 }

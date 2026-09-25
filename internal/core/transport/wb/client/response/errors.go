@@ -20,7 +20,6 @@ var (
 	)
 )
 
-// IsEmptyBody reports whether decoding failed because WB returned no JSON body.
 func IsEmptyBody(err error) bool {
 	return errors.Is(err, errResponseBodyEmpty)
 }

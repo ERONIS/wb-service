@@ -66,8 +66,6 @@ func (h *Handler) receiveDocument(ctx tele.Context) error {
 		file:             file,
 	}, true)
 
-	// The durable file workflow now runs independently from this Telegram
-	// update. A slow menu request cannot interrupt downloading or parsing.
 	return h.sendUploadedSessionView(ctx, view)
 }
 
@@ -189,8 +187,6 @@ func isRecoverableFile(file cardimport_service.File, now time.Time) bool {
 	}
 }
 
-// getOrBeginUploadView lets a valid XLSX start a new collecting session even
-// when the user sends it from another screen (for example, statistics).
 func (h *Handler) getOrBeginUploadView(
 	authorTelegramID int64,
 ) (cardimport_service.SessionView, error) {

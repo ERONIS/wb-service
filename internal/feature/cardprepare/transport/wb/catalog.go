@@ -8,8 +8,6 @@ import (
 	cardprepare_service "github.com/ERONIS/wb-service/internal/feature/cardprepare/service"
 )
 
-// CatalogTransport contains no pagination, cache or response interpretation.
-// Each method selects one closed operation and returns its complete raw DTO.
 type CatalogTransport struct {
 	executors core_wb.ExecutorRegistry
 }

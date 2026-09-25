@@ -16,4 +16,3 @@ type Reader interface {
 	ResolveVerifiedCard(context.Context, int64, int64, int64, int64) error
 	RequeueCardForCreation(context.Context, int64) error
 }
-

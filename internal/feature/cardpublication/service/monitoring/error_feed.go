@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	core_observability "github.com/ERONIS/wb-service/internal/core/observability"
+	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
@@ -106,41 +106,18 @@ func NewErrorFeed(
 		targets:    targets,
 		uow:        uow,
 		now:        time.Now,
-		logger:     core_observability.Logger(loggers...),
+		logger:     core_logger.Fallback(loggers...),
 	}
 }
 
-func (feed *ErrorFeed) ProcessPending(ctx context.Context) (err error) {
-	startedAt := time.Now()
-	targetsCount := 0
-	skipped := false
-	var lockWait time.Duration
-	defer func() {
-		logTiming := core_observability.LogTiming
-		if skipped {
-			logTiming = core_observability.LogTimingDebug
-		}
-		logTiming(
-			feed.logger,
-			"cardpublication",
-			"error_feed_poll",
-			startedAt,
-			err,
-			zap.Duration("lock_wait_duration", lockWait),
-			zap.Int("targets_count", targetsCount),
-			zap.Bool("skipped", skipped),
-		)
-	}()
+func (feed *ErrorFeed) ProcessPending(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("process Cards Error List: context is nil")
 	}
-	lockStartedAt := time.Now()
 	feed.mu.Lock()
-	lockWait = time.Since(lockStartedAt)
 	defer feed.mu.Unlock()
 	now := feed.now().UTC()
 	if !feed.nextPoll.IsZero() && now.Before(feed.nextPoll) {
-		skipped = true
 		return nil
 	}
 	feed.nextPoll = now.Add(errorFeedInterval)
@@ -148,7 +125,6 @@ func (feed *ErrorFeed) ProcessPending(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
-	targetsCount = len(targets)
 	group, refreshCtx := errgroup.WithContext(ctx)
 	for _, target := range targets {
 		target := target
@@ -163,32 +139,12 @@ func (feed *ErrorFeed) ProcessPending(ctx context.Context) (err error) {
 func (feed *ErrorFeed) Refresh(
 	ctx context.Context,
 	cabinetID CabinetID,
-) (savedCursor ErrorCursor, err error) {
-	startedAt := time.Now()
-	var loadCursorDuration, requestsDuration, saveDuration time.Duration
-	pagesCount, batchesCount := 0, 0
-	defer func() {
-		core_observability.LogTiming(
-			feed.logger,
-			"cardpublication",
-			"refresh_error_feed",
-			startedAt,
-			err,
-			zap.String("cabinet_id", string(cabinetID)),
-			zap.Int("pages_count", pagesCount),
-			zap.Int("batches_count", batchesCount),
-			zap.Duration("load_cursor_duration", loadCursorDuration),
-			zap.Duration("requests_duration", requestsDuration),
-			zap.Duration("save_duration", saveDuration),
-		)
-	}()
+) (ErrorCursor, error) {
 	if ctx == nil || strings.TrimSpace(string(cabinetID)) != string(cabinetID) ||
 		cabinetID == "" {
 		return ErrorCursor{}, errors.New("Cards Error List cabinet is invalid")
 	}
-	stepStartedAt := time.Now()
 	previous, err := feed.repository.LoadErrorCursor(ctx, cabinetID)
-	loadCursorDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return ErrorCursor{}, err
 	}
@@ -204,7 +160,6 @@ func (feed *ErrorFeed) Refresh(
 	batches := make([]ErrorBatchEvidence, 0)
 	next := previous
 	for page := 0; page < maxErrorFeedPages; page++ {
-		requestStartedAt := time.Now()
 		response, err := feed.transport.CardsErrorList(
 			ctx,
 			cabinetID,
@@ -214,8 +169,6 @@ func (feed *ErrorFeed) Refresh(
 				Order:  contentapi.CardsErrorListOrder{Ascending: true},
 			},
 		)
-		requestsDuration += time.Since(requestStartedAt)
-		pagesCount++
 		if err != nil {
 			return ErrorCursor{}, fmt.Errorf("read WB Cards Error List: %w", err)
 		}
@@ -228,7 +181,6 @@ func (feed *ErrorFeed) Refresh(
 				return ErrorCursor{}, err
 			}
 			batches = append(batches, batch)
-			batchesCount++
 			if cursorAfter(batch.UpdatedAt, batch.BatchUUID, next.UpdatedAt, next.BatchUUID) {
 				next.UpdatedAt = batch.UpdatedAt
 				next.BatchUUID = batch.BatchUUID
@@ -262,13 +214,12 @@ func (feed *ErrorFeed) Refresh(
 				Batches:   batches,
 				PolledAt:  polledAt,
 			}
-			stepStartedAt = time.Now()
+			var savedCursor ErrorCursor
 			err = feed.uow.WithinTransaction(ctx, func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
 				var err error
 				savedCursor, err = feed.repository.SaveErrorFeed(ctx, tx, command)
 				return err
 			})
-			saveDuration = time.Since(stepStartedAt)
 			if err != nil {
 				return ErrorCursor{}, fmt.Errorf("save Cards Error List feed: %w", err)
 			}

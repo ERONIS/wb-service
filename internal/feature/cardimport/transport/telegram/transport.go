@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
-	"github.com/ERONIS/wb-service/internal/core/observability"
+	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
 	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
 
@@ -159,7 +159,7 @@ func New(
 		ctx:                    ctx,
 		bot:                    bot,
 		service:                service,
-		logger:                 observability.Logger(loggers...),
+		logger:                 core_logger.Fallback(loggers...),
 		recoveryStartedAt:      time.Now(),
 		uploadScreenGeneration: make(map[int64]uint64),
 		recoveryWake:           make(chan struct{}, 1),

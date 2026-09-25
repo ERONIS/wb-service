@@ -87,8 +87,6 @@ func (store *StateStore[T]) Claim(
 	return lease, StateClaimed
 }
 
-// Finish releases a claim for retry or removes a completed state. Matching the
-// lease ID prevents a slow handler from changing a replacement flow.
 func (store *StateStore[T]) Finish(
 	telegramID int64,
 	lease StateLease[T],

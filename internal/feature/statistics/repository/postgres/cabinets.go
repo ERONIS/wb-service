@@ -9,8 +9,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// Media belongs to an individual item. The group outcome must not make its
-// successfully completed siblings look broken (or still uploading).
 const cabinetTaskMediaJoin = `
 		LEFT JOIN (
 			SELECT DISTINCT ON (member.transfer_item_target_id)

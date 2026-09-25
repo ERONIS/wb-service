@@ -22,7 +22,6 @@ func ParseTelegramID(value string) (int64, error) {
 	return telegramID, nil
 }
 
-// ParseInt64Argument validates callback arity and parses one bounded integer.
 func ParseInt64Argument(
 	arguments []string,
 	index int,
@@ -41,18 +40,13 @@ func ParseInt64Argument(
 	return value, nil
 }
 
-// SenderID returns the authenticated Telegram sender identifier.
 func SenderID(ctx tele.Context) (int64, error) {
 	if ctx == nil || ctx.Sender() == nil || ctx.Sender().ID <= 0 {
-		return 0, fmt.Errorf(
-			"Telegram sender is unavailable: %w",
-			core_errors.ErrInvalidArgument,
-		)
+		return 0, core_errors.InvalidArgument("Telegram sender is unavailable")
 	}
 	return ctx.Sender().ID, nil
 }
 
-// ActorFromContext maps a transport identity to the shared domain snapshot.
 func ActorFromContext(ctx tele.Context) (domain.Actor, error) {
 	telegramID, err := SenderID(ctx)
 	if err != nil {
@@ -81,7 +75,6 @@ func ActorFromContext(ctx tele.Context) (domain.Actor, error) {
 	return actor, nil
 }
 
-// TruncateRunes bounds user-facing text without splitting UTF-8 code points.
 func TruncateRunes(value string, maximum int) string {
 	if maximum <= 0 {
 		return ""

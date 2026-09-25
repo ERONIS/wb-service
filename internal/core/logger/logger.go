@@ -70,3 +70,12 @@ func (l *Logger) Close() {
 		fmt.Println("failed to close application logger", err)
 	}
 }
+
+func Fallback(loggers ...*zap.Logger) *zap.Logger {
+	for _, l := range loggers {
+		if l != nil {
+			return l
+		}
+	}
+	return zap.NewNop()
+}

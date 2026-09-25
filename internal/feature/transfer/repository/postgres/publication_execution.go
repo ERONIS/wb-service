@@ -602,8 +602,6 @@ func advanceOrFinishPublicationTransfer(
 	transferID transfer_service.TransferID,
 	activePhase transfer_service.Phase,
 ) error {
-	// Child projections are already persisted. Hold the parent row only for
-	// the short reduction so concurrent actions can write disjoint groups.
 	transfer, err := lockTransferByID(ctx, tx, transferID)
 	if err != nil {
 		return err
@@ -641,8 +639,6 @@ func advanceOrFinishPublicationTransfer(
 		return nil
 	}
 
-	// Only the result that closes the last running group pays for the complete
-	// outcome aggregation. The short parent lock elects that final result.
 	const finish = `
 		WITH group_counts AS (
 			SELECT

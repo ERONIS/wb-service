@@ -3,7 +3,6 @@ package wbcabinet_telegram_transport
 import (
 	"crypto/sha256"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"html"
 	"strings"
@@ -170,23 +169,11 @@ func parseCabinetCallbackKey(arguments []string) (string, error) {
 }
 
 func cabinetCallbackError(ctx tele.Context, key string, err error) error {
-	if errors.Is(err, core_errors.ErrNotFound) {
-		return core_transport_telegram.Notify(
-			ctx,
-			key+".not_found",
-			"Кабинет не найден или уже удалён.",
-		)
-	}
-	if errors.Is(err, core_errors.ErrInvalidArgument) {
-		return core_transport_telegram.Notify(
-			ctx,
-			key+".invalid",
-			"Кнопка устарела. Откройте профиль заново.",
-		)
-	}
-	return core_transport_telegram.Notify(
+	return core_transport_telegram.NotifyError(
 		ctx,
-		key,
-		"❌ Не удалось удалить кабинет.",
+		err,
+		core_transport_telegram.OnError(nil, key, "❌ Не удалось удалить кабинет."),
+		core_transport_telegram.OnError(core_errors.ErrNotFound, key+".not_found", "Кабинет не найден или уже удалён."),
+		core_transport_telegram.OnError(core_errors.ErrInvalidArgument, key+".invalid", "Кнопка устарела. Откройте профиль заново."),
 	)
 }

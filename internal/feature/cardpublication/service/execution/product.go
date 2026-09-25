@@ -283,8 +283,6 @@ type ProductAttempt struct {
 	StartedAt            time.Time
 }
 
-// ProductRetry is the single audited re-submission allowed after WB returned
-// a successful HTTP status with an empty response body.
 type ProductRetry struct {
 	ID                int64
 	TransferID        transfer_service.TransferID

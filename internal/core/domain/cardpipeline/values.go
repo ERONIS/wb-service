@@ -1,5 +1,3 @@
-// Package cardpipeline contains stable value objects shared by the card
-// import, preparation, transfer, publication and reporting features.
 package cardpipeline
 
 import (

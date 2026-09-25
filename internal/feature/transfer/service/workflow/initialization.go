@@ -3,15 +3,11 @@ package workflow
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"time"
 
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
-	core_observability "github.com/ERONIS/wb-service/internal/core/observability"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	"go.uber.org/zap"
 )
 
 const (
@@ -21,14 +17,8 @@ const (
 )
 
 var (
-	ErrInitializationInvalid = fmt.Errorf(
-		"transfer initialization input is invalid: %w",
-		core_errors.ErrInvalidArgument,
-	)
-	ErrInitializationConflict = fmt.Errorf(
-		"transfer initialization conflicts with stored state: %w",
-		core_errors.ErrConflict,
-	)
+	ErrInitializationInvalid  = core_errors.InvalidArgument("transfer initialization input is invalid")
+	ErrInitializationConflict = core_errors.Conflict("transfer initialization conflicts with stored state")
 )
 
 type InitializationGroup struct {
@@ -94,107 +84,48 @@ func (command InitializeTransferCommand) Validate() error {
 func (service *Service) Initialize(
 	ctx context.Context,
 	transferID TransferID,
-) (err error) {
-	startedAt := time.Now()
-	var (
-		loadTransferDuration time.Duration
-		buildCommandDuration time.Duration
-		persistDuration      time.Duration
-		markFailureDuration  time.Duration
-		failureCode          string
-		batchID              cardpipeline.BatchID
-		itemsCount           int
-		groupsCount          int
-		skipped              bool
-	)
-	defer func() {
-		core_observability.LogTiming(
-			service.logger,
-			"transfer",
-			"initialize",
-			startedAt,
-			err,
-			zap.Int64("transfer_id", int64(transferID)),
-			zap.Int64("batch_id", int64(batchID)),
-			zap.Int("items_count", itemsCount),
-			zap.Int("groups_count", groupsCount),
-			zap.Bool("skipped", skipped),
-			zap.String("failure_code", failureCode),
-			zap.Duration("load_transfer_duration", loadTransferDuration),
-			zap.Duration("build_command_duration", buildCommandDuration),
-			zap.Duration("persist_duration", persistDuration),
-			zap.Duration("mark_failure_duration", markFailureDuration),
-		)
-	}()
-	if ctx == nil {
-		return errors.New("initialize transfer: context is nil")
+) error {
+	if err := core_errors.RequireContext(ctx); err != nil {
+		return err
 	}
 	if transferID <= 0 {
-		return fmt.Errorf(
-			"initialize transfer ID='%d': %w",
-			transferID,
-			core_errors.ErrInvalidArgument,
-		)
+		return core_errors.InvalidArgument("initialize transfer ID='%d'", transferID)
 	}
 
-	stepStartedAt := time.Now()
 	transfer, err := service.repository.FindByID(ctx, transferID)
-	loadTransferDuration = time.Since(stepStartedAt)
 	if err != nil {
 		return fmt.Errorf("load transfer for initialization: %w", err)
 	}
-	batchID = transfer.BatchID
-	itemsCount = transfer.ItemsCount
-	groupsCount = transfer.GroupsCount
 	if transfer.Phase != PhaseInitializing {
-		skipped = true
 		return nil
 	}
-	ctx = core_observability.WithCorrelation(ctx, core_observability.Correlation{
-		TransferID: int64(transferID), BatchID: int64(batchID),
-	})
-	core_observability.LogStarted(service.logger, "transfer", "initialize",
-		zap.Int64("transfer_id", int64(transferID)), zap.Int64("batch_id", int64(batchID)))
 
-	stepStartedAt = time.Now()
 	command, err := service.buildInitialization(ctx, transfer)
-	buildCommandDuration = time.Since(stepStartedAt)
 	if err != nil {
-		if errors.Is(err, ErrInitializationInvalid) ||
-			errors.Is(err, core_errors.ErrNotFound) ||
-			errors.Is(err, core_errors.ErrInvalidArgument) ||
-			errors.Is(err, core_errors.ErrConflict) {
-			failureCode = failureBatchMismatch
-			stepStartedAt = time.Now()
-			err = service.markInitializationFailed(
+		if core_errors.IsNotFound(err) ||
+			core_errors.IsInvalidArgument(err) ||
+			core_errors.IsConflict(err) {
+			return service.markInitializationFailed(
 				ctx,
 				transfer.ID,
 				failureBatchMismatch,
 			)
-			markFailureDuration = time.Since(stepStartedAt)
-			return err
 		}
 		return err
 	}
 
-	stepStartedAt = time.Now()
 	err = service.uow.WithinTransaction(
 		ctx,
 		func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
 			return service.repository.Initialize(ctx, tx, command)
 		},
 	)
-	persistDuration = time.Since(stepStartedAt)
-	if errors.Is(err, ErrInitializationConflict) {
-		failureCode = failureStorageMismatch
-		stepStartedAt = time.Now()
-		err = service.markInitializationFailed(
+	if core_errors.IsConflict(err) {
+		return service.markInitializationFailed(
 			ctx,
 			transfer.ID,
 			failureStorageMismatch,
 		)
-		markFailureDuration = time.Since(stepStartedAt)
-		return err
 	}
 	if err != nil {
 		return fmt.Errorf("persist transfer initialization: %w", err)

@@ -52,9 +52,6 @@ type TransferResultApplier interface {
 	) error
 }
 
-// ProposalReader is the only cardprepare data surface exposed to downstream
-// features. Callers must present the complete immutable reference from the
-// stored proposal reference.
 type ProposalReader interface {
 	LoadProposal(
 		ctx context.Context,

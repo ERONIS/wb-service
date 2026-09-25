@@ -24,9 +24,6 @@ type recentCardEntry struct {
 	observedAt time.Time
 }
 
-// RecentCardsCache keeps cards observed by exact vendor-code searches during
-// the configured window. It deliberately does not walk the WB catalog: the
-// Cards List cursor is pagination state, not a server-side updatedAt filter.
 type RecentCardsCache struct {
 	mu           sync.RWMutex
 	ttl          time.Duration

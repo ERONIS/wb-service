@@ -37,23 +37,18 @@ func New(
 	}
 }
 
-// Add verifies and activates a new cabinet. Reusing the same normalized name
-// performs a safe token rotation and requires the same WB seller identity.
 func (service *Service) Add(
 	ctx context.Context,
 	command AddCommand,
 ) (Cabinet, error) {
-	if ctx == nil {
-		return Cabinet{}, fmt.Errorf("add WB cabinet: context is nil: %w", core_errors.ErrInvalidArgument)
+	if err := core_errors.RequireContext(ctx); err != nil {
+		return Cabinet{}, err
 	}
 	command.Name = strings.TrimSpace(command.Name)
 	command.Token = strings.TrimSpace(command.Token)
 	if err := validateAddCommand(command); err != nil {
 		return Cabinet{}, err
 	}
-	// Verification includes remote requests and persistence. Serializing this
-	// section keeps the durable generation and the activated runtime candidate
-	// in the same order when two token rotations arrive concurrently.
 	service.mutationMu.Lock()
 	defer service.mutationMu.Unlock()
 
@@ -120,7 +115,7 @@ func (service *Service) Add(
 		return Cabinet{}, err
 	}
 	if cabinet.ID != cabinetID {
-		return Cabinet{}, fmt.Errorf("persisted WB cabinet ID differs from verified candidate: %w", core_errors.ErrConflict)
+		return Cabinet{}, core_errors.Conflict("persisted WB cabinet ID differs from verified candidate")
 	}
 	if err := prepared.Activate(); err != nil {
 		return Cabinet{}, fmt.Errorf("activate verified WB cabinet: %w", err)
@@ -149,8 +144,6 @@ func (service *Service) GetByOwner(
 	return service.repository.GetByOwner(ctx, ownerTelegramID, cabinetID)
 }
 
-// Delete removes a cabinet owned by the Telegram user from durable storage
-// and from the live WB client registry.
 func (service *Service) Delete(
 	ctx context.Context,
 	ownerTelegramID int64,
@@ -179,8 +172,6 @@ func (service *Service) Targets(
 	return service.repository.ListTargets(ctx, ownerTelegramID)
 }
 
-// TargetsByOwnerRole returns active cabinets whose current owner has the
-// requested application role. Role membership is resolved on every call.
 func (service *Service) TargetsByOwnerRole(
 	ctx context.Context,
 	role domain.UserRole,
@@ -197,9 +188,6 @@ func (service *Service) AllTargets(
 	return service.repository.ListAllTargets(ctx)
 }
 
-// Restore verifies every durable credential before publishing it into the
-// runtime registry. Broken credentials are fail-closed and do not prevent the
-// Telegram service from starting.
 func (service *Service) Restore(ctx context.Context) error {
 	stored, err := service.repository.ListStored(ctx)
 	if err != nil {
@@ -250,7 +238,7 @@ func (service *Service) Bootstrap(
 		return nil
 	}
 	if ownerTelegramID <= 0 {
-		return fmt.Errorf("bootstrap WB cabinet owner is required: %w", core_errors.ErrInvalidArgument)
+		return core_errors.InvalidArgument("bootstrap WB cabinet owner is required")
 	}
 	var bootstrapErrors []error
 	for _, cabinet := range cabinets {
@@ -272,11 +260,11 @@ func validateAddCommand(command AddCommand) error {
 	if command.OwnerTelegramID <= 0 || command.Name == "" ||
 		!utf8.ValidString(command.Name) || nameLength > MaxCabinetNameLength ||
 		command.Token == "" {
-		return fmt.Errorf("invalid add WB cabinet command: %w", core_errors.ErrInvalidArgument)
+		return core_errors.InvalidArgument("invalid add WB cabinet command")
 	}
 	if command.CabinetID != "" && (strings.TrimSpace(string(command.CabinetID)) != string(command.CabinetID) ||
 		len(command.CabinetID) > 128) {
-		return fmt.Errorf("invalid bootstrap WB cabinet ID: %w", core_errors.ErrInvalidArgument)
+		return core_errors.InvalidArgument("invalid bootstrap WB cabinet ID")
 	}
 	return nil
 }
@@ -298,10 +286,6 @@ func newCabinetID() (CabinetID, error) {
 	)), nil
 }
 
-// RunRestoreRetry runs a background loop that retries loading cabinets that
-// failed with a transient verification error during startup. It stops when ctx
-// is cancelled. Interval controls how often the retry is attempted; 30 seconds
-// is a reasonable default.
 func (service *Service) RunRestoreRetry(
 	ctx context.Context,
 	interval time.Duration,
@@ -327,9 +311,6 @@ func (service *Service) RunRestoreRetry(
 	}
 }
 
-// retryTransientCabinets attempts to load any stored cabinet not yet active in
-// the runtime verifier. Cabinets that succeed are logged; those that still
-// fail transiently are silently deferred to the next tick.
 func (service *Service) retryTransientCabinets(ctx context.Context, logger *zap.Logger) error {
 	stored, err := service.repository.ListStored(ctx)
 	if err != nil {
@@ -351,11 +332,9 @@ func (service *Service) retryTransientCabinets(ctx context.Context, logger *zap.
 			continue
 		}
 		if IsTransientVerificationError(addErr) {
-			// Still unavailable — will retry on next tick.
 			service.verifier.Remove(cabinet.ID)
 			continue
 		}
-		// Permanent failure: update status in DB (same logic as Restore).
 		service.verifier.Remove(cabinet.ID)
 		status := StatusVerificationFailed
 		if errors.Is(addErr, ErrCredentialExpired) {

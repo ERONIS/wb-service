@@ -1,7 +1,6 @@
 package wbcabinet_service
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
@@ -79,21 +78,21 @@ func (cabinet Cabinet) Validate() error {
 	switch {
 	case cabinet.ID == "" || strings.TrimSpace(string(cabinet.ID)) != string(cabinet.ID) ||
 		len(cabinet.ID) > 128:
-		return fmt.Errorf("invalid cabinet ID: %w", core_errors.ErrInvalidArgument)
+		return core_errors.InvalidArgument("invalid cabinet ID")
 	case cabinet.OwnerTelegramID <= 0:
-		return fmt.Errorf("invalid cabinet owner: %w", core_errors.ErrInvalidArgument)
+		return core_errors.InvalidArgument("invalid cabinet owner")
 	case name == "" || len([]rune(name)) > MaxCabinetNameLength:
-		return fmt.Errorf("invalid cabinet name: %w", core_errors.ErrInvalidArgument)
+		return core_errors.InvalidArgument("invalid cabinet name")
 	case cabinet.SellerKey == (SellerKey{}):
-		return fmt.Errorf("invalid seller key: %w", core_errors.ErrInvalidArgument)
+		return core_errors.InvalidArgument("invalid seller key")
 	case cabinet.BindingRevision <= 0 || cabinet.CapabilityRevision <= 0:
-		return fmt.Errorf("invalid cabinet revision: %w", core_errors.ErrInvalidArgument)
+		return core_errors.InvalidArgument("invalid cabinet revision")
 	case cabinet.ClientGeneration == (ClientGeneration{}):
-		return fmt.Errorf("invalid client generation: %w", core_errors.ErrInvalidArgument)
+		return core_errors.InvalidArgument("invalid client generation")
 	case cabinet.CredentialExpiresAt.IsZero(), cabinet.VerifiedAt.IsZero():
-		return fmt.Errorf("invalid cabinet verification time: %w", core_errors.ErrInvalidArgument)
+		return core_errors.InvalidArgument("invalid cabinet verification time")
 	case !cabinet.Status.IsValid():
-		return fmt.Errorf("invalid cabinet status: %w", core_errors.ErrInvalidArgument)
+		return core_errors.InvalidArgument("invalid cabinet status")
 	}
 	return nil
 }

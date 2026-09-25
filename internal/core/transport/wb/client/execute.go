@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/ERONIS/wb-service/internal/core/observability"
 	"github.com/ERONIS/wb-service/internal/core/transport/wb/client/request"
 	"github.com/ERONIS/wb-service/internal/core/transport/wb/client/response"
 	policy "github.com/ERONIS/wb-service/internal/core/transport/wb/policy"
@@ -42,7 +41,7 @@ func (client *APIClient) Execute(
 			classified.httpStatus = result.statusCode
 		}
 		trace.complete(result, executeErr)
-		trace.log(observability.LoggerWithContext(ctx, clientLogger(client)))
+		trace.log(clientLogger(client))
 	}()
 
 	if client == nil {
@@ -302,8 +301,6 @@ func (client *APIClient) transportErrorResult(
 				newSafeTransportError(transportErr),
 			),
 			delivery: delivery,
-			// Transport failures remain retryable while the shared logical
-			// request deadline still has budget for another attempt.
 			retryable: response.IsRetryableTransportError(transportErr) ||
 				errors.Is(transportErr, context.DeadlineExceeded),
 		}
@@ -370,9 +367,6 @@ func (client *APIClient) responseResult(
 			0,
 			readErr,
 		)
-		// A safe read may be repeated when WB returned headers but the body
-		// was interrupted. shouldRetry additionally guarantees that the
-		// shared logical request deadline still has time left.
 		result.retryable = response.IsRetryableTransportError(readErr) ||
 			errors.Is(readErr, context.DeadlineExceeded)
 

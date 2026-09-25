@@ -19,13 +19,11 @@ const (
 	notificationDedupeFor   = 30 * time.Second
 	replyKeyboardVisibleFor = time.Second
 	menuUpdateInterval      = 1500 * time.Millisecond
-	// Telegram entity offsets and limits are expressed in UTF-16 code units.
-	menuTextUnitLimit = 4096
+	menuTextUnitLimit       = 4096
 )
 
 const truncatedMenuSuffix = "\n\n<i>Часть данных скрыта из-за лимита Telegram.</i>"
 
-// MenuStore persists the active menu message across service restarts.
 type MenuStore interface {
 	Get(context.Context, int64) (int, bool, error)
 	Save(context.Context, int64, int) error
@@ -55,8 +53,6 @@ type persistentReplyKeyboard struct {
 	markup func() *tele.ReplyMarkup
 }
 
-// menuHost serializes menu updates per chat and guarantees that only one
-// tracked interactive menu message remains active.
 type menuHost struct {
 	ctx   context.Context
 	bot   *tele.Bot
@@ -88,9 +84,6 @@ func newMenuHost(ctx context.Context, bot *tele.Bot, store MenuStore) *menuHost 
 	}
 }
 
-// Middleware rejects callbacks from superseded menus, routes textual
-// Send/Edit calls through the single active menu, and keeps that menu below
-// every message or document received from a user.
 func (host *menuHost) Middleware() tele.MiddlewareFunc {
 	return func(next tele.HandlerFunc) tele.HandlerFunc {
 		return func(ctx tele.Context) error {
@@ -148,9 +141,6 @@ func (host *menuHost) persistentReplyKeyboard() persistentReplyKeyboard {
 	return host.replyKeyboard
 }
 
-// ensurePersistentReplyKeyboard restores the keyboard once per chat after a
-// process restart. It runs independently so Telegram latency cannot hold up
-// normal update handling.
 func (host *menuHost) ensurePersistentReplyKeyboard(ctx tele.Context) {
 	chat := ctx.Chat()
 	if chat == nil || chat.ID == 0 {
@@ -213,7 +203,6 @@ func (host *menuHost) acceptCallback(ctx tele.Context) (bool, error) {
 		return false, err
 	}
 	if !found {
-		// Smooth rollout: the first menu used after deployment becomes active.
 		if err := host.store.Save(host.ctx, chat.ID, callback.Message.ID); err != nil {
 			return false, err
 		}
@@ -223,16 +212,10 @@ func (host *menuHost) acceptCallback(ctx tele.Context) (bool, error) {
 		return true, nil
 	}
 
-	// Telegram has no API for listing old chat messages. Once an old menu is
-	// touched, remove it immediately so stale keyboards disappear from history.
 	_ = host.bot.Delete(callback.Message)
 	return false, ctx.RespondAlert("Старое меню удалено. Используйте последнее меню бота.")
 }
 
-// Notify reports an operational error without changing the active menu.
-// Callback errors use a Telegram alert. Telegram cannot show callback alerts
-// for message/document updates, so those errors use one temporary message that
-// is deleted automatically. Repeated keys are suppressed for a short window.
 func Notify(ctx tele.Context, key string, text string) error {
 	if notifier, ok := ctx.(interface {
 		NotifyMenu(string, string) error
@@ -245,8 +228,6 @@ func Notify(ctx tele.Context, key string, text string) error {
 	return ctx.Send(notificationText(text))
 }
 
-// menuPosition either keeps the active menu, moves it below an input message,
-// or forces a new message. Its zero value keeps editing the active menu.
 type menuPosition struct {
 	fresh          bool
 	afterMessageID int
@@ -317,8 +298,6 @@ func (host *menuHost) renderLocked(
 		if !missingMessageError(editErr) {
 			return fmt.Errorf("edit active Telegram menu: %w", editErr)
 		}
-		// An uneditable message can still exist. Remove it before replacing it
-		// so we cannot leave another interactive keyboard behind.
 		if deleteErr := host.bot.Delete(active); deleteErr != nil &&
 			!deletedMessageMissing(deleteErr) {
 			return fmt.Errorf(
@@ -337,15 +316,12 @@ func (host *menuHost) renderLocked(
 		return errors.New("sent Telegram menu has no message ID")
 	}
 	if err := host.store.Save(host.ctx, chat.ID, message.ID); err != nil {
-		// Do not leave an untracked second menu when persistence failed.
 		_ = host.bot.Delete(message)
 		return fmt.Errorf("persist active Telegram menu: %w", err)
 	}
 	state.menu = snapshotMenu(text, opts)
 
 	if found && previousID != message.ID {
-		// Save the replacement first: old callbacks become stale even if
-		// Telegram can no longer delete the previous message.
 		_ = host.bot.Delete(storedMessage(chat.ID, previousID))
 	}
 	return nil
@@ -422,8 +398,6 @@ func inputMessageID(ctx tele.Context) int {
 	return ctx.Update().Message.ID
 }
 
-// SendNewMenu requests a newly positioned active menu when the context is
-// managed by menuHost. Plain Telebot contexts fall back to a regular send.
 func SendNewMenu(ctx tele.Context, what interface{}, opts ...interface{}) error {
 	if sender, ok := ctx.(interface {
 		SendNewMenu(interface{}, ...interface{}) error
@@ -433,8 +407,6 @@ func SendNewMenu(ctx tele.Context, what interface{}, opts ...interface{}) error 
 	return ctx.Send(what, opts...)
 }
 
-// InstallReplyKeyboard installs a persistent keyboard without turning its
-// short-lived setup message into the tracked interactive menu.
 func InstallReplyKeyboard(
 	ctx tele.Context,
 	text string,
@@ -586,9 +558,6 @@ func notificationText(notification string) string {
 	return html.EscapeString(strings.TrimSpace(notification))
 }
 
-// limitMenuText guarantees that generated HTML menus fit Telegram's message
-// limit. Oversized content is converted to escaped plain text before it is
-// shortened, so truncation cannot leave an HTML tag or entity incomplete.
 func limitMenuText(text string) string {
 	plainText := plainTextFromMenuHTML(text)
 	if telegramTextUnits(plainText) <= menuTextUnitLimit {

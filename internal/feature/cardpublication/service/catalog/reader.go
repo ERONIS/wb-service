@@ -10,7 +10,7 @@ import (
 	"time"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
-	core_observability "github.com/ERONIS/wb-service/internal/core/observability"
+	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
@@ -23,10 +23,7 @@ const (
 	recentObservationTTL        = 30 * time.Second
 )
 
-var ErrCatalogChangedDuringScan = fmt.Errorf(
-	"WB card catalog changed during scan: %w",
-	core_errors.ErrConflict,
-)
+var ErrCatalogChangedDuringScan = core_errors.ErrConflict
 
 type CatalogObservation struct {
 	TargetID   int64
@@ -54,7 +51,7 @@ func NewCatalogReader(transport CatalogTransport, loggers ...*zap.Logger) *Catal
 	return &CatalogReader{
 		transport: transport,
 		recent:    NewRecentCardsCache(recentObservationTTL),
-		logger:    core_observability.Logger(loggers...),
+		logger:    core_logger.Fallback(loggers...),
 	}
 }
 
@@ -68,30 +65,7 @@ func (reader *CatalogReader) WaitForMedia(
 	interval time.Duration,
 	timeout time.Duration,
 ) (err error) {
-	startedAt := time.Now()
-	logger := core_observability.LoggerWithContext(ctx, reader.logger)
-	core_observability.LogStarted(logger, "cardpublication", "wait_for_media_visibility",
-		zap.String("cabinet_id", string(cabinetID)), zap.Int64("nm_id", nmID),
-		zap.Duration("check_interval", interval), zap.Duration("check_timeout", timeout))
-	pollsCount := 0
-	lastPhotosCount, lastCardFound, lastVideoVisible := 0, false, false
-	defer func() {
-		core_observability.LogTiming(
-			logger,
-			"cardpublication",
-			"wait_for_media_visibility",
-			startedAt,
-			err,
-			zap.String("cabinet_id", string(cabinetID)),
-			zap.Int64("nm_id", nmID),
-			zap.Int("expected_photos_count", expectedPhotos),
-			zap.Bool("expected_video", expectedVideo),
-			zap.Int("polls_count", pollsCount),
-			zap.Bool("last_card_found", lastCardFound),
-			zap.Int("last_photos_count", lastPhotosCount),
-			zap.Bool("last_video_visible", lastVideoVisible),
-		)
-	}()
+	lastPhotosCount, lastCardFound := 0, false
 	vendorCode = normalizeCatalogVendorCode(vendorCode)
 	if ctx == nil || cabinetID == "" || vendorCode == "" || nmID <= 0 ||
 		expectedPhotos < 0 || interval <= 0 || timeout <= 0 {
@@ -105,17 +79,15 @@ func (reader *CatalogReader) WaitForMedia(
 			(!expectedVideo || strings.TrimSpace(card.Video) != "")
 	}
 	refresh := func() (bool, error) {
-		pollsCount++
 		cards, err := reader.readNormalVendorCode(ctx, cabinetID, vendorCode)
 		if err != nil {
 			return false, err
 		}
-		lastPhotosCount, lastCardFound, lastVideoVisible = 0, false, false
+		lastPhotosCount, lastCardFound = 0, false
 		for _, card := range cards {
 			if card.NMID == nmID {
 				lastCardFound = true
 				lastPhotosCount = loadedPhotoCount(card.Photos)
-				lastVideoVisible = strings.TrimSpace(card.Video) != ""
 			}
 			reader.recent.StoreIfRecent(cabinetID, card)
 			if mediaLoaded(card) {
@@ -125,8 +97,6 @@ func (reader *CatalogReader) WaitForMedia(
 		return false, nil
 	}
 
-	// Apply the deadline to both requests and limiter waits. Space out repeated
-	// negative observations so missing media cannot monopolize the cards bucket.
 	delay := interval
 	maxDelay := max(interval, 30*time.Second)
 	timer := time.NewTimer(delay)
@@ -156,43 +126,18 @@ func (reader *CatalogReader) WaitForMedia(
 	}
 }
 
-// ReadActiveVendorCode observes one exact active card without querying trash.
-// Media dispatch uses it after product reconciliation has already established
-// that this vendorCode belongs to the active catalog.
 func (reader *CatalogReader) ReadActiveVendorCode(
 	ctx context.Context,
 	targetID int64,
 	cabinetID CabinetID,
 	vendorCode string,
 ) (observation CatalogObservation, err error) {
-	startedAt := time.Now()
-	logger := core_observability.LoggerWithContext(ctx, reader.logger)
-	cacheHit := false
-	defer func() {
-		cacheStats := reader.recent.Stats()
-		core_observability.LogTiming(
-			logger,
-			"cardpublication",
-			"read_active_vendor_code",
-			startedAt,
-			err,
-			zap.Int64("target_id", targetID),
-			zap.String("cabinet_id", string(cabinetID)),
-			zap.Bool("cache_hit", cacheHit),
-			zap.Int("normal_cards_count", len(observation.Normal)),
-			zap.Int("recent_cache_vendor_entries", cacheStats.VendorEntries),
-			zap.Uint64("recent_cache_vendor_hits", cacheStats.VendorHits),
-			zap.Uint64("recent_cache_vendor_misses", cacheStats.VendorMisses),
-			zap.Uint64("recent_cache_stores", cacheStats.Stores),
-		)
-	}()
 	vendorCode = normalizeCatalogVendorCode(vendorCode)
 	if ctx == nil || targetID <= 0 || cabinetID == "" || vendorCode == "" {
 		return CatalogObservation{}, errors.New("active publication catalog query is invalid")
 	}
 	cards := make([]contentapi.Card, 0, 1)
 	if card, ok := reader.recent.LookupVendorCode(cabinetID, vendorCode); ok {
-		cacheHit = true
 		cards = append(cards, card)
 	} else {
 		found, err := reader.readNormalVendorCode(ctx, cabinetID, vendorCode)
@@ -212,54 +157,12 @@ func (reader *CatalogReader) ReadActiveVendorCode(
 	}, nil
 }
 
-// ReadVendorCodes reads only exact vendor-code matches. The recent-cards cache
-// is the first source for active cards; cache misses are resolved with WB
-// textSearch. Trash is always queried by vendorCode because it has no updated
-// cards feed.
 func (reader *CatalogReader) ReadVendorCodes(
 	ctx context.Context,
 	targetID int64,
 	cabinetID CabinetID,
 	vendorCodes []string,
 ) (observation CatalogObservation, err error) {
-	startedAt := time.Now()
-	logger := core_observability.LoggerWithContext(ctx, reader.logger)
-	core_observability.LogStarted(logger, "cardpublication", "read_vendor_codes",
-		zap.String("cabinet_id", string(cabinetID)), zap.Int64("target_id", targetID),
-		zap.Int("requested_vendor_codes_count", len(vendorCodes)))
-	var normalReadDuration, trashReadDuration time.Duration
-	cacheHits, normalReads := 0, 0
-	normalRequests, trashRequests := 0, 0
-	bulkNormal, bulkTrash := false, false
-	requestedVendorCodes := len(vendorCodes)
-	defer func() {
-		cacheStats := reader.recent.Stats()
-		core_observability.LogTiming(
-			logger,
-			"cardpublication",
-			"read_vendor_codes",
-			startedAt,
-			err,
-			zap.Int64("target_id", targetID),
-			zap.String("cabinet_id", string(cabinetID)),
-			zap.Int("requested_vendor_codes_count", requestedVendorCodes),
-			zap.Int("vendor_codes_count", len(vendorCodes)),
-			zap.Int("cache_hits_count", cacheHits),
-			zap.Int("normal_reads_count", normalReads),
-			zap.Int("normal_requests_count", normalRequests),
-			zap.Int("trash_requests_count", trashRequests),
-			zap.Bool("bulk_normal_scan", bulkNormal),
-			zap.Bool("bulk_trash_scan", bulkTrash),
-			zap.Int("normal_cards_count", len(observation.Normal)),
-			zap.Int("trash_cards_count", len(observation.Trash)),
-			zap.Int("recent_cache_vendor_entries", cacheStats.VendorEntries),
-			zap.Uint64("recent_cache_vendor_hits", cacheStats.VendorHits),
-			zap.Uint64("recent_cache_vendor_misses", cacheStats.VendorMisses),
-			zap.Uint64("recent_cache_stores", cacheStats.Stores),
-			zap.Duration("normal_reads_duration", normalReadDuration),
-			zap.Duration("trash_reads_duration", trashReadDuration),
-		)
-	}()
 	if ctx == nil || targetID <= 0 || cabinetID == "" {
 		return CatalogObservation{}, errors.New("publication catalog query is invalid")
 	}
@@ -272,38 +175,32 @@ func (reader *CatalogReader) ReadVendorCodes(
 	missingNormal := make([]string, 0, len(vendorCodes))
 	for _, vendorCode := range vendorCodes {
 		if card, ok := reader.recent.LookupVendorCode(cabinetID, vendorCode); ok {
-			cacheHits++
 			normalByID[card.NMID] = card
 		} else {
 			missingNormal = append(missingNormal, vendorCode)
 		}
 	}
-	normalReads = len(missingNormal)
 	var normalCards []contentapi.Card
 	var trashCards []contentapi.TrashCard
 	group, readCtx := errgroup.WithContext(ctx)
 	if len(missingNormal) > 0 {
 		group.Go(func() error {
-			startedAt := time.Now()
 			var err error
-			normalCards, normalRequests, bulkNormal, err = reader.readNormalVendorCodes(
+			normalCards, _, _, err = reader.readNormalVendorCodes(
 				readCtx,
 				cabinetID,
 				missingNormal,
 			)
-			normalReadDuration = time.Since(startedAt)
 			return err
 		})
 	}
 	group.Go(func() error {
-		startedAt := time.Now()
 		var err error
-		trashCards, trashRequests, bulkTrash, err = reader.readTrashVendorCodes(
+		trashCards, _, _, err = reader.readTrashVendorCodes(
 			readCtx,
 			cabinetID,
 			vendorCodes,
 		)
-		trashReadDuration = time.Since(startedAt)
 		return err
 	})
 	if err := group.Wait(); err != nil {
@@ -328,10 +225,6 @@ func (reader *CatalogReader) ReadVendorCodes(
 	return observation, nil
 }
 
-// readNormalVendorCodes uses one full catalog scan when the first page proves
-// that the catalog is small. A full first page falls back immediately to exact
-// searches: cursor.total is the page size, so scanning N speculative pages and
-// then issuing N exact searches only doubles work for large cabinets.
 func (reader *CatalogReader) readNormalVendorCodes(
 	ctx context.Context,
 	cabinetID CabinetID,
@@ -455,7 +348,6 @@ func (reader *CatalogReader) scanNormalVendorCodes(
 				result[card.NMID] = card
 			}
 		}
-		// cursor.total describes this page, not the size of the catalog.
 		if len(response.Cards) < cursor.Limit {
 			return sortedNormalCards(result), requests, true, nil
 		}

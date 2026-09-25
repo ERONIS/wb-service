@@ -234,9 +234,6 @@ type UploadCardsAddRequest struct {
 	CardsToAdd []UploadCard `json:"cardsToAdd"`
 }
 
-// UpdateCardsRequest replaces the editable payload of every listed card.
-// WB treats this endpoint as a full update, therefore callers must preserve
-// values that are not intentionally changed, especially sizes and barcodes.
 type UpdateCardsRequest []UpdateCard
 
 type UpdateCard struct {

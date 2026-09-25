@@ -352,4 +352,3 @@ func (handler *Handler) checkAllAttention(ctx tele.Context) error {
 	)
 	return ctx.EditOrSend(text, markup)
 }
-

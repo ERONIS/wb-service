@@ -44,8 +44,6 @@ func main() {
 	)
 	defer cancel()
 
-	// Logger.
-
 	logger, err := core_logger.NewLogger(
 		core_logger.NewConfigMust(),
 	)
@@ -53,8 +51,6 @@ func main() {
 		panic(fmt.Errorf("create logger: %w", err))
 	}
 	defer logger.Close()
-
-	// PostgreSQL.
 
 	postgresPool, err := core_postgres_pool.NewConnectionPool(
 		core_postgres_pool.NewConfigMust(),
@@ -66,8 +62,6 @@ func main() {
 	defer postgresPool.Close()
 
 	uow := core_postgres_transaction.New(postgresPool, pgx.TxOptions{})
-
-	// Wildberries.
 
 	wbConfig := core_wb_config.NewConfigMust()
 	wbClientset, err := core_wb.NewForConfig(
@@ -99,8 +93,6 @@ func main() {
 			zap.Error(err),
 		)
 	}
-
-	// Telegram.
 
 	telegramServer, err := telegram_server.New(
 		telegram_server.NewConfigMust(),
@@ -196,8 +188,6 @@ func main() {
 	cabinetcopyFeature.SetCompletionNavigator(statisticsFeature.CompletionNavigator())
 	cabinetcopyFeature.SetProcessingNotifier(transferFeature)
 
-	// Telegram commands.
-
 	telegramHandler := core_transport_telegram.Register(
 		ctx,
 		bot,
@@ -214,7 +204,6 @@ func main() {
 		liveAuthorization,
 	)
 	var background sync.WaitGroup
-	// Drain publication result writes before closing the pool and logger.
 	defer func() {
 		cancel()
 		background.Wait()

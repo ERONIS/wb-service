@@ -24,10 +24,9 @@ func (s *UsersService) GetUser(
 	}
 
 	if targetTelegramID <= 0 {
-		return domain.User{}, fmt.Errorf(
-			"invalid target TelegramID='%d': %w",
+		return domain.User{}, core_errors.InvalidArgument(
+			"invalid target TelegramID='%d'",
 			targetTelegramID,
-			core_errors.ErrInvalidArgument,
 		)
 	}
 

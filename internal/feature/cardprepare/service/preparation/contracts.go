@@ -6,8 +6,6 @@ import (
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 )
 
-// CatalogTransport performs exactly one raw WB read per method. It does not
-// paginate or interpret ResponseMeta.
 type CatalogTransport interface {
 	CardsLimits(context.Context, CabinetID) (contentapi.CardsLimitsResponse, error)
 	Subjects(

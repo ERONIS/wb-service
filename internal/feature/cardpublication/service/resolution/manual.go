@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
@@ -17,8 +18,8 @@ import (
 const MaxManualResolutionIdempotencyKeyLength = 160
 
 var (
-	ErrManualResolutionConflict = errors.New("publication manual resolution conflict")
-	ErrManualEvidenceInvalid    = errors.New("publication manual evidence is invalid")
+	ErrManualResolutionConflict = core_errors.ErrConflict
+	ErrManualEvidenceInvalid    = core_errors.ErrInvalidArgument
 )
 
 type ManualResolutionKind string

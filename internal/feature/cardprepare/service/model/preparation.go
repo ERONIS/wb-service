@@ -1,22 +1,14 @@
 package model
 
 import (
-	"errors"
-	"fmt"
-
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 )
 
-var ErrPreparationMismatch = fmt.Errorf(
-	"card preparation identity mismatch: %w",
-	core_errors.ErrConflict,
-)
-
-var ErrProposalNotFound = fmt.Errorf(
-	"card preparation proposal: %w",
-	core_errors.ErrNotFound,
+var (
+	ErrPreparationMismatch = core_errors.ErrConflict
+	ErrProposalNotFound   = core_errors.ErrNotFound
 )
 
 type PreparationID int64
@@ -39,7 +31,7 @@ func (command StartPreparationCommand) Validate() error {
 		command.ItemsCount <= 0 || command.GroupsCount <= 0 ||
 		command.GroupsCount > command.ItemsCount || command.TargetsCount <= 0 ||
 		command.BatchChecksum == (cardpipeline.Digest{}) {
-		return errors.New("start card preparation command is invalid")
+		return core_errors.InvalidArgument("start card preparation command is invalid")
 	}
 	return nil
 }
@@ -54,7 +46,7 @@ type ProposalQuery struct {
 func (query ProposalQuery) Validate() error {
 	if query.TransferID <= 0 || query.GroupTargetID <= 0 ||
 		query.PreparationGroupID <= 0 || query.ProposalRoot == (Digest{}) {
-		return errors.New("card preparation proposal query is invalid")
+		return core_errors.InvalidArgument("card preparation proposal query is invalid")
 	}
 	return nil
 }

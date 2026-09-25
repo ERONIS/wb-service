@@ -7,8 +7,6 @@ import (
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 )
 
-// CatalogTransport performs exactly one raw WB request. Pagination, stability
-// checks, and existing-card interpretation belong to CatalogReader.
 type CatalogTransport interface {
 	CardsList(
 		context.Context,

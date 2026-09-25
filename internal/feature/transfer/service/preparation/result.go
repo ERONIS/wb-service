@@ -10,10 +10,7 @@ import (
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 )
 
-var ErrPreparationResultConflict = fmt.Errorf(
-	"transfer preparation result conflicts with projection: %w",
-	core_errors.ErrConflict,
-)
+var ErrPreparationResultConflict = core_errors.ErrConflict
 
 type PreparationResultStatus string
 

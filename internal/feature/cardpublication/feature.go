@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	core_observability "github.com/ERONIS/wb-service/internal/core/observability"
+	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	cardpublication_postgres_repository "github.com/ERONIS/wb-service/internal/feature/cardpublication/repository/postgres"
@@ -63,7 +63,7 @@ func New(
 	if err := config.Validate(); err != nil {
 		panic(fmt.Sprintf("invalid cardpublication config: %v", err))
 	}
-	logger := core_observability.Logger(loggers...)
+	logger := core_logger.Fallback(loggers...)
 	repository := cardpublication_postgres_repository.New(postgresPool)
 	catalogReader := cardpublication_service.NewCatalogReader(catalogTransport, logger)
 	planner := cardpublication_service.NewPlanner()

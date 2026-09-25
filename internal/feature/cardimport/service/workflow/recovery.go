@@ -8,8 +8,6 @@ import (
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 )
 
-// ListRecoverableFiles returns durable intermediate files so infrastructure
-// can resume them without keeping a Telegram callback open.
 func (s *Service) ListRecoverableFiles(
 	ctx context.Context,
 	staleParsingBefore time.Time,

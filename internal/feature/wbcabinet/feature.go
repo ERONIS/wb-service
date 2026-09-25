@@ -52,9 +52,6 @@ func (feature *Feature) Service() *wbcabinet_service.Service {
 	return feature.service
 }
 
-// RunRestoreRetry starts a background loop that periodically retries cabinets
-// that failed with a transient verification error at startup. Call this in a
-// dedicated goroutine; it returns when ctx is cancelled.
 func (feature *Feature) RunRestoreRetry(
 	ctx context.Context,
 	interval time.Duration,

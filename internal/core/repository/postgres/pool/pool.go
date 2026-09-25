@@ -63,9 +63,6 @@ func NewConnectionPool(config Config, ctx context.Context) (*ConnectionPool, err
 
 }
 
-// OperationContext applies the process-wide PostgreSQL operation timeout.
-// Transaction-owned methods keep using the transaction context supplied by
-// the unit of work and must not call this helper.
 func (p *ConnectionPool) OperationContext(
 	parent context.Context,
 ) (context.Context, context.CancelFunc) {
