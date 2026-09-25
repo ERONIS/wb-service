@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
+	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
 
 	tele "gopkg.in/telebot.v3"
 )
@@ -18,9 +19,13 @@ func (h *UsersTgHandler) getUser(
 	targetTelegramID int64,
 	page int,
 ) error {
+	adminTelegramID, err := core_transport_telegram.SenderID(ctx)
+	if err != nil {
+		return sendServiceError(ctx, err)
+	}
 	user, err := h.usersService.GetUser(
 		h.ctx,
-		ctx.Sender().ID,
+		adminTelegramID,
 		targetTelegramID,
 	)
 	if err != nil {
@@ -44,7 +49,7 @@ func userCardText(user domain.User) string {
 	return fmt.Sprintf(
 		"👤 <b>Пользователь</b>\n\n"+
 			"Имя: <b>%s</b>\n"+
-			"TG ID: <code>%d</code>\n"+
+			"TG ID: %d\n"+
 			"Nickname: %s\n"+
 			"Роль: %s\n"+
 			"Создан: %s\n"+
@@ -63,10 +68,27 @@ func userCardMarkup(
 	page int,
 ) *tele.ReplyMarkup {
 	markup := &tele.ReplyMarkup{}
-	rows := make([]tele.Row, 0, 4)
+	rows := make([]tele.Row, 0, 6)
 	payload := userPayload(user.TelegramID, page)
 
 	if !user.IsAdmin() {
+		if user.IsPartner() {
+			rows = append(rows, markup.Row(
+				markup.Data(
+					buttonRevokePartner.Text,
+					buttonRevokePartner.Unique,
+					payload...,
+				),
+			))
+		} else {
+			rows = append(rows, markup.Row(
+				markup.Data(
+					buttonSetPartner.Text,
+					buttonSetPartner.Unique,
+					payload...,
+				),
+			))
+		}
 		rows = append(
 			rows,
 			markup.Row(

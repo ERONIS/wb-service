@@ -12,10 +12,7 @@ func (r *UsersRepository) GetUsers(
 	limit int,
 	offset int,
 ) ([]domain.User, error) {
-	ctx, cancel := context.WithTimeout(
-		ctx,
-		r.pool.OpTimeout(),
-	)
+	ctx, cancel := r.pool.OperationContext(ctx)
 	defer cancel()
 
 	const query = `

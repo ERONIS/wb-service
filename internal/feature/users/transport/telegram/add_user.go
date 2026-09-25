@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
 
@@ -13,15 +12,20 @@ import (
 
 const addUserPromptText = "➕ <b>Добавление пользователя</b>\n\n" +
 	"Отправьте TG ID и полное имя одной строкой.\n\n" +
-	"Пример: <code>123456789 Иван Иванов</code>"
+	"Пример: 123456789 Иван Иванов"
 
 func (h *UsersTgHandler) StartAddUser(ctx tele.Context) error {
 	page, err := parseUsersPage(ctx)
 	if err != nil {
 		return core_transport_telegram.Notify(ctx, "users.invalid_page", "Не удалось определить страницу списка.")
 	}
+	senderID, err := core_transport_telegram.SenderID(ctx)
+	if err != nil {
+		return sendServiceError(ctx, err)
+	}
 
-	h.setPendingAdd(ctx.Sender().ID, page)
+	h.pendingAdds.Begin(senderID, pendingAddState{page: page}, pendingAddTTL)
+	h.textFlows.BeginTextFlow(senderID, addUserTextFlow)
 
 	return ctx.EditOrSend(
 		addUserPromptText,
@@ -29,37 +33,12 @@ func (h *UsersTgHandler) StartAddUser(ctx tele.Context) error {
 	)
 }
 
-func (h *UsersTgHandler) AddUserInput(
-	ctx tele.Context,
-) error {
-	sender := ctx.Sender()
-	pending, claimed := h.claimPendingAdd(sender.ID)
-	if !claimed {
-		return nil
-	}
-
-	targetTelegramID, fullName, err := parseAddUserInput(
-		strings.Fields(ctx.Text()),
-	)
-	if err != nil {
-		h.finishPendingAdd(sender.ID, pending.id, true)
-		return core_transport_telegram.Notify(ctx, "users.invalid_add_format", "⚠️ Неверный формат. Отправьте TG ID и полное имя одной строкой.")
-	}
-
-	created, err := h.createUser(
-		ctx,
-		sender.ID,
-		targetTelegramID,
-		fullName,
-		pending.page,
-	)
-	h.finishPendingAdd(sender.ID, pending.id, !created)
-
-	return err
-}
-
 func (h *UsersTgHandler) CancelAddUser(ctx tele.Context) error {
-	h.clearPendingAdd(ctx.Sender().ID)
+	senderID, err := core_transport_telegram.SenderID(ctx)
+	if err != nil {
+		return sendServiceError(ctx, err)
+	}
+	h.clearPendingAdd(senderID)
 
 	return h.ListUsers(ctx)
 }
@@ -115,66 +94,20 @@ func addUserPromptMarkup(page int) *tele.ReplyMarkup {
 	return markup
 }
 
-func (h *UsersTgHandler) setPendingAdd(telegramID int64, page int) {
-	h.pendingAddMu.Lock()
-	defer h.pendingAddMu.Unlock()
-
-	h.nextPendingAddID++
-	h.pendingAdds[telegramID] = pendingAddState{
-		id:        h.nextPendingAddID,
-		page:      page,
-		expiresAt: time.Now().Add(pendingAddTTL),
-	}
-}
-
-func (h *UsersTgHandler) claimPendingAdd(
-	telegramID int64,
-) (pendingAddState, bool) {
-	h.pendingAddMu.Lock()
-	defer h.pendingAddMu.Unlock()
-
-	state, ok := h.pendingAdds[telegramID]
-	if !ok {
-		return pendingAddState{}, false
-	}
-	if state.busy || time.Now().After(state.expiresAt) {
-		if !state.busy {
-			delete(h.pendingAdds, telegramID)
-		}
-		return pendingAddState{}, false
-	}
-
-	state.busy = true
-	h.pendingAdds[telegramID] = state
-
-	return state, true
-}
-
 func (h *UsersTgHandler) finishPendingAdd(
 	telegramID int64,
-	pendingID uint64,
+	pending core_transport_telegram.StateLease[pendingAddState],
 	retry bool,
 ) {
-	h.pendingAddMu.Lock()
-	defer h.pendingAddMu.Unlock()
-
-	state, ok := h.pendingAdds[telegramID]
-	if !ok || state.id != pendingID {
-		return
+	if h.pendingAdds.Finish(telegramID, pending, retry, pendingAddTTL) &&
+		!retry && h.textFlows != nil {
+		h.textFlows.EndTextFlow(telegramID, addUserTextFlow)
 	}
-	if !retry {
-		delete(h.pendingAdds, telegramID)
-		return
-	}
-
-	state.busy = false
-	state.expiresAt = time.Now().Add(pendingAddTTL)
-	h.pendingAdds[telegramID] = state
 }
 
 func (h *UsersTgHandler) clearPendingAdd(telegramID int64) {
-	h.pendingAddMu.Lock()
-	defer h.pendingAddMu.Unlock()
-
-	delete(h.pendingAdds, telegramID)
+	h.pendingAdds.Cancel(telegramID)
+	if h.textFlows != nil {
+		h.textFlows.EndTextFlow(telegramID, addUserTextFlow)
+	}
 }

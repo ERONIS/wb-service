@@ -19,15 +19,24 @@ func (repository *Repository) ListPreparing(
 	if afterID < 0 || limit <= 0 || limit > initializationListPageLimit {
 		return nil, core_errors.ErrInvalidArgument
 	}
-	ctx, cancel := context.WithTimeout(ctx, repository.pool.OpTimeout())
+	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 
 	query := `
 		SELECT ` + transferColumns + `
 		FROM wb.transfers AS transfer
-		WHERE transfer.phase = 'preparing'
+		WHERE transfer.phase IN (
+				'preparing', 'awaiting_authorization', 'publishing',
+				'reconciling', 'media'
+			)
 			AND transfer.outcome = 'running'
 			AND transfer.id > $1
+			AND EXISTS (
+				SELECT 1
+				FROM wb.transfer_group_targets AS pending_group
+				WHERE pending_group.transfer_id = transfer.id
+				  AND pending_group.preparation_status IN ('not_started', 'running')
+			)
 		ORDER BY transfer.id
 		LIMIT $2;
 	`
@@ -108,24 +117,50 @@ func (repository *Repository) BeginPreparation(
 				SELECT COUNT(*)
 				FROM wb.transfer_item_targets AS item_target
 				WHERE item_target.transfer_id = $1
-					AND item_target.state = 'running'
+			),
+			(
+				SELECT COUNT(*)
+				FROM wb.transfer_item_targets AS item_target
+				WHERE item_target.transfer_id = $1
+					AND item_target.state IN ('running', 'terminal')
 			)
 		FROM wb.transfer_group_targets
 		WHERE transfer_id = $1;
 	`
-	var total, active, activeItems int64
+	var total, active, totalItems, activeItems int64
 	if err := tx.QueryRow(ctx, validate, transferID).Scan(
 		&total,
 		&active,
+		&totalItems,
 		&activeItems,
 	); err != nil {
 		return fmt.Errorf("validate transfer preparation activation: %w", err)
 	}
-	if total != transfer.GroupTargetsCount || active != total ||
-		activeItems != transfer.ItemTargetsCount {
+	if !validPreparationActivation(
+		transfer.GroupTargetsCount,
+		transfer.ItemTargetsCount,
+		total,
+		active,
+		totalItems,
+		activeItems,
+	) {
 		return transfer_service.ErrPreparationResultConflict
 	}
 	return nil
+}
+
+func validPreparationActivation(
+	expectedGroups int64,
+	expectedItems int64,
+	totalGroups int64,
+	activeGroups int64,
+	totalItems int64,
+	activeItems int64,
+) bool {
+	return totalGroups == expectedGroups &&
+		activeGroups == totalGroups &&
+		totalItems == expectedItems &&
+		activeItems == totalItems
 }
 
 func (repository *Repository) LoadPreparationSource(
@@ -133,7 +168,7 @@ func (repository *Repository) LoadPreparationSource(
 	transferID transfer_service.TransferID,
 	groupTargetID int64,
 ) (transfer_service.PreparationSource, error) {
-	ctx, cancel := context.WithTimeout(ctx, repository.pool.OpTimeout())
+	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 
 	const query = `
@@ -155,7 +190,10 @@ func (repository *Repository) LoadPreparationSource(
 			ON item.transfer_id = group_target.transfer_id
 		   AND item.source_group_id = group_target.source_group_id
 		WHERE transfer.id = $1
-			AND transfer.phase = 'preparing'
+			AND transfer.phase IN (
+				'preparing', 'awaiting_authorization', 'publishing',
+				'reconciling', 'media'
+			)
 			AND transfer.outcome = 'running'
 			AND group_target.id = $2
 			AND group_target.preparation_status = 'running'

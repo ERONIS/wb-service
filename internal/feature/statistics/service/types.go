@@ -263,6 +263,8 @@ type CabinetTaskRow struct {
 	MediaStatus       string
 	OverallOutcome    string
 	AttentionCode     string
+	MediaActionState  string
+	MediaOutcomeCode  string
 	CreatedAt         time.Time
 	StartedAt         *time.Time
 	FinishedAt        *time.Time

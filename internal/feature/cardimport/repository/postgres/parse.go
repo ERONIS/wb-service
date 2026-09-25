@@ -16,7 +16,7 @@ func (r *Repository) ClaimFileForParsing(
 	ctx context.Context,
 	command cardimport_service.ParseFileCommand,
 ) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, r.pool.OpTimeout())
+	ctx, cancel := r.pool.OperationContext(ctx)
 	defer cancel()
 
 	const query = `
@@ -83,7 +83,7 @@ func (r *Repository) SaveParsedFile(
 		)
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, r.pool.OpTimeout())
+	ctx, cancel := r.pool.OperationContext(ctx)
 	defer cancel()
 
 	tx, err := r.pool.Begin(ctx)

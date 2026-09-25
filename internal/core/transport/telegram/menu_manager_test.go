@@ -77,3 +77,93 @@ func TestNotificationTextEscapesNotice(t *testing.T) {
 		t.Fatalf("notification was not escaped: %q", result)
 	}
 }
+
+func TestDeletedMessageMissing(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{
+			name:     "nil error",
+			err:      nil,
+			expected: true,
+		},
+		{
+			name:     "tele.ErrNotFoundToDelete",
+			err:      tele.ErrNotFoundToDelete,
+			expected: true,
+		},
+		{
+			name:     "tele.ErrNoRightsToDelete",
+			err:      tele.ErrNoRightsToDelete,
+			expected: true,
+		},
+		{
+			name:     "string contains message to delete not found",
+			err:      tele.NewError(400, "Bad Request: message to delete not found"),
+			expected: true,
+		},
+		{
+			name:     "string contains message can't be deleted",
+			err:      tele.NewError(400, "Bad Request: message can't be deleted"),
+			expected: true,
+		},
+		{
+			name:     "string contains message_id_invalid",
+			err:      tele.NewError(400, "Bad Request: message_id_invalid"),
+			expected: true,
+		},
+		{
+			name:     "unrelated error",
+			err:      tele.NewError(400, "Bad Request: chat not found"),
+			expected: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if actual := deletedMessageMissing(tc.err); actual != tc.expected {
+				t.Fatalf("deletedMessageMissing(%v) = %v, want %v", tc.err, actual, tc.expected)
+			}
+		})
+	}
+}
+
+func TestMissingMessageError(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{
+			name:     "tele.ErrCantEditMessage",
+			err:      tele.ErrCantEditMessage,
+			expected: true,
+		},
+		{
+			name:     "string contains message to edit not found",
+			err:      tele.NewError(400, "Bad Request: message to edit not found"),
+			expected: true,
+		},
+		{
+			name:     "unrelated error",
+			err:      tele.NewError(400, "Bad Request: text is empty"),
+			expected: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if actual := missingMessageError(tc.err); actual != tc.expected {
+				t.Fatalf("missingMessageError(%v) = %v, want %v", tc.err, actual, tc.expected)
+			}
+		})
+	}
+}

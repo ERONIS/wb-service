@@ -1,0 +1,1 @@
+DROP INDEX wb.transfer_group_targets_running_idx;

@@ -12,13 +12,14 @@ import (
 type UserRole string
 
 const (
-	RoleAdmin UserRole = "admin"
-	RoleUser  UserRole = "user"
+	RoleAdmin   UserRole = "admin"
+	RolePartner UserRole = "partner"
+	RoleUser    UserRole = "user"
 )
 
 func (r UserRole) IsValid() bool {
 	switch r {
-	case RoleAdmin, RoleUser:
+	case RoleAdmin, RolePartner, RoleUser:
 		return true
 	default:
 		return false
@@ -132,4 +133,8 @@ func (u *User) ChangeRole(role UserRole) error {
 
 func (u User) IsAdmin() bool {
 	return u.Role == RoleAdmin
+}
+
+func (u User) IsPartner() bool {
+	return u.Role == RolePartner
 }

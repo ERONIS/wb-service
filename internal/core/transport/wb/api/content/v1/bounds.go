@@ -10,6 +10,7 @@ const (
 	maxSubjectsResponseBytes               int64 = 8 * mebibyte
 	maxSubjectCharacteristicsResponseBytes int64 = 4 * mebibyte
 	maxCardsLimitsResponseBytes            int64 = 1 * mebibyte
+	maxTagsResponseBytes                   int64 = 4 * mebibyte
 	maxBrandsResponseBytes                 int64 = 4 * mebibyte
 	maxDirectoryResponseBytes              int64 = 4 * mebibyte
 	maxCardsListRequestBytes               int64 = 64 * kibibyte
@@ -20,8 +21,15 @@ const (
 	maxCardsErrorListResponseBytes         int64 = 32 * mebibyte
 	maxUploadCardsRequestBytes             int64 = 10_000_000
 	maxUploadCardsAddRequestBytes          int64 = 10_000_000
+	maxUpdateCardsRequestBytes             int64 = 10_000_000
 	maxMutationResponseBytes               int64 = 1 * mebibyte
 	maxSaveMediaByLinksRequestBytes        int64 = 256 * kibibyte
+	maxUploadMediaFileRequestBytes         int64 = 51 * mebibyte
+)
+
+const (
+	MaxMediaImageFileBytes      int64 = 32 * mebibyte
+	MaxDownloadedMediaFileBytes       = 50 * mebibyte
 )
 
 const (

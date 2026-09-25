@@ -1,7 +1,6 @@
 package statistics_telegram_transport
 
 import (
-	"errors"
 	"fmt"
 
 	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
@@ -12,24 +11,16 @@ import (
 )
 
 func presentError(ctx tele.Context, err error) error {
-	key := "statistics.read_failed"
-	message := "❌ Не удалось прочитать статистику. Попробуйте позже."
-	switch {
-	case errors.Is(err, statistics_service.ErrOperationNotFound),
-		errors.Is(err, statistics_service.ErrActionNotFound):
-		key = "statistics.not_found"
-		message = "⚠️ Операция не найдена. Обновите статистику."
-	case errors.Is(err, statistics_service.ErrInvalidFilter):
-		key = "statistics.stale_filter"
-		message = "⚠️ Фильтр или кнопка устарели. Обновите статистику."
-	case errors.Is(err, cardpublication_service.ErrManualResolutionConflict):
-		key = "statistics.resolution_conflict"
-		message = "⚠️ Состояние уже изменилось. Откройте карточку заново."
-	case errors.Is(err, cardpublication_service.ErrManualEvidenceInvalid):
-		key = "statistics.invalid_evidence"
-		message = "⚠️ Не удалось подтвердить выбранный результат. Обновите карточку."
-	}
-	if responseErr := core_transport_telegram.Notify(ctx, key, message); responseErr != nil {
+	notification := core_transport_telegram.MatchError(
+		err,
+		core_transport_telegram.OnError(nil, "statistics.read_failed", "❌ Не удалось прочитать статистику. Попробуйте позже."),
+		core_transport_telegram.OnError(statistics_service.ErrOperationNotFound, "statistics.not_found", "⚠️ Операция не найдена. Обновите статистику."),
+		core_transport_telegram.OnError(statistics_service.ErrActionNotFound, "statistics.not_found", "⚠️ Операция не найдена. Обновите статистику."),
+		core_transport_telegram.OnError(statistics_service.ErrInvalidFilter, "statistics.stale_filter", "⚠️ Фильтр или кнопка устарели. Обновите статистику."),
+		core_transport_telegram.OnError(cardpublication_service.ErrManualResolutionConflict, "statistics.resolution_conflict", "⚠️ Состояние уже изменилось. Откройте карточку заново."),
+		core_transport_telegram.OnError(cardpublication_service.ErrManualEvidenceInvalid, "statistics.invalid_evidence", "⚠️ Не удалось подтвердить выбранный результат. Обновите карточку."),
+	)
+	if responseErr := core_transport_telegram.Notify(ctx, notification.Key, notification.Text); responseErr != nil {
 		return fmt.Errorf("present statistics error: %v: %w", responseErr, err)
 	}
 	return fmt.Errorf("present statistics error: %w", err)

@@ -11,6 +11,7 @@ import (
 	cardimport_telegram_transport "github.com/ERONIS/wb-service/internal/feature/cardimport/transport/telegram"
 	cardimport_xlsx_transport "github.com/ERONIS/wb-service/internal/feature/cardimport/transport/xlsx"
 
+	"go.uber.org/zap"
 	tele "gopkg.in/telebot.v3"
 )
 
@@ -25,6 +26,7 @@ func New(
 	postgresPool core_postgres_pool.Pool,
 	uow core_postgres_transaction.UnitOfWork,
 	bot *tele.Bot,
+	loggers ...*zap.Logger,
 ) *Feature {
 	repository := cardimport_postgres_repository.New(postgresPool)
 	parser := cardimport_xlsx_transport.NewParser()
@@ -36,12 +38,17 @@ func New(
 			ctx,
 			bot,
 			service,
+			loggers...,
 		),
 	}
 }
 
 func (f *Feature) Service() *cardimport_service.Service {
 	return f.service
+}
+
+func (f *Feature) AddCardsMenuButton(button tele.Btn) {
+	f.telegramHandler.AddCardsMenuButton(button)
 }
 
 func (f *Feature) SetCompletionNavigator(

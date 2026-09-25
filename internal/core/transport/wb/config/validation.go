@@ -7,6 +7,7 @@ import (
 )
 
 const (
+	maxCabinetIDLength    = 128
 	maxCabinetNameLength  = 128
 	maxCabinetTokenLength = 16 * 1024
 )
@@ -21,10 +22,6 @@ func (config Config) Validate() error {
 	if config.Timeout <= 0 {
 		return fmt.Errorf("timeout must be positive")
 	}
-	if len(config.Cabinets) == 0 {
-		return fmt.Errorf("cabinet list is empty")
-	}
-
 	seenIDs := make(map[CabinetID]struct{}, len(config.Cabinets))
 	seenNames := make(map[string]CabinetID, len(config.Cabinets))
 
@@ -66,6 +63,10 @@ func (config Config) Validate() error {
 }
 
 func (config CabinetConfig) Validate() error {
+	if config.ID == "" || strings.TrimSpace(string(config.ID)) != string(config.ID) ||
+		len(config.ID) > maxCabinetIDLength {
+		return fmt.Errorf("cabinet ID %q is invalid", config.ID)
+	}
 	if err := validateCabinetName(config.Name); err != nil {
 		return fmt.Errorf(
 			"validate cabinet %q name: %w",

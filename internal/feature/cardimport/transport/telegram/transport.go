@@ -3,12 +3,16 @@ package cardimport_telegram_transport
 import (
 	"context"
 	"io"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
+	"github.com/ERONIS/wb-service/internal/core/observability"
 	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
 	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
 
+	"go.uber.org/zap"
 	tele "gopkg.in/telebot.v3"
 )
 
@@ -28,6 +32,14 @@ var (
 	buttonFinalize = tele.Btn{
 		Text:   "✅ Готово",
 		Unique: "cardimport_finalize",
+	}
+	buttonContinue = tele.Btn{
+		Text:   "➡️ Продолжить",
+		Unique: "cardimport_continue",
+	}
+	buttonResumeFiles = tele.Btn{
+		Text:   "🔄 Обработать зависшие файлы",
+		Unique: "cardimport_resume_files",
 	}
 )
 
@@ -52,6 +64,11 @@ type CardImportService interface {
 		command cardimport_service.SessionCommand,
 	) error
 
+	Continue(
+		ctx context.Context,
+		command cardimport_service.ContinueCommand,
+	) (cardimport_service.SessionView, error)
+
 	ReserveFile(
 		ctx context.Context,
 		command cardimport_service.ReserveFileCommand,
@@ -68,6 +85,13 @@ type CardImportService interface {
 		command cardimport_service.ParseFileCommand,
 	) (cardimport_service.SessionView, error)
 
+	ListRecoverableFiles(
+		ctx context.Context,
+		staleParsingBefore time.Time,
+		reparsePriceErrorsBefore time.Time,
+		limit int,
+	) ([]cardimport_service.RecoverableFile, error)
+
 	Finalize(
 		ctx context.Context,
 		actor cardimport_service.TrustedActor,
@@ -81,8 +105,27 @@ type Handler struct {
 	service                CardImportService
 	completion             CompletionNavigator
 	processing             ProcessingNotifier
+	additionalMenuButtons  []tele.Btn
 	uploadScreenMu         sync.Mutex
 	uploadScreenGeneration map[int64]uint64
+	menu                   *core_transport_telegram.Handler
+	logger                 *zap.Logger
+	recoveryStartedAt      time.Time
+	recoveryStart          sync.Once
+	recoveryWake           chan struct{}
+	recoveryJobs           chan cardimportRecoveryKey
+	recoveryMu             sync.Mutex
+	recoveryStates         map[cardimport_service.FileID]*cardimportRecoveryState
+	refreshWake            chan struct{}
+	refreshMu              sync.Mutex
+	pendingRefreshes       map[int64]cardimportSessionRefresh
+}
+
+func (h *Handler) AddCardsMenuButton(button tele.Btn) {
+	if strings.TrimSpace(button.Text) == "" || strings.TrimSpace(button.Unique) == "" {
+		panic("cardimport additional menu button is invalid")
+	}
+	h.additionalMenuButtons = append(h.additionalMenuButtons, button)
 }
 
 type CompletionNavigator interface {
@@ -100,6 +143,7 @@ func New(
 	ctx context.Context,
 	bot *tele.Bot,
 	service CardImportService,
+	loggers ...*zap.Logger,
 ) *Handler {
 	if ctx == nil {
 		panic("cardimport Telegram context is nil")
@@ -115,7 +159,14 @@ func New(
 		ctx:                    ctx,
 		bot:                    bot,
 		service:                service,
+		logger:                 observability.Logger(loggers...),
+		recoveryStartedAt:      time.Now(),
 		uploadScreenGeneration: make(map[int64]uint64),
+		recoveryWake:           make(chan struct{}, 1),
+		recoveryJobs:           make(chan cardimportRecoveryKey, 256),
+		recoveryStates:         make(map[cardimport_service.FileID]*cardimportRecoveryState),
+		refreshWake:            make(chan struct{}, 1),
+		pendingRefreshes:       make(map[int64]cardimportSessionRefresh),
 	}
 }
 
@@ -140,6 +191,10 @@ func (h *Handler) SetProcessingNotifier(notifier ProcessingNotifier) {
 }
 
 func (h *Handler) Register(menu *core_transport_telegram.Handler) {
+	if menu == nil {
+		panic("cardimport Telegram menu is nil")
+	}
+	h.menu = menu
 	menu.RegisterMenuItem(
 		buttonCards,
 		domain.RoleAdmin,
@@ -160,8 +215,17 @@ func (h *Handler) Register(menu *core_transport_telegram.Handler) {
 		domain.RoleAdmin,
 		h.finalize,
 	)
-	menu.RegisterHandler(
-		tele.OnDocument,
+	menu.RegisterCallback(
+		buttonContinue,
+		domain.RoleAdmin,
+		h.continueImport,
+	)
+	menu.RegisterCallback(
+		buttonResumeFiles,
+		domain.RoleAdmin,
+		h.resumeFiles,
+	)
+	menu.RegisterDocumentFallback(
 		domain.RoleAdmin,
 		h.receiveDocument,
 	)
@@ -171,4 +235,11 @@ func (h *Handler) Register(menu *core_transport_telegram.Handler) {
 	if h.processing == nil {
 		panic("cardimport processing notifier is not configured")
 	}
+	h.recoveryStart.Do(func() {
+		go h.runRecoveryScheduler()
+		go h.runRecoveryRefreshes()
+		for range cardimportRecoveryWorkers {
+			go h.runRecoveryWorker()
+		}
+	})
 }

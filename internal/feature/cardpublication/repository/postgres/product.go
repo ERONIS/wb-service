@@ -22,7 +22,7 @@ func (repository *Repository) ListDispatchableProductActions(
 	if limit <= 0 || limit > 100 {
 		return nil, errors.New("dispatchable product action limit is invalid")
 	}
-	ctx, cancel := context.WithTimeout(ctx, repository.pool.OpTimeout())
+	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 	const query = `
 		WITH dispatchable AS (
@@ -35,7 +35,18 @@ func (repository *Repository) ListDispatchableProductActions(
 			live_auth.revision AS authorization_revision,
 			plan.plan_digest,
 			plan.target_set_root,
-			target.position AS target_position
+			target.position AS target_position,
+			ROW_NUMBER() OVER (
+				PARTITION BY target.cabinet_id
+				ORDER BY transfer.id, action.id
+			) AS cabinet_rank,
+			ARRAY(
+				SELECT member.vendor_code
+				FROM wb.publication_action_members AS member
+				WHERE member.transfer_id = action.transfer_id
+					AND member.action_id = action.id
+				ORDER BY member.request_member_index
+			) AS catalog_vendor_codes
 		FROM wb.publication_actions AS action
 		JOIN wb.publication_plans AS plan
 		  ON plan.transfer_id = action.transfer_id
@@ -54,7 +65,7 @@ func (repository *Repository) ListDispatchableProductActions(
 			AND action.authorization_id IS NULL
 			AND plan.state IN ('awaiting_authorization', 'executing')
 			AND transfer.phase IN (
-				'awaiting_authorization', 'publishing', 'reconciling'
+				'awaiting_authorization', 'publishing', 'reconciling', 'media'
 			)
 			AND transfer.outcome = 'running'
 			AND live_auth.state = 'authorized'
@@ -73,9 +84,10 @@ func (repository *Repository) ListDispatchableProductActions(
 			authorization_id,
 			authorization_revision,
 			plan_digest,
-			target_set_root
+			target_set_root,
+			catalog_vendor_codes
 		FROM dispatchable
-		ORDER BY target_position, action_id
+		ORDER BY cabinet_rank, target_position, cabinet_id, action_id
 		LIMIT $1;
 	`
 	rows, err := repository.pool.Query(ctx, query, limit)
@@ -85,7 +97,7 @@ func (repository *Repository) ListDispatchableProductActions(
 	defer rows.Close()
 	result := make([]cardpublication_service.ProductActionCandidate, 0)
 	for rows.Next() {
-		candidate, err := scanProductActionCandidate(rows)
+		candidate, err := scanCatalogProductActionCandidate(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -104,7 +116,7 @@ func (repository *Repository) ListInterruptedProductActions(
 	if limit <= 0 || limit > 100 {
 		return nil, errors.New("interrupted product action limit is invalid")
 	}
-	ctx, cancel := context.WithTimeout(ctx, repository.pool.OpTimeout())
+	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 	const query = `
 		SELECT
@@ -191,6 +203,20 @@ func (repository *Repository) LockProductAction(
 			attempt.id,
 			attempt.recheck_observation_id,
 			attempt.started_at,
+			attempt.finished_at,
+			attempt.delivery_state,
+			attempt.http_status,
+			attempt.safe_error_code,
+			retry.id,
+			retry.request_digest,
+			retry.started_at,
+			retry.finished_at,
+			retry.delivery_state,
+			retry.http_status,
+			retry.response_disposition,
+			retry.classifier_version,
+			retry.safe_error_code,
+			retry.unmatched_count,
 			live_auth.revision
 		FROM wb.publication_actions AS action
 		JOIN wb.publication_plans AS plan
@@ -204,6 +230,9 @@ func (repository *Repository) LockProductAction(
 		 AND live_auth.id = $5
 		LEFT JOIN wb.publication_attempts AS attempt
 		  ON attempt.action_id = action.id
+		LEFT JOIN wb.publication_product_retries AS retry
+		  ON retry.transfer_id = action.transfer_id
+		 AND retry.action_id = action.id
 		WHERE action.transfer_id = $1
 			AND action.id = $2
 			AND action.target_id = $3
@@ -219,6 +248,19 @@ func (repository *Repository) LockProductAction(
 		preflightID                  pgtype.Int8
 		attemptID, recheckID         pgtype.Int8
 		attemptStartedAt             pgtype.Timestamptz
+		attemptFinishedAt            pgtype.Timestamptz
+		attemptDelivery, attemptCode pgtype.Text
+		attemptHTTPStatus            pgtype.Int4
+		retryID                      pgtype.Int8
+		retryDigest                  []byte
+		retryStartedAt               pgtype.Timestamptz
+		retryFinishedAt              pgtype.Timestamptz
+		retryDelivery                pgtype.Text
+		retryHTTPStatus              pgtype.Int4
+		retryDisposition             pgtype.Text
+		retryClassifierVersion       pgtype.Int4
+		retrySafeCode                pgtype.Text
+		retryUnmatchedCount          pgtype.Int4
 		currentAuthorizationRevision int64
 	)
 	err := tx.QueryRow(
@@ -246,6 +288,20 @@ func (repository *Repository) LockProductAction(
 		&attemptID,
 		&recheckID,
 		&attemptStartedAt,
+		&attemptFinishedAt,
+		&attemptDelivery,
+		&attemptHTTPStatus,
+		&attemptCode,
+		&retryID,
+		&retryDigest,
+		&retryStartedAt,
+		&retryFinishedAt,
+		&retryDelivery,
+		&retryHTTPStatus,
+		&retryDisposition,
+		&retryClassifierVersion,
+		&retrySafeCode,
+		&retryUnmatchedCount,
 		&currentAuthorizationRevision,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -278,6 +334,53 @@ func (repository *Repository) LockProductAction(
 	if attemptStartedAt.Valid {
 		action.AttemptStartedAt = attemptStartedAt.Time.UTC()
 	}
+	if attemptFinishedAt.Valid {
+		action.AttemptFinishedAt = attemptFinishedAt.Time.UTC()
+	}
+	if attemptDelivery.Valid {
+		action.AttemptDelivery = cardpublication_service.SubmissionDelivery(attemptDelivery.String)
+	}
+	if attemptHTTPStatus.Valid {
+		action.AttemptHTTPStatus = int(attemptHTTPStatus.Int32)
+	}
+	if attemptCode.Valid {
+		action.AttemptSafeCode = attemptCode.String
+	}
+	if retryID.Valid {
+		if len(retryDigest) != len(action.EmptyResponseRetry.RequestDigest) || !retryStartedAt.Valid {
+			return cardpublication_service.ProductAction{}, cardpublication_service.ErrProductActionConflict
+		}
+		retry := cardpublication_service.ProductRetry{
+			ID:              retryID.Int64,
+			TransferID:      action.TransferID,
+			ActionID:        action.ActionID,
+			AuthorizationID: action.AuthorizationID,
+			StartedAt:       retryStartedAt.Time.UTC(),
+		}
+		copy(retry.RequestDigest[:], retryDigest)
+		if retryFinishedAt.Valid {
+			retry.FinishedAt = retryFinishedAt.Time.UTC()
+		}
+		if retryDelivery.Valid {
+			retry.Delivery = cardpublication_service.SubmissionDelivery(retryDelivery.String)
+		}
+		if retryHTTPStatus.Valid {
+			retry.HTTPStatus = int(retryHTTPStatus.Int32)
+		}
+		if retryDisposition.Valid {
+			retry.Disposition = cardpublication_service.SubmissionDisposition(retryDisposition.String)
+		}
+		if retryClassifierVersion.Valid {
+			retry.ClassifierVersion = int(retryClassifierVersion.Int32)
+		}
+		if retrySafeCode.Valid {
+			retry.SafeCode = retrySafeCode.String
+		}
+		if retryUnmatchedCount.Valid {
+			retry.UnmatchedCount = int(retryUnmatchedCount.Int32)
+		}
+		action.EmptyResponseRetry = retry
+	}
 
 	const membersQuery = `
 		SELECT
@@ -285,7 +388,10 @@ func (repository *Repository) LockProductAction(
 			group_target_id,
 			transfer_item_target_id,
 			request_member_index,
-			vendor_code
+			vendor_code,
+			outcome_class,
+			outcome_code,
+			nm_id
 		FROM wb.publication_action_members
 		WHERE transfer_id = $1 AND action_id = $2
 		ORDER BY request_member_index
@@ -301,17 +407,31 @@ func (repository *Repository) LockProductAction(
 	defer rows.Close()
 	for rows.Next() {
 		var member cardpublication_service.ProductActionMember
+		var outcomeClass, outcomeCode pgtype.Text
+		var nmID pgtype.Int8
 		if err := rows.Scan(
 			&member.ID,
 			&member.GroupTargetID,
 			&member.TransferItemTargetID,
 			&member.RequestMemberIndex,
 			&member.VendorCode,
+			&outcomeClass,
+			&outcomeCode,
+			&nmID,
 		); err != nil {
 			return cardpublication_service.ProductAction{}, fmt.Errorf(
 				"scan publication product action member: %w",
 				err,
 			)
+		}
+		if outcomeClass.Valid {
+			member.OutcomeClass = transfer_service.ResultClass(outcomeClass.String)
+		}
+		if outcomeCode.Valid {
+			member.OutcomeCode = outcomeCode.String
+		}
+		if nmID.Valid {
+			member.NMID = nmID.Int64
 		}
 		action.Members = append(action.Members, member)
 	}
@@ -1024,26 +1144,224 @@ func (repository *Repository) RecordSubmission(
 	return reducePublicationPlan(ctx, tx, action.TransferID, action.PlanID)
 }
 
+func (repository *Repository) BeginProductRetry(
+	ctx context.Context,
+	tx core_postgres_transaction.DBTX,
+	command cardpublication_service.BeginProductRetryCommand,
+) (cardpublication_service.ProductRetry, error) {
+	action := command.Action
+	if tx == nil || action.State != "reconciling" || action.AttemptID <= 0 ||
+		action.EmptyResponseRetry.ID != 0 || action.AuthorizationID <= 0 {
+		return cardpublication_service.ProductRetry{}, errors.New(
+			"begin publication product retry command is invalid",
+		)
+	}
+	const insert = `
+		INSERT INTO wb.publication_product_retries (
+			transfer_id, action_id, authorization_id, request_digest, request_payload
+		)
+		SELECT action.transfer_id, action.id, action.authorization_id,
+		       action.request_digest, action.request_payload
+		FROM wb.publication_actions AS action
+		JOIN wb.publication_attempts AS attempt
+		  ON attempt.transfer_id = action.transfer_id
+		 AND attempt.action_id = action.id
+		WHERE action.transfer_id = $1
+		  AND action.id = $2
+		  AND action.authorization_id = $3
+		  AND action.state = 'reconciling'
+		  AND attempt.id = $4
+		  AND attempt.finished_at IS NOT NULL
+		  AND attempt.finished_at <= CURRENT_TIMESTAMP - INTERVAL '10 minutes'
+		  AND attempt.delivery_state = 'response_received'
+		  AND attempt.http_status = 200
+		  AND attempt.response_disposition = 'uncertain'
+		  AND attempt.safe_error_code IN (
+		      'WB_TRANSPORT_EMPTY_RESPONSE',
+		      'WB_TRANSPORT_INVALID_RESPONSE'
+		  )
+		  AND NOT EXISTS (
+		      SELECT 1
+		      FROM wb.publication_product_retries AS existing
+		      WHERE existing.transfer_id = action.transfer_id
+		        AND existing.action_id = action.id
+		  )
+		RETURNING id, started_at;
+	`
+	retry := cardpublication_service.ProductRetry{
+		TransferID:      action.TransferID,
+		ActionID:        action.ActionID,
+		AuthorizationID: action.AuthorizationID,
+		RequestDigest:   action.RequestDigest,
+	}
+	if err := tx.QueryRow(
+		ctx,
+		insert,
+		action.TransferID,
+		action.ActionID,
+		action.AuthorizationID,
+		action.AttemptID,
+	).Scan(&retry.ID, &retry.StartedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return cardpublication_service.ProductRetry{}, cardpublication_service.ErrProductActionConflict
+		}
+		return cardpublication_service.ProductRetry{}, fmt.Errorf(
+			"insert publication product retry: %w",
+			err,
+		)
+	}
+	retry.StartedAt = retry.StartedAt.UTC()
+	const touchAction = `
+		UPDATE wb.publication_actions
+		SET revision = revision + 1,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE transfer_id = $1
+		  AND id = $2
+		  AND state = 'reconciling';
+	`
+	updated, err := tx.Exec(ctx, touchAction, action.TransferID, action.ActionID)
+	if err != nil {
+		return cardpublication_service.ProductRetry{}, fmt.Errorf(
+			"touch publication action for product retry: %w",
+			err,
+		)
+	}
+	if updated.RowsAffected() != 1 {
+		return cardpublication_service.ProductRetry{}, cardpublication_service.ErrProductActionConflict
+	}
+	return retry, nil
+}
+
+func (repository *Repository) RecordProductRetry(
+	ctx context.Context,
+	tx core_postgres_transaction.DBTX,
+	command cardpublication_service.RecordProductRetryCommand,
+) error {
+	if tx == nil {
+		return errors.New("record publication product retry: DBTX is nil")
+	}
+	if err := cardpublication_service.ValidateSubmissionResult(command.Result); err != nil {
+		return err
+	}
+	action, retry, result := command.Action, command.Retry, command.Result
+	if action.State != "reconciling" || retry.ID <= 0 ||
+		retry.TransferID != action.TransferID || retry.ActionID != action.ActionID ||
+		retry.AuthorizationID != action.AuthorizationID ||
+		retry.RequestDigest != action.RequestDigest || !retry.FinishedAt.IsZero() {
+		return cardpublication_service.ErrProductActionConflict
+	}
+	if result.Disposition == cardpublication_service.SubmissionRejectedProven {
+		members := make(map[int64]struct{}, len(action.Members))
+		for _, member := range action.Members {
+			members[member.ID] = struct{}{}
+		}
+		if len(result.MemberResults) != len(members) {
+			return cardpublication_service.ErrProductActionConflict
+		}
+		for _, memberResult := range result.MemberResults {
+			if _, exists := members[memberResult.ActionMemberID]; !exists {
+				return cardpublication_service.ErrProductActionConflict
+			}
+			delete(members, memberResult.ActionMemberID)
+		}
+		if len(members) != 0 {
+			return cardpublication_service.ErrProductActionConflict
+		}
+	}
+	var httpStatus any
+	if result.HTTPStatus > 0 {
+		httpStatus = result.HTTPStatus
+	}
+	const finish = `
+		UPDATE wb.publication_product_retries
+		SET delivery_state = $5,
+		    http_status = $6,
+		    response_disposition = $7,
+		    classifier_version = $8,
+		    safe_error_code = $9,
+		    unmatched_count = $10,
+		    finished_at = CURRENT_TIMESTAMP
+		WHERE transfer_id = $1
+		  AND id = $2
+		  AND action_id = $3
+		  AND authorization_id = $4
+		  AND request_digest = $11
+		  AND finished_at IS NULL;
+	`
+	updated, err := tx.Exec(
+		ctx,
+		finish,
+		action.TransferID,
+		retry.ID,
+		action.ActionID,
+		action.AuthorizationID,
+		result.Delivery,
+		httpStatus,
+		result.Disposition,
+		result.ClassifierVersion,
+		result.SafeCode,
+		result.UnmatchedCount,
+		action.RequestDigest[:],
+	)
+	if err != nil {
+		return fmt.Errorf("finish publication product retry: %w", err)
+	}
+	if updated.RowsAffected() != 1 {
+		return cardpublication_service.ErrProductActionConflict
+	}
+	const touchAction = `
+		UPDATE wb.publication_actions
+		SET revision = revision + 1,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE transfer_id = $1
+		  AND id = $2
+		  AND state = 'reconciling';
+	`
+	updated, err = tx.Exec(ctx, touchAction, action.TransferID, action.ActionID)
+	if err != nil {
+		return fmt.Errorf("touch publication action after product retry: %w", err)
+	}
+	if updated.RowsAffected() != 1 {
+		return cardpublication_service.ErrProductActionConflict
+	}
+	return nil
+}
+
 func (repository *Repository) ListReconcilingProductActions(
 	ctx context.Context,
-	olderThan time.Time,
+	now time.Time,
+	baseDelay time.Duration,
 	limit int,
 ) ([]cardpublication_service.ProductActionCandidate, error) {
-	if olderThan.IsZero() || limit <= 0 || limit > 100 {
+	if now.IsZero() || baseDelay <= 0 || limit <= 0 || limit > 100 {
 		return nil, errors.New("reconciling product action query is invalid")
 	}
-	ctx, cancel := context.WithTimeout(ctx, repository.pool.OpTimeout())
+	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 	const query = `
+		WITH reconciling AS (
 		SELECT
-			action.transfer_id,
-			action.id,
-			action.target_id,
-			target.cabinet_id,
-			live_auth.id,
-			live_auth.revision,
+			action.transfer_id AS transfer_id,
+			action.id AS action_id,
+			action.target_id AS target_id,
+			target.cabinet_id AS cabinet_id,
+			live_auth.id AS authorization_id,
+			live_auth.revision AS authorization_revision,
 			plan.plan_digest,
-			plan.target_set_root
+			plan.target_set_root,
+			ROW_NUMBER() OVER (
+				PARTITION BY target.cabinet_id
+				ORDER BY action.updated_at, action.id
+			) AS cabinet_rank,
+			action.updated_at,
+			ARRAY(
+				SELECT member.vendor_code
+				FROM wb.publication_action_members AS member
+				WHERE member.transfer_id = action.transfer_id
+					AND member.action_id = action.id
+					AND member.outcome_class IS NULL
+				ORDER BY member.request_member_index
+			) AS catalog_vendor_codes
 		FROM wb.publication_actions AS action
 		JOIN wb.publication_plans AS plan
 		  ON plan.transfer_id = action.transfer_id
@@ -1057,21 +1375,44 @@ func (repository *Repository) ListReconcilingProductActions(
 		JOIN wb.publication_attempts AS attempt
 		  ON attempt.transfer_id = action.transfer_id
 		 AND attempt.action_id = action.id
+		LEFT JOIN wb.publication_product_retries AS retry
+		  ON retry.transfer_id = action.transfer_id
+		 AND retry.action_id = action.id
 		WHERE action.kind IN ('create_group', 'add_to_group')
 			AND action.state = 'reconciling'
 			AND attempt.finished_at IS NOT NULL
-			AND action.updated_at <= $1
-		ORDER BY action.updated_at, action.id
-		LIMIT $2;
+			AND EXISTS (
+				SELECT 1
+				FROM wb.publication_action_members AS pending_member
+				WHERE pending_member.transfer_id = action.transfer_id
+					AND pending_member.action_id = action.id
+					AND pending_member.outcome_class IS NULL
+			)
+				AND action.updated_at <= $1::timestamptz - (
+					make_interval(secs => $2::double precision) *
+					CASE
+						WHEN $1::timestamptz - COALESCE(retry.started_at, attempt.started_at) >= INTERVAL '5 minutes' THEN 6
+						WHEN $1::timestamptz - COALESCE(retry.started_at, attempt.started_at) >= INTERVAL '1 minute' THEN 3
+					ELSE 1
+				END
+			)
+		)
+		SELECT
+			transfer_id, action_id, target_id, cabinet_id,
+			authorization_id, authorization_revision,
+			plan_digest, target_set_root, catalog_vendor_codes
+		FROM reconciling
+		ORDER BY cabinet_rank, updated_at, cabinet_id, action_id
+		LIMIT $3;
 	`
-	rows, err := repository.pool.Query(ctx, query, olderThan, limit)
+	rows, err := repository.pool.Query(ctx, query, now, baseDelay.Seconds(), limit)
 	if err != nil {
 		return nil, fmt.Errorf("list reconciling product actions: %w", err)
 	}
 	defer rows.Close()
 	result := make([]cardpublication_service.ProductActionCandidate, 0)
 	for rows.Next() {
-		candidate, err := scanProductActionCandidate(rows)
+		candidate, err := scanCatalogProductActionCandidate(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -1090,7 +1431,7 @@ func (repository *Repository) LoadErrorBatchMatches(
 	if action.AttemptID <= 0 {
 		return nil, cardpublication_service.ErrProductActionConflict
 	}
-	ctx, cancel := context.WithTimeout(ctx, repository.pool.OpTimeout())
+	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 	const query = `
 		SELECT
@@ -1122,7 +1463,7 @@ func (repository *Repository) LoadErrorBatchMatches(
 		action.TransferID,
 		action.AttemptID,
 		action.ActionID,
-		action.VendorCodes(),
+		action.PendingVendorCodes(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("load publication Error List matches: %w", err)
@@ -1154,10 +1495,26 @@ func (repository *Repository) RecordProductReconciliationPoll(
 	tx core_postgres_transaction.DBTX,
 	action cardpublication_service.ProductAction,
 	postObservationID int64,
+	memberResults []cardpublication_service.MemberReconciliationResult,
 ) error {
 	if tx == nil || action.State != "reconciling" || action.AttemptID <= 0 ||
 		postObservationID <= 0 {
 		return errors.New("record product reconciliation poll command is invalid")
+	}
+	if err := cardpublication_service.ValidateMemberReconciliationResults(
+		action,
+		memberResults,
+	); err != nil {
+		return err
+	}
+	if err := recordProductReconciliationMembers(
+		ctx,
+		tx,
+		action,
+		postObservationID,
+		memberResults,
+	); err != nil {
+		return err
 	}
 	const update = `
 		UPDATE wb.publication_actions AS action
@@ -1250,13 +1607,75 @@ func (repository *Repository) FinishProductReconciliation(
 	); err != nil {
 		return err
 	}
-	results := make(map[int64]cardpublication_service.MemberReconciliationResult)
-	for _, result := range memberResults {
-		results[result.ActionMemberID] = result
+	if err := recordProductReconciliationMembers(
+		ctx,
+		tx,
+		action,
+		postObservationID,
+		memberResults,
+	); err != nil {
+		return err
 	}
+	if err := finishPotentialMediaActions(
+		ctx,
+		tx,
+		action,
+		"VENDOR_CODE_ATTRIBUTION_UNAVAILABLE",
+	); err != nil {
+		return err
+	}
+	const finishAction = `
+		UPDATE wb.publication_actions AS action
+		SET state = 'terminal',
+		    outcome_class = $4,
+		    outcome_code = $5,
+		    finished_at = CURRENT_TIMESTAMP,
+		    revision = revision + 1,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE action.transfer_id = $1
+			AND action.id = $2
+			AND action.authorization_id = $3
+			AND action.state = 'reconciling'
+			AND NOT EXISTS (
+				SELECT 1
+				FROM wb.publication_action_members AS member
+				WHERE member.transfer_id = action.transfer_id
+					AND member.action_id = action.id
+					AND member.outcome_class IS NULL
+			);
+	`
+	updated, err := tx.Exec(
+		ctx,
+		finishAction,
+		action.TransferID,
+		action.ActionID,
+		action.AuthorizationID,
+		actionClass,
+		actionCode,
+	)
+	if err != nil {
+		return fmt.Errorf("finish reconciled publication action: %w", err)
+	}
+	if updated.RowsAffected() != 1 {
+		return cardpublication_service.ErrProductActionConflict
+	}
+	return reducePublicationPlan(ctx, tx, action.TransferID, action.PlanID)
+}
+
+func recordProductReconciliationMembers(
+	ctx context.Context,
+	tx core_postgres_transaction.DBTX,
+	action cardpublication_service.ProductAction,
+	postObservationID int64,
+	memberResults []cardpublication_service.MemberReconciliationResult,
+) error {
+	members := make(map[int64]cardpublication_service.ProductActionMember, len(action.Members))
 	for _, member := range action.Members {
-		result, exists := results[member.ID]
-		if !exists {
+		members[member.ID] = member
+	}
+	for _, result := range memberResults {
+		member, exists := members[result.ActionMemberID]
+		if !exists || member.OutcomeClass != "" {
 			return cardpublication_service.ErrProductActionConflict
 		}
 		var nmID any
@@ -1409,43 +1828,7 @@ func (repository *Repository) FinishProductReconciliation(
 			}
 		}
 	}
-	if err := finishPotentialMediaActions(
-		ctx,
-		tx,
-		action,
-		"VENDOR_CODE_ATTRIBUTION_UNAVAILABLE",
-	); err != nil {
-		return err
-	}
-	const finishAction = `
-		UPDATE wb.publication_actions
-		SET state = 'terminal',
-		    outcome_class = $4,
-		    outcome_code = $5,
-		    finished_at = CURRENT_TIMESTAMP,
-		    revision = revision + 1,
-		    updated_at = CURRENT_TIMESTAMP
-		WHERE transfer_id = $1
-			AND id = $2
-			AND authorization_id = $3
-			AND state = 'reconciling';
-	`
-	updated, err := tx.Exec(
-		ctx,
-		finishAction,
-		action.TransferID,
-		action.ActionID,
-		action.AuthorizationID,
-		actionClass,
-		actionCode,
-	)
-	if err != nil {
-		return fmt.Errorf("finish reconciled publication action: %w", err)
-	}
-	if updated.RowsAffected() != 1 {
-		return cardpublication_service.ErrProductActionConflict
-	}
-	return reducePublicationPlan(ctx, tx, action.TransferID, action.PlanID)
+	return nil
 }
 
 func finishPotentialMediaActions(
@@ -1597,6 +1980,35 @@ func reducePublicationPlan(
 	transferID transfer_service.TransferID,
 	planID int64,
 ) error {
+	const lockPlan = `
+		SELECT state
+		FROM wb.publication_plans
+		WHERE transfer_id = $1 AND id = $2
+		FOR UPDATE;
+	`
+	var state string
+	if err := tx.QueryRow(ctx, lockPlan, transferID, planID).Scan(&state); err != nil {
+		return fmt.Errorf("lock publication plan reduction: %w", err)
+	}
+	if state != "executing" {
+		return nil
+	}
+	const hasUnfinished = `
+		SELECT EXISTS (
+			SELECT 1
+			FROM wb.publication_actions
+			WHERE transfer_id = $1
+				AND plan_id = $2
+				AND state NOT IN ('terminal', 'superseded')
+		);
+	`
+	var unfinished bool
+	if err := tx.QueryRow(ctx, hasUnfinished, transferID, planID).Scan(&unfinished); err != nil {
+		return fmt.Errorf("check unfinished publication actions: %w", err)
+	}
+	if unfinished {
+		return nil
+	}
 	const reduce = `
 		WITH action_counts AS (
 			SELECT
@@ -1632,7 +2044,7 @@ func reducePublicationPlan(
 		FROM action_counts
 		WHERE plan.transfer_id = $1
 			AND plan.id = $2
-			AND plan.state = 'executing'
+			AND plan.state IN ('awaiting_authorization', 'executing')
 			AND action_counts.total > 0
 			AND action_counts.terminal = action_counts.total;
 	`
@@ -1719,6 +2131,39 @@ func scanProductActionCandidate(row interface{ Scan(...any) error }) (
 		len(targetSetRoot) != len(candidate.TargetSetRoot) {
 		return cardpublication_service.ProductActionCandidate{},
 			errors.New("publication product candidate digest is invalid")
+	}
+	candidate.TransferID = transfer_service.TransferID(transferID)
+	candidate.AuthorizationID = transfer_service.LiveAuthorizationID(authorizationID)
+	copy(candidate.PlanDigest[:], planDigest)
+	copy(candidate.TargetSetRoot[:], targetSetRoot)
+	return candidate, nil
+}
+
+func scanCatalogProductActionCandidate(row interface{ Scan(...any) error }) (
+	cardpublication_service.ProductActionCandidate,
+	error,
+) {
+	var candidate cardpublication_service.ProductActionCandidate
+	var transferID, authorizationID int64
+	var planDigest, targetSetRoot []byte
+	if err := row.Scan(
+		&transferID,
+		&candidate.ActionID,
+		&candidate.TargetID,
+		&candidate.CabinetID,
+		&authorizationID,
+		&candidate.AuthorizationRevision,
+		&planDigest,
+		&targetSetRoot,
+		&candidate.CatalogVendorCodes,
+	); err != nil {
+		return cardpublication_service.ProductActionCandidate{}, err
+	}
+	if len(planDigest) != len(candidate.PlanDigest) ||
+		len(targetSetRoot) != len(candidate.TargetSetRoot) ||
+		len(candidate.CatalogVendorCodes) == 0 {
+		return cardpublication_service.ProductActionCandidate{},
+			errors.New("catalog publication product candidate is invalid")
 	}
 	candidate.TransferID = transfer_service.TransferID(transferID)
 	candidate.AuthorizationID = transfer_service.LiveAuthorizationID(authorizationID)

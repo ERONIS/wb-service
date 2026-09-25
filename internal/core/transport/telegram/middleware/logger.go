@@ -1,6 +1,9 @@
 package core_tg_middleware
 
 import (
+	"context"
+	"errors"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -19,18 +22,48 @@ func Logger(logger *zap.Logger) tele.MiddlewareFunc {
 			err := next(ctx)
 
 			fields := updateLogFields(ctx, time.Since(startedAt))
+			if errors.Is(err, context.Canceled) {
+				logger.Debug(
+					"telegram update processing canceled",
+					fields...,
+				)
+				return err
+			}
 			if err != nil {
 				logger.Error(
 					"telegram update processing failed",
-					append(fields, zap.Error(err))...,
+					append(fields, zap.String("error", redactTelegramBotTokens(err.Error())))...,
 				)
 				return err
 			}
 
-			logger.Info("telegram update processed", fields...)
+			logger.Debug("telegram update processed", fields...)
 			return nil
 		}
 	}
+}
+
+func redactTelegramBotTokens(message string) string {
+	const marker = "/bot"
+	const replacement = "/bot<redacted>"
+
+	searchFrom := 0
+	for searchFrom < len(message) {
+		markerOffset := strings.Index(message[searchFrom:], marker)
+		if markerOffset < 0 {
+			break
+		}
+		markerStart := searchFrom + markerOffset
+		tokenStart := markerStart + len(marker)
+		tokenEndOffset := strings.IndexByte(message[tokenStart:], '/')
+		if tokenEndOffset < 0 {
+			break
+		}
+		tokenEnd := tokenStart + tokenEndOffset
+		message = message[:markerStart] + replacement + message[tokenEnd:]
+		searchFrom = markerStart + len(replacement)
+	}
+	return message
 }
 
 func updateLogFields(ctx tele.Context, duration time.Duration) []zap.Field {

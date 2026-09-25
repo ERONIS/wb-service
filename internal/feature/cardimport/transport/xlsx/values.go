@@ -2,22 +2,28 @@ package cardimport_xlsx_transport
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
 
 func parsePositiveInt64(value string) (int64, error) {
-	normalized := normalizeNumber(value)
+	normalized := strings.ReplaceAll(normalizeNumber(value), ",", ".")
 	if normalized == "" {
 		return 0, fmt.Errorf("value is empty")
 	}
 
-	number, err := strconv.ParseInt(normalized, 10, 64)
-	if err != nil || number <= 0 {
-		return 0, fmt.Errorf("expected a positive integer, got %q", value)
+	number, err := strconv.ParseFloat(normalized, 64)
+	if err != nil || number <= 0 || math.IsNaN(number) || math.IsInf(number, 0) {
+		return 0, fmt.Errorf("expected a positive number, got %q", value)
+	}
+	rounded := strconv.FormatFloat(math.Round(number), 'f', 0, 64)
+	integer, err := strconv.ParseInt(rounded, 10, 64)
+	if err != nil || integer <= 0 {
+		return 0, fmt.Errorf("rounded price is outside the positive integer range, got %q", value)
 	}
 
-	return number, nil
+	return integer, nil
 }
 
 func parsePositiveFloat64(value string) (float64, error) {

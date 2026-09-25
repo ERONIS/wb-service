@@ -27,7 +27,7 @@ func (store *Store) Get(
 	if ctx == nil || chatID == 0 {
 		return 0, false, errors.New("invalid Telegram screen lookup")
 	}
-	queryCtx, cancel := context.WithTimeout(ctx, store.pool.OpTimeout())
+	queryCtx, cancel := store.pool.OperationContext(ctx)
 	defer cancel()
 
 	var messageID int
@@ -53,7 +53,7 @@ func (store *Store) Save(
 	if ctx == nil || chatID == 0 || messageID <= 0 {
 		return errors.New("invalid Telegram screen reference")
 	}
-	queryCtx, cancel := context.WithTimeout(ctx, store.pool.OpTimeout())
+	queryCtx, cancel := store.pool.OperationContext(ctx)
 	defer cancel()
 
 	_, err := store.pool.Exec(queryCtx, `

@@ -14,9 +14,13 @@ func (h *UsersTgHandler) setAdmin(
 	targetTelegramID int64,
 	page int,
 ) error {
+	adminTelegramID, err := core_transport_telegram.SenderID(ctx)
+	if err != nil {
+		return sendServiceError(ctx, err)
+	}
 	user, err := h.usersService.SetAdmin(
 		h.ctx,
-		ctx.Sender().ID,
+		adminTelegramID,
 		targetTelegramID,
 	)
 	if err != nil {
@@ -30,14 +34,66 @@ func (h *UsersTgHandler) setAdmin(
 	)
 }
 
+func (h *UsersTgHandler) setPartner(
+	ctx tele.Context,
+	targetTelegramID int64,
+	page int,
+) error {
+	adminTelegramID, err := core_transport_telegram.SenderID(ctx)
+	if err != nil {
+		return sendServiceError(ctx, err)
+	}
+	user, err := h.usersService.SetPartner(
+		h.ctx,
+		adminTelegramID,
+		targetTelegramID,
+	)
+	if err != nil {
+		return sendServiceError(ctx, err)
+	}
+	return ctx.EditOrSend(
+		"✅ Пользователю выдана роль партнёра.\n\n"+
+			userCardText(user),
+		userCardMarkup(user, page),
+	)
+}
+
+func (h *UsersTgHandler) revokePartner(
+	ctx tele.Context,
+	targetTelegramID int64,
+	page int,
+) error {
+	adminTelegramID, err := core_transport_telegram.SenderID(ctx)
+	if err != nil {
+		return sendServiceError(ctx, err)
+	}
+	user, err := h.usersService.RevokePartner(
+		h.ctx,
+		adminTelegramID,
+		targetTelegramID,
+	)
+	if err != nil {
+		return sendServiceError(ctx, err)
+	}
+	return ctx.EditOrSend(
+		"✅ Роль партнёра отозвана.\n\n"+
+			userCardText(user),
+		userCardMarkup(user, page),
+	)
+}
+
 func (h *UsersTgHandler) confirmDeleteUser(
 	ctx tele.Context,
 	targetTelegramID int64,
 	page int,
 ) error {
+	adminTelegramID, err := core_transport_telegram.SenderID(ctx)
+	if err != nil {
+		return sendServiceError(ctx, err)
+	}
 	user, err := h.usersService.GetUser(
 		h.ctx,
-		ctx.Sender().ID,
+		adminTelegramID,
 		targetTelegramID,
 	)
 	if err != nil {
@@ -52,7 +108,7 @@ func (h *UsersTgHandler) confirmDeleteUser(
 		fmt.Sprintf(
 			"⚠️ <b>Удалить пользователя?</b>\n\n"+
 				"Имя: <b>%s</b>\n"+
-				"TG ID: <code>%d</code>\n\n"+
+				"TG ID: %d\n\n"+
 				"Это действие нельзя отменить.",
 			html.EscapeString(user.FullName),
 			user.TelegramID,

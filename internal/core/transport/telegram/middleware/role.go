@@ -108,6 +108,10 @@ func HasMinimumRole(
 
 	case domain.RoleUser:
 		return actualRole == domain.RoleUser ||
+			actualRole == domain.RolePartner ||
+			actualRole == domain.RoleAdmin
+	case domain.RolePartner:
+		return actualRole == domain.RolePartner ||
 			actualRole == domain.RoleAdmin
 	case domain.RoleAdmin:
 		return actualRole == domain.RoleAdmin
@@ -115,7 +119,6 @@ func HasMinimumRole(
 	default:
 		return false
 	}
-
 }
 
 func (a *RoleAccess) Require(

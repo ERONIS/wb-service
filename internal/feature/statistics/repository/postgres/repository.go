@@ -20,7 +20,7 @@ func New(pool core_postgres_pool.Pool) *Repository {
 }
 
 func (repository *Repository) queryContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(ctx, repository.pool.OpTimeout())
+	return repository.pool.OperationContext(ctx)
 }
 
 type whereBuilder struct {

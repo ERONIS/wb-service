@@ -17,7 +17,7 @@ const (
 type environmentConfig struct {
 	BaseURL string `envconfig:"BASE_URL" default:"https://content-api.wildberries.ru"`
 
-	Timeout time.Duration `envconfig:"TIMEOUT" default:"20s"`
+	Timeout time.Duration `envconfig:"TIMEOUT" default:"45s"`
 }
 
 func NewConfig() (Config, error) {
@@ -69,7 +69,7 @@ func NewConfigMust() Config {
 func loadCabinetsFromEnv() ([]CabinetConfig, error) {
 	rawCabinetIDs, exists := os.LookupEnv(envCabinets)
 	if !exists || strings.TrimSpace(rawCabinetIDs) == "" {
-		return nil, fmt.Errorf("WB API cabinet list is empty")
+		return nil, nil
 	}
 
 	rawIDs := strings.Split(rawCabinetIDs, ",")

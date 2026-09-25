@@ -10,6 +10,11 @@ type CardsLimits struct {
 	PaidLimits int64 `json:"paidLimits"`
 }
 
+type TagsResponse struct {
+	Data []CardTag `json:"data"`
+	ResponseMeta
+}
+
 type CardsListQuery struct {
 	Locale Locale `url:"locale,omitempty"`
 }
@@ -206,7 +211,7 @@ type CardsErrorResponseCursor struct {
 type CardsErrorBatch struct {
 	BatchUUID   string                       `json:"batchUUID"`
 	Subjects    map[string]CardsErrorSubject `json:"subjects"`
-	Brands      map[string]string            `json:"brands"`
+	Brands      map[string]any               `json:"brands"`
 	VendorCodes []string                     `json:"vendorCodes"`
 	Errors      map[string][]string          `json:"errors"`
 	UpdatedAt   string                       `json:"updatedAt"`
@@ -227,6 +232,35 @@ type UploadCardsGroup struct {
 type UploadCardsAddRequest struct {
 	IMTID      int64        `json:"imtID"`
 	CardsToAdd []UploadCard `json:"cardsToAdd"`
+}
+
+// UpdateCardsRequest replaces the editable payload of every listed card.
+// WB treats this endpoint as a full update, therefore callers must preserve
+// values that are not intentionally changed, especially sizes and barcodes.
+type UpdateCardsRequest []UpdateCard
+
+type UpdateCard struct {
+	NMID            int64                  `json:"nmID"`
+	VendorCode      string                 `json:"vendorCode"`
+	KIZMarked       bool                   `json:"kizMarked"`
+	Brand           string                 `json:"brand"`
+	Title           string                 `json:"title"`
+	Description     string                 `json:"description"`
+	Dimensions      UploadDimensions       `json:"dimensions"`
+	Characteristics []UploadCharacteristic `json:"characteristics"`
+	Sizes           []UpdateSize           `json:"sizes"`
+}
+
+type UpdateSize struct {
+	CHRTID   int64    `json:"chrtID"`
+	TechSize string   `json:"techSize,omitempty"`
+	WBSize   string   `json:"wbSize,omitempty"`
+	SKUs     []string `json:"skus"`
+}
+
+type UpdateCardsResponse struct {
+	Data EmptyObject `json:"data"`
+	ResponseMeta
 }
 
 type UploadCard struct {
@@ -262,7 +296,7 @@ type UploadSize struct {
 	TechSize string   `json:"techSize,omitempty"`
 	WBSize   string   `json:"wbSize,omitempty"`
 	Price    *int64   `json:"price,omitempty"`
-	SKUs     []string `json:"skus,omitempty"`
+	SKUs     []string `json:"skus"`
 }
 
 type UploadCardsResponse struct {

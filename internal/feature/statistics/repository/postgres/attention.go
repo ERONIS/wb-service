@@ -96,3 +96,188 @@ func (repository *Repository) ListAttention(
 	}
 	return result, nil
 }
+
+func (repository *Repository) ResolveVerifiedCard(
+	ctx context.Context,
+	itemTargetID int64,
+	nmID int64,
+	imtID int64,
+	subjectID int64,
+) error {
+	ctx, cancel := repository.queryContext(ctx)
+	defer cancel()
+
+	const updateItem = `
+		UPDATE wb.transfer_item_targets
+		SET nm_id = $2,
+		    outcome_class = 'success',
+		    outcome_code = 'VERIFIED_IN_WB',
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1;
+	`
+	const updateActionMember = `
+		UPDATE wb.publication_action_members
+		SET nm_id = $2,
+		    outcome_class = 'success',
+		    outcome_code = 'VERIFIED_IN_WB',
+		    finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP),
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE transfer_item_target_id = $1;
+	`
+	const updateIdentity = `
+		UPDATE wb.product_identities AS iden
+		SET state = 'remote_present',
+		    nm_id = $2::bigint,
+		    imt_id = COALESCE(NULLIF($3::bigint, 0), iden.imt_id),
+		    subject_id = COALESCE(NULLIF($4::bigint, 0), iden.subject_id),
+		    active_transfer_id = NULL,
+		    active_action_id = NULL,
+		    revision = iden.revision + 1,
+		    updated_at = CURRENT_TIMESTAMP
+		FROM wb.transfer_item_targets AS it
+		JOIN wb.transfer_items AS ti ON ti.transfer_id = it.transfer_id AND ti.id = it.transfer_item_id
+		JOIN wb.transfer_group_targets AS tgt ON tgt.transfer_id = it.transfer_id AND tgt.id = it.group_target_id
+		JOIN wb.transfer_targets AS tt ON tt.transfer_id = it.transfer_id AND tt.id = tgt.target_id
+		WHERE it.id = $1
+		  AND iden.cabinet_id = tt.cabinet_id
+		  AND iden.vendor_code_key = ti.vendor_code;
+	`
+	const updateGroup = `
+		WITH group_counts AS (
+			SELECT
+				group_target_id,
+				COUNT(*) AS total,
+				COUNT(*) FILTER (WHERE outcome_class = 'success') AS succeeded,
+				COUNT(*) FILTER (WHERE outcome_class = 'rejected') AS rejected,
+				COUNT(*) FILTER (WHERE outcome_class = 'skipped') AS skipped,
+				COUNT(*) FILTER (WHERE outcome_class IN ('unresolved', 'internal_error')) AS unresolved
+			FROM wb.transfer_item_targets
+			WHERE group_target_id = (SELECT group_target_id FROM wb.transfer_item_targets WHERE id = $1)
+			GROUP BY group_target_id
+		)
+		UPDATE wb.transfer_group_targets AS tgt
+		SET publication_status = CASE
+				WHEN gc.unresolved = 0 AND gc.succeeded > 0 THEN 'succeeded'
+				WHEN gc.unresolved = 0 AND gc.rejected = gc.total THEN 'rejected'
+				ELSE tgt.publication_status
+			END,
+		    overall_outcome = CASE
+				WHEN gc.unresolved = 0 AND gc.succeeded > 0 THEN 'success'
+				WHEN gc.unresolved = 0 AND gc.rejected = gc.total THEN 'rejected'
+				ELSE tgt.overall_outcome
+			END,
+		    attention_code = CASE
+				WHEN gc.unresolved = 0 THEN NULL
+				ELSE tgt.attention_code
+			END,
+		    finished_at = CASE
+				WHEN gc.unresolved = 0 THEN COALESCE(tgt.finished_at, CURRENT_TIMESTAMP)
+				ELSE tgt.finished_at
+			END,
+		    revision = tgt.revision + 1,
+		    updated_at = CURRENT_TIMESTAMP
+		FROM group_counts gc
+		WHERE tgt.id = gc.group_target_id;
+	`
+	tx, err := repository.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction for resolve verified card: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, updateItem, itemTargetID, nmID); err != nil {
+		return fmt.Errorf("update transfer item target: %w", err)
+	}
+	if _, err := tx.Exec(ctx, updateActionMember, itemTargetID, nmID); err != nil {
+		return fmt.Errorf("update publication action member: %w", err)
+	}
+	if _, err := tx.Exec(ctx, updateIdentity, itemTargetID, nmID, imtID, subjectID); err != nil {
+		return fmt.Errorf("update product identity: %w", err)
+	}
+	if _, err := tx.Exec(ctx, updateGroup, itemTargetID); err != nil {
+		return fmt.Errorf("update transfer group target: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+func (repository *Repository) RequeueCardForCreation(
+	ctx context.Context,
+	itemTargetID int64,
+) error {
+	ctx, cancel := repository.queryContext(ctx)
+	defer cancel()
+
+	const resetItem = `
+		UPDATE wb.transfer_item_targets
+		SET state = 'running',
+		    outcome_class = NULL,
+		    outcome_code = NULL,
+		    nm_id = NULL,
+		    source_action_id = NULL,
+		    attention_closed_at = NULL,
+		    finished_at = NULL,
+		    revision = revision + 1,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1;
+	`
+	const resetGroup = `
+		UPDATE wb.transfer_group_targets
+		SET publication_status = 'not_started',
+		    media_status = 'not_started',
+		    overall_outcome = 'running',
+		    attention_code = NULL,
+		    publication_plan_id = NULL,
+		    finished_at = NULL,
+		    revision = revision + 1,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = (SELECT group_target_id FROM wb.transfer_item_targets WHERE id = $1);
+	`
+	const resetIdentity = `
+		UPDATE wb.product_identities AS iden
+		SET state = 'remote_missing',
+		    nm_id = NULL,
+		    active_transfer_id = NULL,
+		    active_action_id = NULL,
+		    revision = iden.revision + 1,
+		    updated_at = CURRENT_TIMESTAMP
+		FROM wb.transfer_item_targets AS it
+		JOIN wb.transfer_items AS ti ON ti.transfer_id = it.transfer_id AND ti.id = it.transfer_item_id
+		JOIN wb.transfer_group_targets AS tgt ON tgt.transfer_id = it.transfer_id AND tgt.id = it.group_target_id
+		JOIN wb.transfer_targets AS tt ON tt.transfer_id = it.transfer_id AND tt.id = tgt.target_id
+		WHERE it.id = $1
+		  AND iden.cabinet_id = tt.cabinet_id
+		  AND iden.vendor_code_key = ti.vendor_code;
+	`
+	const resumeTransfer = `
+		UPDATE wb.transfers
+		SET phase = 'publishing',
+		    outcome = 'running',
+		    attention_code = NULL,
+		    finished_at = NULL,
+		    revision = revision + 1,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = (SELECT transfer_id FROM wb.transfer_item_targets WHERE id = $1)
+		  AND phase = 'finished';
+	`
+	tx, err := repository.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction for requeue card for creation: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, resetItem, itemTargetID); err != nil {
+		return fmt.Errorf("reset transfer item target: %w", err)
+	}
+	if _, err := tx.Exec(ctx, resetGroup, itemTargetID); err != nil {
+		return fmt.Errorf("reset transfer group target: %w", err)
+	}
+	if _, err := tx.Exec(ctx, resetIdentity, itemTargetID); err != nil {
+		return fmt.Errorf("reset product identity: %w", err)
+	}
+	if _, err := tx.Exec(ctx, resumeTransfer, itemTargetID); err != nil {
+		return fmt.Errorf("resume transfer: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+

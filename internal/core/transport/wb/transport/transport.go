@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"crypto/tls"
 	"errors"
 	"net/http"
 )
@@ -21,8 +22,11 @@ func NewSharedTransport() (*SharedTransport, error) {
 		return nil, errUnsupportedDefaultTransport
 	}
 
+	cloned := defaultTransport.Clone()
+	configureWBTransport(cloned)
+
 	return &SharedTransport{
-		base: defaultTransport.Clone(),
+		base: cloned,
 	}, nil
 }
 
@@ -36,10 +40,34 @@ func NewSharedTransportFrom(
 	}
 
 	if httpTransport, ok := base.(*http.Transport); ok {
-		base = httpTransport.Clone()
+		cloned := httpTransport.Clone()
+		configureWBTransport(cloned)
+		base = cloned
 	}
 
 	return &SharedTransport{base: base}, nil
+}
+
+func configureWBTransport(transport *http.Transport) {
+	if transport == nil {
+		return
+	}
+	// Wildberries API gateways often fail or reset multiplexed HTTP/2 streams
+	// with PROTOCOL_ERROR. Disabling HTTP/2 enforces reliable HTTP/1.1 keep-alive.
+	transport.ForceAttemptHTTP2 = false
+	transport.TLSNextProto = make(map[string]func(string, *tls.Conn) http.RoundTripper)
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{}
+	} else {
+		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
+	}
+	transport.TLSClientConfig.NextProtos = []string{"http/1.1"}
+	if transport.MaxIdleConns < 200 {
+		transport.MaxIdleConns = 200
+	}
+	if transport.MaxIdleConnsPerHost < 50 {
+		transport.MaxIdleConnsPerHost = 50
+	}
 }
 
 // RoundTripper строит отдельную wrapper chain поверх общего transport.

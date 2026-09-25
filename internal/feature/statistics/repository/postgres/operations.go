@@ -15,7 +15,7 @@ import (
 const operationColumns = `
 	transfer.transfer_id,
 	transfer.batch_id,
-	batch.source_session_id,
+	COALESCE(batch.source_session_id, batch.source_reference_id),
 	transfer.phase,
 	transfer.outcome,
 	COALESCE(transfer.attention_code, ''),

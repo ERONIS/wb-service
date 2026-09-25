@@ -5,26 +5,32 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
+	"time"
 
 	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
 	core_postgres_telegramview "github.com/ERONIS/wb-service/internal/core/repository/postgres/telegramview"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	core_wb_identity_postgres "github.com/ERONIS/wb-service/internal/core/repository/postgres/wbidentity"
 	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
 	telegram_server "github.com/ERONIS/wb-service/internal/core/transport/telegram/server"
 	core_wb "github.com/ERONIS/wb-service/internal/core/transport/wb"
 	core_wb_config "github.com/ERONIS/wb-service/internal/core/transport/wb/config"
+	cabinetcopy "github.com/ERONIS/wb-service/internal/feature/cabinetcopy"
+	cabinetcopy_wb_transport "github.com/ERONIS/wb-service/internal/feature/cabinetcopy/transport/wb"
+	cardedit "github.com/ERONIS/wb-service/internal/feature/cardedit"
 	cardimport "github.com/ERONIS/wb-service/internal/feature/cardimport"
 	cardprepare "github.com/ERONIS/wb-service/internal/feature/cardprepare"
 	cardprepare_wb_transport "github.com/ERONIS/wb-service/internal/feature/cardprepare/transport/wb"
 	cardpublication "github.com/ERONIS/wb-service/internal/feature/cardpublication"
 	cardpublication_wb_transport "github.com/ERONIS/wb-service/internal/feature/cardpublication/transport/wb"
 	statistics "github.com/ERONIS/wb-service/internal/feature/statistics"
+	statistics_wb_transport "github.com/ERONIS/wb-service/internal/feature/statistics/transport/wb"
 	transfer "github.com/ERONIS/wb-service/internal/feature/transfer"
 	transfer_wb_transport "github.com/ERONIS/wb-service/internal/feature/transfer/transport/wb"
 	users "github.com/ERONIS/wb-service/internal/feature/users"
+	wbcabinet "github.com/ERONIS/wb-service/internal/feature/wbcabinet"
 
 	"github.com/jackc/pgx/v5"
 	"go.uber.org/zap"
@@ -64,17 +70,35 @@ func main() {
 	// Wildberries.
 
 	wbConfig := core_wb_config.NewConfigMust()
-	wbIdentityStore := core_wb_identity_postgres.New(uow)
 	wbClientset, err := core_wb.NewForConfig(
 		ctx,
 		&wbConfig,
-		wbIdentityStore,
 		logger.Logger,
 	)
 	if err != nil {
 		panic(fmt.Errorf("create WB clientset: %w", err))
 	}
 	defer wbClientset.CloseIdleConnections()
+	wbCabinetConfig := wbcabinet.NewConfigMust()
+	wbCabinetFeature, err := wbcabinet.New(
+		ctx,
+		postgresPool,
+		uow,
+		wbClientset,
+	)
+	if err != nil {
+		panic(fmt.Errorf("create WB cabinet feature: %w", err))
+	}
+	if err := wbCabinetFeature.Initialize(
+		ctx,
+		wbCabinetConfig.BootstrapOwnerID,
+		wbConfig.Cabinets,
+	); err != nil {
+		logger.Logger.Warn(
+			"some WB cabinets were not restored or bootstrapped",
+			zap.Error(err),
+		)
+	}
 
 	// Telegram.
 
@@ -97,24 +121,48 @@ func main() {
 		postgresPool,
 		uow,
 		bot,
+		logger.Logger,
+	)
+	cardeditFeature := cardedit.New(
+		ctx,
+		bot,
+		wbClientset,
+		wbCabinetFeature.Service(),
+		cardedit.NewConfigMust(),
+		logger.Logger,
 	)
 	transferFeature, err := transfer.New(
 		ctx,
 		postgresPool,
 		uow,
 		cardimportFeature.Service(),
-		transfer_wb_transport.NewTargetTransport(wbClientset),
+		transfer_wb_transport.NewTargetTransport(wbCabinetFeature.Service()),
 		transfer.NewConfigMust(),
+		logger.Logger,
 	)
 	if err != nil {
 		panic(fmt.Errorf("create transfer feature: %w", err))
 	}
+	cabinetcopyFeature := cabinetcopy.New(
+		ctx,
+		postgresPool,
+		uow,
+		bot,
+		cabinetcopy_wb_transport.NewReader(wbClientset, wbCabinetFeature.Service()),
+		cardimportFeature.Service(),
+		transferFeature.Service(),
+		cabinetcopy.NewConfigMust(),
+		logger.Logger,
+	)
+	cardimportFeature.AddCardsMenuButton(cabinetcopyFeature.MenuButton())
+	cardimportFeature.AddCardsMenuButton(cardeditFeature.MenuButton())
 	cardprepareFeature := cardprepare.New(
 		postgresPool,
 		uow,
 		cardprepare_wb_transport.NewCatalogTransport(wbClientset),
 		transferFeature.Service(),
 		transferFeature.PreparationResultApplier(),
+		logger.Logger,
 	)
 	cardpublicationFeature := cardpublication.New(
 		postgresPool,
@@ -125,6 +173,7 @@ func main() {
 		transferFeature.PublicationExecutionResultApplier(),
 		cardprepareFeature.ProposalReader(),
 		cardpublication.NewConfigMust(),
+		logger.Logger,
 	)
 	livePlans := cardpublicationFeature.LivePlanSource()
 	transferFeature.ConfigureLiveAuthorization(livePlans)
@@ -140,9 +189,12 @@ func main() {
 		cardpublicationFeature.ManualResolver(),
 		cardimportFeature.Service(),
 		cabinetNames,
+		statistics_wb_transport.NewVerifier(wbClientset),
 	)
 	cardimportFeature.SetCompletionNavigator(statisticsFeature.CompletionNavigator())
 	cardimportFeature.SetProcessingNotifier(transferFeature)
+	cabinetcopyFeature.SetCompletionNavigator(statisticsFeature.CompletionNavigator())
+	cabinetcopyFeature.SetProcessingNotifier(transferFeature)
 
 	// Telegram commands.
 
@@ -153,12 +205,31 @@ func main() {
 		core_postgres_telegramview.New(postgresPool),
 	)
 	usersFeature.RegisterTelegram(telegramHandler)
+	wbCabinetFeature.RegisterTelegram(telegramHandler, usersFeature.Service())
 	cardimportFeature.RegisterTelegram(telegramHandler)
+	cardeditFeature.RegisterTelegram(telegramHandler)
+	cabinetcopyFeature.RegisterTelegram(telegramHandler)
 	statisticsFeature.RegisterTelegram(telegramHandler)
 	cardpublicationFeature.ConfigureProductDispatch(
 		liveAuthorization,
 	)
+	var background sync.WaitGroup
+	// Drain publication result writes before closing the pool and logger.
+	defer func() {
+		cancel()
+		background.Wait()
+	}()
+	background.Add(4)
 	go func() {
+		defer background.Done()
+		wbCabinetFeature.RunRestoreRetry(ctx, 30*time.Second, logger.Logger)
+	}()
+	go func() {
+		defer background.Done()
+		statisticsFeature.RunAutoAttentionResolver(ctx, 10*time.Second, logger.Logger)
+	}()
+	go func() {
+		defer background.Done()
 		if err := cardpublicationFeature.RunMediaPolling(
 			ctx,
 			func(err error) {
@@ -170,6 +241,7 @@ func main() {
 	}()
 
 	go func() {
+		defer background.Done()
 		if err := transferFeature.RunPolling(
 			ctx,
 			func(err error) {

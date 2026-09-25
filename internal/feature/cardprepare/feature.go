@@ -5,6 +5,7 @@ import (
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	cardprepare_postgres_repository "github.com/ERONIS/wb-service/internal/feature/cardprepare/repository/postgres"
 	cardprepare_service "github.com/ERONIS/wb-service/internal/feature/cardprepare/service"
+	"go.uber.org/zap"
 )
 
 type Feature struct {
@@ -20,12 +21,13 @@ func New(
 	catalogTransport cardprepare_service.CatalogTransport,
 	transferSource cardprepare_service.TransferSource,
 	resultApplier cardprepare_service.TransferResultApplier,
+	loggers ...*zap.Logger,
 ) *Feature {
 	if postgresPool == nil {
 		panic("cardprepare PostgreSQL pool is nil")
 	}
 	repository := cardprepare_postgres_repository.New(postgresPool)
-	preparer := cardprepare_service.NewPreparer(catalogTransport)
+	preparer := cardprepare_service.NewPreparer(catalogTransport, loggers...)
 	coordinator := cardprepare_service.NewCoordinator(repository, uow)
 	return &Feature{
 		coordinator: coordinator,
@@ -37,6 +39,7 @@ func New(
 			transferSource,
 			resultApplier,
 			uow,
+			loggers...,
 		),
 		proposalReader: repository,
 	}

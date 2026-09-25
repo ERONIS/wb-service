@@ -22,7 +22,7 @@ func (repository *Repository) ListInitializing(
 	if afterID < 0 || limit <= 0 || limit > initializationListPageLimit {
 		return nil, core_errors.ErrInvalidArgument
 	}
-	ctx, cancel := context.WithTimeout(ctx, repository.pool.OpTimeout())
+	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 
 	query := `

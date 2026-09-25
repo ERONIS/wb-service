@@ -1,7 +1,10 @@
 package client
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"net"
 	"time"
 )
 
@@ -47,8 +50,11 @@ var (
 const (
 	ErrorCodeInvalidRequest      = "invalid_request"
 	ErrorCodeInvalidResultTarget = "invalid_result_target"
+	ErrorCodeEmptyResponse       = "empty_response"
 	ErrorCodeInvalidResponse     = "invalid_response"
 	ErrorCodeRateLimited         = "rate_limited"
+	ErrorCodeCanceled            = "context_canceled"
+	ErrorCodeDeadlineExceeded    = "context_deadline_exceeded"
 	ErrorCodeRetryInterrupted    = "retry_interrupted"
 	ErrorCodeUnexpectedStatus    = "unexpected_status"
 	ErrorCodeTransport           = "transport_error"
@@ -74,12 +80,14 @@ type ClassifiedError interface {
 
 	Code() string
 	Delivery() DeliveryState
+	HTTPStatus() int
 	RetryAfter() time.Duration
 }
 
 type classifiedError struct {
 	code       string
 	delivery   DeliveryState
+	httpStatus int
 	retryAfter time.Duration
 	cause      error
 }
@@ -108,6 +116,22 @@ func newSafeWrappedError(message string, cause error) error {
 		message: message,
 		cause:   cause,
 	}
+}
+
+func newSafeTransportError(cause error) error {
+	message := "WB HTTP transport failed"
+	if errors.Is(cause, context.Canceled) {
+		message = "WB HTTP transport canceled"
+	} else if errors.Is(cause, context.DeadlineExceeded) {
+		message = "WB HTTP transport timed out"
+	} else {
+		var networkErr net.Error
+		if errors.As(cause, &networkErr) && networkErr.Timeout() {
+			message = "WB HTTP transport timed out"
+		}
+	}
+
+	return newSafeWrappedError(message, cause)
 }
 
 func (state DeliveryState) String() string {
@@ -146,11 +170,19 @@ func (classifiedErr *classifiedError) Delivery() DeliveryState {
 	return classifiedErr.delivery
 }
 
+func (classifiedErr *classifiedError) HTTPStatus() int {
+	return classifiedErr.httpStatus
+}
+
 func (classifiedErr *classifiedError) RetryAfter() time.Duration {
 	return classifiedErr.retryAfter
 }
 
 func (wrappedErr *safeWrappedError) Error() string {
+	if wrappedErr.cause != nil {
+		return fmt.Sprintf("%s: %v", wrappedErr.message, wrappedErr.cause)
+	}
+
 	return wrappedErr.message
 }
 

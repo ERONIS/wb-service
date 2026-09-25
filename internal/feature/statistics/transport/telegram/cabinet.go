@@ -124,7 +124,10 @@ func (handler *Handler) cabinetButtonText(cabinet statistics_service.CabinetProg
 	return fmt.Sprintf(
 		"%s %s · %d%%",
 		icon,
-		truncateRunes(handler.cabinetName(cabinet.CabinetID), 40),
+		core_transport_telegram.TruncateRunes(
+			strings.TrimSpace(handler.cabinetName(cabinet.CabinetID)),
+			40,
+		),
 		calcPercent(cabinet.Terminal, cabinet.Total),
 	)
 }
@@ -193,14 +196,11 @@ func (handler *Handler) openCabinetTasks(ctx tele.Context) error {
 	start := (page-1)*statistics_service.CabinetPageSize + 1
 	for index, task := range tasks.Tasks {
 		text += fmt.Sprintf(
-			"\n\n%d. <code>%s</code> · %s",
+			"\n\n%d. %s · %s",
 			int64(index)+start,
 			escapeLimited(task.VendorCode, 90),
 			cabinetTaskStatus(task, operation.Phase),
 		)
-		if groupName := strings.TrimSpace(task.GroupName); groupName != "" {
-			text += "\n   📁 " + escapeLimited(groupName, 110)
-		}
 	}
 	end := start + int64(len(tasks.Tasks)) - 1
 	text += fmt.Sprintf("\n\nПоказано: %d–%d из %d", start, end, tasks.Total)
@@ -263,6 +263,13 @@ func cabinetTaskPages(total int64) int64 {
 }
 
 func cabinetTaskStatus(task statistics_service.CabinetTaskRow, phase string) string {
+	if task.MediaActionState == "terminal" &&
+		(task.OutcomeClass == "success" || task.OutcomeClass == "skipped") {
+		switch task.OverallOutcome {
+		case "unresolved", "internal_error", "partial":
+			return mediaFailureStatus(task.MediaOutcomeCode)
+		}
+	}
 	if task.OverallOutcome != "" && task.OverallOutcome != "running" {
 		switch task.OverallOutcome {
 		case "rejected":
@@ -283,9 +290,12 @@ func cabinetTaskStatus(task statistics_service.CabinetTaskRow, phase string) str
 	}
 	switch task.MediaStatus {
 	case "running":
+		if task.MediaActionState == "reconciling" {
+			return "🕐 Проверяются фото в WB"
+		}
 		return "📸 Загружается фото"
 	case "not_started":
-		if task.PublicationStatus == "succeeded" || task.PublicationStatus == "skipped" {
+		if task.MediaActionState == "planned" || task.PublicationStatus == "succeeded" || task.PublicationStatus == "skipped" {
 			return "🟡 Фото в очереди"
 		}
 	}
@@ -331,6 +341,21 @@ func cabinetTaskStatus(task statistics_service.CabinetTaskRow, phase string) str
 	return "❔ Статус неизвестен"
 }
 
+func mediaFailureStatus(code string) string {
+	switch {
+	case code == "WB_MEDIA_TRANSPORT_RATE_LIMITED":
+		return "⚠️ Фото: превышен лимит WB"
+	case strings.HasPrefix(code, "WB_MEDIA_PARTIAL_UPLOAD"):
+		return "⚠️ Фото загружены частично"
+	case code == "WB_MEDIA_VISIBILITY_TIMEOUT":
+		return "⚠️ Не подтверждена загрузка всех фото"
+	case code == "WB_MEDIA_ENVELOPE_REJECTED":
+		return "⚠️ WB отклонил загрузку фото"
+	default:
+		return "⚠️ Требуется проверка фото"
+	}
+}
+
 func terminalItemStatus(task statistics_service.CabinetTaskRow) string {
 	switch task.OutcomeClass {
 	case "success":
@@ -351,15 +376,6 @@ func terminalItemStatus(task statistics_service.CabinetTaskRow) string {
 	default:
 		return "❔ Статус неизвестен"
 	}
-}
-
-func truncateRunes(value string, limit int) string {
-	value = strings.TrimSpace(value)
-	runes := []rune(value)
-	if limit <= 0 || len(runes) <= limit {
-		return value
-	}
-	return strings.TrimSpace(string(runes[:limit])) + "…"
 }
 
 func escapeLimited(value string, limit int) string {

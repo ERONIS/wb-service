@@ -14,6 +14,7 @@ const (
 	operationIDSubjects               policy.OperationID = "content.object.all"
 	operationIDSubjectCharacteristics policy.OperationID = "content.object.characteristics"
 	operationIDCardsLimits            policy.OperationID = "content.cards.limits"
+	operationIDTags                   policy.OperationID = "content.tags.list"
 	operationIDBrands                 policy.OperationID = "content.brands"
 	operationIDDirectoryColors        policy.OperationID = "content.directory.colors"
 	operationIDDirectoryKinds         policy.OperationID = "content.directory.kinds"
@@ -26,7 +27,9 @@ const (
 	operationIDCardsErrorList         policy.OperationID = "content.cards.error-list"
 	operationIDUploadCards            policy.OperationID = "content.cards.upload"
 	operationIDUploadCardsAdd         policy.OperationID = "content.cards.upload-add"
+	operationIDUpdateCards            policy.OperationID = "content.cards.update"
 	operationIDSaveMediaByLinks       policy.OperationID = "content.media.save"
+	operationIDUploadMediaFile        policy.OperationID = "content.media.file"
 )
 
 const (
@@ -38,6 +41,7 @@ const (
 	bucketIDCardsList            policy.BucketID = "content_cards_list"
 	bucketIDCardsUpload          policy.BucketID = "content_cards_upload"
 	bucketIDCardsUploadAdd       policy.BucketID = "content_cards_upload_add"
+	bucketIDCardsUpdate          policy.BucketID = "content_cards_update"
 	bucketIDMediaFiles           policy.BucketID = "content_media_files"
 )
 
@@ -48,7 +52,7 @@ var (
 		Path:             "/ping",
 		BucketID:         bucketIDContentPing,
 		Kind:             policy.OperationKindRead,
-		RetryMode:        policy.RetryModeReadSafe,
+		RetryMode:        policy.RetryModeNever,
 		SuccessStatuses:  []int{http.StatusOK},
 		RequestMode:      policy.BodyModeNone,
 		ResponseMode:     policy.BodyModeJSON,
@@ -96,6 +100,20 @@ var (
 		ResponseMode:     policy.BodyModeJSON,
 		MaxRequestBytes:  0,
 		MaxResponseBytes: maxCardsLimitsResponseBytes,
+	})
+
+	tagsOperation = mustOperation(policy.OperationSpec{
+		ID:               operationIDTags,
+		Method:           http.MethodGet,
+		Path:             "/content/v2/tags",
+		BucketID:         bucketIDContentCommon,
+		Kind:             policy.OperationKindRead,
+		RetryMode:        policy.RetryModeReadSafe,
+		SuccessStatuses:  []int{http.StatusOK},
+		RequestMode:      policy.BodyModeNone,
+		ResponseMode:     policy.BodyModeJSON,
+		MaxRequestBytes:  0,
+		MaxResponseBytes: maxTagsResponseBytes,
 	})
 
 	brandsOperation = mustOperation(policy.OperationSpec{
@@ -266,6 +284,20 @@ var (
 		MaxResponseBytes: maxMutationResponseBytes,
 	})
 
+	updateCardsOperation = mustOperation(policy.OperationSpec{
+		ID:               operationIDUpdateCards,
+		Method:           http.MethodPost,
+		Path:             "/content/v2/cards/update",
+		BucketID:         bucketIDCardsUpdate,
+		Kind:             policy.OperationKindMutation,
+		RetryMode:        policy.RetryModeNever,
+		SuccessStatuses:  []int{http.StatusOK},
+		RequestMode:      policy.BodyModeJSON,
+		ResponseMode:     policy.BodyModeJSON,
+		MaxRequestBytes:  maxUpdateCardsRequestBytes,
+		MaxResponseBytes: maxMutationResponseBytes,
+	})
+
 	saveMediaByLinksOperation = mustOperation(policy.OperationSpec{
 		ID:               operationIDSaveMediaByLinks,
 		Method:           http.MethodPost,
@@ -323,6 +355,10 @@ func CardsLimitsOperation() policy.Operation {
 	return cardsLimitsOperation
 }
 
+func TagsOperation() policy.Operation {
+	return tagsOperation
+}
+
 func BrandsOperation() policy.Operation {
 	return brandsOperation
 }
@@ -371,8 +407,38 @@ func UploadCardsAddOperation() policy.Operation {
 	return uploadCardsAddOperation
 }
 
+func UpdateCardsOperation() policy.Operation {
+	return updateCardsOperation
+}
+
 func SaveMediaByLinksOperation() policy.Operation {
 	return saveMediaByLinksOperation
+}
+
+func UploadMediaFileOperation(nmID int64, mediaNumber int) (policy.Operation, error) {
+	if nmID <= 0 {
+		return policy.Operation{}, fmt.Errorf("media nmID must be positive: %d", nmID)
+	}
+	if mediaNumber <= 0 || mediaNumber > MaxMediaImages {
+		return policy.Operation{}, fmt.Errorf("media number must be between 1 and %d: %d", MaxMediaImages, mediaNumber)
+	}
+	return policy.NewOperation(policy.OperationSpec{
+		ID:               operationIDUploadMediaFile,
+		Method:           http.MethodPost,
+		Path:             "/content/v3/media/file",
+		BucketID:         bucketIDMediaFiles,
+		Kind:             policy.OperationKindMutation,
+		RetryMode:        policy.RetryModeNever,
+		SuccessStatuses:  []int{http.StatusOK},
+		RequestMode:      policy.BodyModeMultipart,
+		ResponseMode:     policy.BodyModeJSON,
+		MaxRequestBytes:  maxUploadMediaFileRequestBytes,
+		MaxResponseBytes: maxMutationResponseBytes,
+		Headers: http.Header{
+			"X-Nm-Id":        []string{strconv.FormatInt(nmID, 10)},
+			"X-Photo-Number": []string{strconv.Itoa(mediaNumber)},
+		},
+	})
 }
 
 func mustOperation(spec policy.OperationSpec) policy.Operation {

@@ -40,7 +40,7 @@ func (repository *Repository) ListPreparationWork(
 	if transferID <= 0 {
 		return nil, cardprepare_service.ErrPreparationMismatch
 	}
-	ctx, cancel := context.WithTimeout(ctx, repository.pool.OpTimeout())
+	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 
 	query := `
@@ -155,7 +155,13 @@ func (repository *Repository) SavePreparationResult(
 	if result.RowsAffected() != 1 {
 		return cardprepare_service.PreparationWork{}, cardprepare_service.ErrPreparationMismatch
 	}
-	if err := refreshPreparationProjection(ctx, tx, work.TransferID, work.PreparationID); err != nil {
+	if err := advancePreparationProjection(
+		ctx,
+		tx,
+		work.TransferID,
+		work.PreparationID,
+		status,
+	); err != nil {
 		return cardprepare_service.PreparationWork{}, err
 	}
 	return lockPreparationWork(ctx, tx, work.TransferID, work.ID)
@@ -333,51 +339,49 @@ func insertProposalArtifacts(
 	return nil
 }
 
-func refreshPreparationProjection(
+func advancePreparationProjection(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
 	transferID transfer_service.TransferID,
 	preparationID cardprepare_service.PreparationID,
+	status cardprepare_service.WorkStatus,
 ) error {
 	const query = `
-		WITH counts AS (
-			SELECT
-				COUNT(*) AS total,
-				COUNT(*) FILTER (WHERE status = 'prepared') AS prepared,
-				COUNT(*) FILTER (WHERE status = 'rejected') AS rejected,
-				COUNT(*) FILTER (WHERE status = 'unresolved') AS unresolved
-			FROM wb.card_preparation_groups
-			WHERE transfer_id = $1 AND preparation_id = $2
-		)
 		UPDATE wb.card_preparations AS preparation
-		SET completed_group_targets = counts.prepared,
-		    rejected_group_targets = counts.rejected,
-		    unresolved_group_targets = counts.unresolved,
+		SET completed_group_targets = completed_group_targets +
+				CASE WHEN $3 = 'prepared' THEN 1 ELSE 0 END,
+		    rejected_group_targets = rejected_group_targets +
+				CASE WHEN $3 = 'rejected' THEN 1 ELSE 0 END,
+		    unresolved_group_targets = unresolved_group_targets +
+				CASE WHEN $3 = 'unresolved' THEN 1 ELSE 0 END,
 		    status = CASE
-				WHEN counts.prepared + counts.rejected + counts.unresolved =
-				     preparation.expected_group_targets
+				WHEN completed_group_targets + rejected_group_targets +
+				     unresolved_group_targets + 1 = expected_group_targets
 				THEN CASE
-					WHEN counts.rejected + counts.unresolved = 0 THEN 'completed'
+					WHEN rejected_group_targets + unresolved_group_targets +
+					     CASE WHEN $3 IN ('rejected', 'unresolved') THEN 1 ELSE 0 END = 0
+					THEN 'completed'
 					ELSE 'completed_with_issues'
 				END
 				ELSE 'processing'
 			END,
 		    finished_at = CASE
-				WHEN counts.prepared + counts.rejected + counts.unresolved =
-				     preparation.expected_group_targets
+				WHEN completed_group_targets + rejected_group_targets +
+				     unresolved_group_targets + 1 = expected_group_targets
 				THEN COALESCE(preparation.finished_at, CURRENT_TIMESTAMP)
 				ELSE NULL
 			END,
 		    revision = preparation.revision + 1,
 		    updated_at = CURRENT_TIMESTAMP
-		FROM counts
 		WHERE preparation.transfer_id = $1
 			AND preparation.id = $2
-			AND counts.total = preparation.expected_group_targets;
+			AND preparation.status = 'processing'
+			AND completed_group_targets + rejected_group_targets +
+			    unresolved_group_targets < expected_group_targets;
 	`
-	result, err := tx.Exec(ctx, query, transferID, preparationID)
+	result, err := tx.Exec(ctx, query, transferID, preparationID, status)
 	if err != nil {
-		return fmt.Errorf("refresh card preparation projection: %w", err)
+		return fmt.Errorf("advance card preparation projection: %w", err)
 	}
 	if result.RowsAffected() != 1 {
 		return cardprepare_service.ErrPreparationMismatch

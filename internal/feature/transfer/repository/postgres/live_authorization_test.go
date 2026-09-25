@@ -39,3 +39,28 @@ func TestLiveAuthorizationCommandKindRejectsUnsupportedState(t *testing.T) {
 		t.Fatal("liveAuthorizationCommandKind() error = nil, want non-nil")
 	}
 }
+
+func TestTargetOwnerMayMutate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		sourceKind string
+		ownerRole  string
+		want       bool
+	}{
+		{name: "xlsx partner", sourceKind: "xlsx", ownerRole: "partner", want: true},
+		{name: "xlsx user", sourceKind: "xlsx", ownerRole: "user", want: false},
+		{name: "xlsx admin", sourceKind: "xlsx", ownerRole: "admin", want: true},
+		{name: "cabinet copy remains owner scoped", sourceKind: "wb_cabinet", ownerRole: "admin", want: true},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := targetOwnerMayMutate(test.sourceKind, test.ownerRole); got != test.want {
+				t.Fatalf("targetOwnerMayMutate(%q, %q) = %t, want %t", test.sourceKind, test.ownerRole, got, test.want)
+			}
+		})
+	}
+}

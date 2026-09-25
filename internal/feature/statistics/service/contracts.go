@@ -13,4 +13,7 @@ type Reader interface {
 	AggregateActions(context.Context, AggregateFilter) (ActionTotals, error)
 	AggregateErrors(context.Context, AggregateFilter) ([]ErrorGroup, error)
 	ListAttention(context.Context, AttentionFilter) ([]AttentionRow, error)
+	ResolveVerifiedCard(context.Context, int64, int64, int64, int64) error
+	RequeueCardForCreation(context.Context, int64) error
 }
+

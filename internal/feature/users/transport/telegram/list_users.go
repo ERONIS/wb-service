@@ -19,10 +19,14 @@ func (h *UsersTgHandler) ListUsers(
 	if err != nil {
 		return core_transport_telegram.Notify(ctx, "users.invalid_page", "Не удалось определить страницу списка.")
 	}
+	adminTelegramID, err := core_transport_telegram.SenderID(ctx)
+	if err != nil {
+		return sendServiceError(ctx, err)
+	}
 
 	result, err := h.usersService.GetUsers(
 		h.ctx,
-		ctx.Sender().ID,
+		adminTelegramID,
 		page,
 	)
 	if err != nil {
@@ -89,7 +93,7 @@ func usersPageText(result users_service.UsersPage) string {
 		fmt.Fprintf(
 			&message,
 			"%d. <b>%s</b>\n"+
-				"TG ID: <code>%d</code>\n"+
+				"TG ID: %d\n"+
 				"Роль: %s\n\n",
 			index+1,
 			html.EscapeString(user.FullName),

@@ -18,7 +18,18 @@ const authorizationPlanColumns = `
 	plan.plan_digest,
 	plan.target_set_root,
 	plan.revision,
-	transfer.targets_count,
+	COALESCE((
+		SELECT MAX(previous_auth.id)
+		FROM wb.transfer_live_authorizations AS previous_auth
+		WHERE previous_auth.transfer_id = plan.transfer_id
+		  AND previous_auth.plan_id = plan.id
+	), 0),
+	(
+		SELECT COUNT(DISTINCT action.target_id)
+		FROM wb.publication_actions AS action
+		WHERE action.transfer_id = plan.transfer_id
+		  AND action.plan_id = plan.id
+	),
 	(
 		SELECT COUNT(*)
 		FROM wb.publication_actions AS action
@@ -66,7 +77,11 @@ const authorizationPlanColumns = `
 	(
 		SELECT COUNT(*)
 		FROM wb.transfer_item_targets AS item_target
+		JOIN wb.transfer_group_targets AS group_target
+		  ON group_target.transfer_id = item_target.transfer_id
+		 AND group_target.id = item_target.group_target_id
 		WHERE item_target.transfer_id = transfer.id
+		  AND group_target.publication_plan_id = plan.id
 		  AND item_target.state = 'terminal'
 		  AND item_target.outcome_class = 'skipped'
 		  AND item_target.outcome_code IN (
@@ -77,7 +92,11 @@ const authorizationPlanColumns = `
 	(
 		SELECT COUNT(*)
 		FROM wb.transfer_item_targets AS item_target
+		JOIN wb.transfer_group_targets AS group_target
+		  ON group_target.transfer_id = item_target.transfer_id
+		 AND group_target.id = item_target.group_target_id
 		WHERE item_target.transfer_id = transfer.id
+		  AND group_target.publication_plan_id = plan.id
 		  AND item_target.state = 'terminal'
 		  AND item_target.outcome_class = 'rejected'
 	),
@@ -91,7 +110,7 @@ func (repository *Repository) ListAutomaticAuthorizationPlans(
 	if limit <= 0 || limit > 100 {
 		return nil, core_errors.ErrInvalidArgument
 	}
-	ctx, cancel := context.WithTimeout(ctx, repository.pool.OpTimeout())
+	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 	query := `
 		SELECT ` + authorizationPlanColumns + `
@@ -103,7 +122,8 @@ func (repository *Repository) ListAutomaticAuthorizationPlans(
 		JOIN wb.card_import_sessions AS session
 		  ON session.id = batch.source_session_id
 		WHERE transfer.phase IN (
-				'awaiting_authorization', 'publishing', 'reconciling', 'media'
+				'preparing', 'awaiting_authorization', 'publishing',
+				'reconciling', 'media'
 			)
 			AND transfer.outcome = 'running'
 			AND plan.state IN ('awaiting_authorization', 'executing')
@@ -122,7 +142,7 @@ func (repository *Repository) ListAutomaticAuthorizationPlans(
 				  AND live_auth.state = 'authorized'
 				  AND live_auth.expires_at > CURRENT_TIMESTAMP
 			)
-		ORDER BY transfer.id
+		ORDER BY transfer.id, plan.id
 		LIMIT $1;
 	`
 	rows, err := repository.pool.Query(ctx, query, limit)
@@ -152,7 +172,7 @@ func (repository *Repository) ListAuthorizationPlans(
 	if actorTelegramID <= 0 || limit <= 0 || limit > 100 {
 		return nil, core_errors.ErrInvalidArgument
 	}
-	ctx, cancel := context.WithTimeout(ctx, repository.pool.OpTimeout())
+	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 	query := `
 		SELECT ` + authorizationPlanColumns + `
@@ -165,7 +185,8 @@ func (repository *Repository) ListAuthorizationPlans(
 		  ON session.id = batch.source_session_id
 		WHERE session.author_telegram_id = $1
 			AND transfer.phase IN (
-				'awaiting_authorization', 'publishing', 'reconciling', 'media'
+				'preparing', 'awaiting_authorization', 'publishing',
+				'reconciling', 'media'
 			)
 			AND transfer.outcome = 'running'
 			AND plan.state IN ('awaiting_authorization', 'executing')
@@ -184,7 +205,7 @@ func (repository *Repository) ListAuthorizationPlans(
 				  AND live_auth.state = 'authorized'
 				  AND live_auth.expires_at > CURRENT_TIMESTAMP
 			)
-		ORDER BY transfer.id
+		ORDER BY transfer.id, plan.id
 		LIMIT $2;
 	`
 	rows, err := repository.pool.Query(ctx, query, actorTelegramID, limit)
@@ -214,7 +235,7 @@ func (repository *Repository) GetAuthorizationPlan(
 	if actorTelegramID <= 0 || transferID <= 0 {
 		return transfer_service.AuthorizationPlanSummary{}, core_errors.ErrInvalidArgument
 	}
-	ctx, cancel := context.WithTimeout(ctx, repository.pool.OpTimeout())
+	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 	return loadAuthorizationPlan(
 		ctx,
@@ -267,7 +288,8 @@ func loadAuthorizationPlan(
 		WHERE session.author_telegram_id = $1
 			AND transfer.id = $2
 			AND transfer.phase IN (
-				'awaiting_authorization', 'publishing', 'reconciling', 'media'
+				'preparing', 'awaiting_authorization', 'publishing',
+				'reconciling', 'media'
 			)
 			AND transfer.outcome = 'running'
 			AND plan.state IN ('awaiting_authorization', 'executing')
@@ -317,6 +339,7 @@ func scanAuthorizationPlan(row interface{ Scan(...any) error }) (
 		&planDigest,
 		&targetSetRoot,
 		&plan.PlanRevision,
+		&plan.LatestAuthorizationID,
 		&plan.TargetsCount,
 		&plan.CreateActions,
 		&plan.CreateItems,
