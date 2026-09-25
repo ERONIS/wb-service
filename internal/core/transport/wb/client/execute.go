@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/ERONIS/wb-service/internal/core/observability"
 	"github.com/ERONIS/wb-service/internal/core/transport/wb/client/request"
 	"github.com/ERONIS/wb-service/internal/core/transport/wb/client/response"
 	policy "github.com/ERONIS/wb-service/internal/core/transport/wb/policy"
@@ -36,8 +37,12 @@ func (client *APIClient) Execute(
 	result := executionResult{delivery: NotDispatched}
 
 	defer func() {
+		var classified *classifiedError
+		if errors.As(executeErr, &classified) && classified.delivery == ResponseReceived {
+			classified.httpStatus = result.statusCode
+		}
 		trace.complete(result, executeErr)
-		trace.log(clientLogger(client))
+		trace.log(observability.LoggerWithContext(ctx, clientLogger(client)))
 	}()
 
 	if client == nil {
@@ -60,6 +65,8 @@ func (client *APIClient) Execute(
 
 		return result.err
 	}
+	executionContext, cancelExecution := context.WithTimeout(ctx, client.httpClient.Timeout*time.Duration(attemptLimit))
+	defer cancelExecution()
 
 	if operation.ResponseMode().IsJSON() {
 		if err := response.ValidateTarget(target); err != nil {
@@ -94,25 +101,29 @@ func (client *APIClient) Execute(
 
 	for attemptNumber := 1; attemptNumber <= attemptLimit; attemptNumber++ {
 		if attemptNumber > 1 {
-			if err := ctx.Err(); err != nil {
+			if err := executionContext.Err(); err != nil {
 				result = retryInterruptedResult(result, err)
 
 				return result.err
 			}
 		}
-		// Queue admission is governed only by the caller context. The HTTP
-		// timeout starts after the limiter grants a request slot.
 		waitStartedAt := time.Now()
 		waitErr := client.rateLimiters.Wait(
-			ctx,
+			executionContext,
 			client.cabinetID,
 			operation.BucketID(),
 		)
 		trace.addLimiterWait(time.Since(waitStartedAt))
 		if waitErr != nil {
+			code := ErrorCodeRateLimited
+			if errors.Is(waitErr, context.Canceled) {
+				code = ErrorCodeCanceled
+			} else if errors.Is(waitErr, context.DeadlineExceeded) {
+				code = ErrorCodeDeadlineExceeded
+			}
 			waitResult := executionResult{
 				err: newClassifiedError(
-					ErrorCodeRateLimited,
+					code,
 					NotDispatched,
 					0,
 					waitErr,
@@ -127,36 +138,32 @@ func (client *APIClient) Execute(
 
 			return result.err
 		}
-
-		requestContext, cancel := context.WithTimeout(
-			ctx,
-			client.httpClient.Timeout,
-		)
+		attemptContext := executionContext
+		cancelAttempt := func() {}
+		remainingAttempts := attemptLimit - attemptNumber + 1
+		if remainingAttempts > 1 {
+			if deadline, exists := executionContext.Deadline(); exists {
+				remaining := time.Until(deadline)
+				attemptContext, cancelAttempt = context.WithTimeout(
+					executionContext,
+					remaining/time.Duration(remainingAttempts),
+				)
+			}
+		}
 
 		attemptResult := client.doAttempt(
-			requestContext,
+			attemptContext,
 			prepared,
 			operation,
 			trace,
 		)
-		cancel()
+		cancelAttempt()
 		trace.addResponseBytes(len(attemptResult.body))
 		trace.recordObservationError(attemptResult.observationErr)
 
-		if attemptNumber > 1 &&
-			attemptResult.delivery == NotDispatched &&
-			attemptResult.err != nil {
-			result = retryInterruptedResult(
-				result,
-				attemptResult.err,
-			)
-
-			return result.err
-		}
-
 		result = attemptResult
 		if !client.shouldRetry(
-			ctx,
+			executionContext,
 			operation,
 			result,
 			attemptNumber,
@@ -166,7 +173,7 @@ func (client *APIClient) Execute(
 		}
 
 		if err := client.backoff.Wait(
-			ctx,
+			executionContext,
 			attemptNumber,
 			result.retryAfter,
 		); err != nil {
@@ -182,8 +189,12 @@ func (client *APIClient) Execute(
 
 	if operation.ResponseMode().IsJSON() {
 		if err := response.Decode(result.body, target); err != nil {
+			code := ErrorCodeInvalidResponse
+			if response.IsEmptyBody(err) {
+				code = ErrorCodeEmptyResponse
+			}
 			result.err = newClassifiedError(
-				ErrorCodeInvalidResponse,
+				code,
 				result.delivery,
 				0,
 				err,
@@ -288,13 +299,13 @@ func (client *APIClient) transportErrorResult(
 				ErrorCodeTransport,
 				delivery,
 				0,
-				newSafeWrappedError(
-					"WB HTTP transport failed",
-					transportErr,
-				),
+				newSafeTransportError(transportErr),
 			),
-			delivery:  delivery,
-			retryable: response.IsRetryableTransportError(transportErr),
+			delivery: delivery,
+			// Transport failures remain retryable while the shared logical
+			// request deadline still has budget for another attempt.
+			retryable: response.IsRetryableTransportError(transportErr) ||
+				errors.Is(transportErr, context.DeadlineExceeded),
 		}
 	}
 
@@ -308,10 +319,7 @@ func (client *APIClient) transportErrorResult(
 		ErrorCodeTransport,
 		ResponseReceived,
 		result.retryAfter,
-		newSafeWrappedError(
-			"WB HTTP transport failed",
-			cause,
-		),
+		newSafeTransportError(cause),
 	)
 	result.delivery = ResponseReceived
 	result.retryable = false
@@ -362,6 +370,11 @@ func (client *APIClient) responseResult(
 			0,
 			readErr,
 		)
+		// A safe read may be repeated when WB returned headers but the body
+		// was interrupted. shouldRetry additionally guarantees that the
+		// shared logical request deadline still has time left.
+		result.retryable = response.IsRetryableTransportError(readErr) ||
+			errors.Is(readErr, context.DeadlineExceeded)
 
 		return result
 	}

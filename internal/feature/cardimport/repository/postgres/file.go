@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
@@ -27,12 +28,108 @@ const fileColumns = `
 	updated_at
 `
 
+func (r *Repository) ListRecoverableFiles(
+	ctx context.Context,
+	staleParsingBefore time.Time,
+	reparsePriceErrorsBefore time.Time,
+	limit int,
+) ([]cardimport_service.RecoverableFile, error) {
+	ctx, cancel := r.pool.OperationContext(ctx)
+	defer cancel()
+
+	const query = `
+		SELECT
+			session.author_telegram_id,
+			file.id,
+			file.session_id,
+			file.telegram_file_id,
+			file.telegram_file_unique_id,
+			file.telegram_message_id,
+			file.original_filename,
+			file.mime_type,
+			file.declared_size,
+			file.stored_size,
+			file.sha256,
+			file.status,
+			file.created_at,
+			file.updated_at
+		FROM wb.card_import_files AS file
+		JOIN wb.card_import_sessions AS session
+			ON session.id = file.session_id
+		WHERE session.status = 'collecting'
+			AND (
+				file.status IN ('reserved', 'stored')
+				OR (
+					file.status = 'parsing'
+					AND file.updated_at <= $1
+				)
+				OR (
+					file.status = 'invalid'
+					AND file.updated_at < $2
+					AND EXISTS (
+						SELECT 1
+						FROM wb.card_import_issues AS issue
+						WHERE issue.file_id = file.id
+							AND issue.code = 'price_invalid'
+					)
+				)
+			)
+		ORDER BY file.updated_at, file.id
+		LIMIT $3;
+	`
+
+	rows, err := r.pool.Query(
+		ctx,
+		query,
+		staleParsingBefore,
+		reparsePriceErrorsBefore,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query recoverable cardimport files: %w", err)
+	}
+	defer rows.Close()
+
+	files := make([]cardimport_service.RecoverableFile, 0)
+	for rows.Next() {
+		var ownerID int64
+		var model fileModel
+		if err := rows.Scan(
+			&ownerID,
+			&model.ID,
+			&model.SessionID,
+			&model.TelegramFileID,
+			&model.TelegramFileUniqueID,
+			&model.TelegramMessageID,
+			&model.OriginalFilename,
+			&model.MIMEType,
+			&model.DeclaredSize,
+			&model.StoredSize,
+			&model.SHA256,
+			&model.Status,
+			&model.CreatedAt,
+			&model.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan recoverable cardimport file: %w", err)
+		}
+		files = append(files, cardimport_service.RecoverableFile{
+			AuthorTelegramID: ownerID,
+			File:             model.domain(),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate recoverable cardimport files: %w", err)
+	}
+
+	return files, nil
+}
+
 func (r *Repository) ReserveFile(
 	ctx context.Context,
 	command cardimport_service.ReserveFileCommand,
 	maxFiles int,
 ) (cardimport_service.File, error) {
-	ctx, cancel := context.WithTimeout(ctx, r.pool.OpTimeout())
+	ctx, cancel := r.pool.OperationContext(ctx)
 	defer cancel()
 
 	const query = `
@@ -89,11 +186,14 @@ func (r *Repository) ReserveFile(
 			FROM locked_session AS session
 			WHERE NOT EXISTS (SELECT 1 FROM existing)
 				AND (
-					SELECT COUNT(*)
-					FROM wb.card_import_files AS file_count
-					WHERE file_count.session_id = session.id
-						AND file_count.status <> 'abandoned'
-				) < $9
+					$9 <= 0
+					OR (
+						SELECT COUNT(*)
+						FROM wb.card_import_files AS file_count
+						WHERE file_count.session_id = session.id
+							AND file_count.status <> 'abandoned'
+					) < $9
+				)
 			ON CONFLICT DO NOTHING
 			RETURNING
 				id,
@@ -151,7 +251,7 @@ func (r *Repository) StoreFile(
 	command cardimport_service.StoreFileCommand,
 	content cardimport_service.StoredContent,
 ) (cardimport_service.File, error) {
-	ctx, cancel := context.WithTimeout(ctx, r.pool.OpTimeout())
+	ctx, cancel := r.pool.OperationContext(ctx)
 	defer cancel()
 
 	const query = `

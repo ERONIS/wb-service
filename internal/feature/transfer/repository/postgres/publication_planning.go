@@ -6,10 +6,14 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
-	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 )
+
+// Limit each planning wave to 30 groups so that WB catalog queries (/content/v2/get/cards/list)
+// complete quickly without triggering 60s gateway timeouts or rate limits.
+const publicationPlanningWaveGroupLimit = 30
 
 func (repository *Repository) ListAwaitingAuthorization(
 	ctx context.Context,
@@ -19,15 +23,26 @@ func (repository *Repository) ListAwaitingAuthorization(
 	if afterID < 0 || limit <= 0 || limit > initializationListPageLimit {
 		return nil, core_errors.ErrInvalidArgument
 	}
-	ctx, cancel := context.WithTimeout(ctx, repository.pool.OpTimeout())
+	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 
 	query := `
 		SELECT ` + transferColumns + `
 		FROM wb.transfers AS transfer
-		WHERE transfer.phase = 'awaiting_authorization'
+		WHERE transfer.phase IN (
+				'preparing', 'awaiting_authorization', 'publishing',
+				'reconciling', 'media'
+			)
 			AND transfer.outcome = 'running'
 			AND transfer.id > $1
+			AND EXISTS (
+				SELECT 1
+				FROM wb.transfer_group_targets AS ready_group
+				WHERE ready_group.transfer_id = transfer.id
+				  AND ready_group.preparation_status = 'succeeded'
+				  AND ready_group.publication_status = 'not_started'
+				  AND ready_group.publication_plan_id IS NULL
+			)
 		ORDER BY transfer.id
 		LIMIT $2;
 	`
@@ -55,10 +70,26 @@ func (repository *Repository) LoadPublicationPlanningSource(
 	ctx context.Context,
 	transferID transfer_service.TransferID,
 ) (transfer_service.PublicationPlanningSource, error) {
-	ctx, cancel := context.WithTimeout(ctx, repository.pool.OpTimeout())
+	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 
 	const query = `
+		WITH ready_groups AS (
+			SELECT group_target.id
+			FROM wb.transfer_group_targets AS group_target
+			JOIN wb.transfer_targets AS target
+			  ON target.transfer_id = group_target.transfer_id
+			 AND target.id = group_target.target_id
+			WHERE group_target.transfer_id = $1
+			  AND group_target.preparation_status = 'succeeded'
+			  AND group_target.preparation_result_code = 'prepared'
+			  AND group_target.preparation_group_id IS NOT NULL
+			  AND group_target.preparation_proposal_root IS NOT NULL
+			  AND group_target.publication_status = 'not_started'
+			  AND group_target.publication_plan_id IS NULL
+			ORDER BY target.position, group_target.id
+			LIMIT $2
+		)
 		SELECT
 			group_target.id,
 			group_target.source_group_id,
@@ -74,6 +105,8 @@ func (repository *Repository) LoadPublicationPlanningSource(
 		FROM wb.transfers AS transfer
 		JOIN wb.transfer_group_targets AS group_target
 		  ON group_target.transfer_id = transfer.id
+		JOIN ready_groups AS ready_group
+		  ON ready_group.id = group_target.id
 		JOIN wb.transfer_targets AS target
 		  ON target.transfer_id = group_target.transfer_id
 		 AND target.id = group_target.target_id
@@ -85,16 +118,27 @@ func (repository *Repository) LoadPublicationPlanningSource(
 		 AND item_target.group_target_id = group_target.id
 		 AND item_target.transfer_item_id = item.id
 		WHERE transfer.id = $1
-			AND transfer.phase = 'awaiting_authorization'
+			AND transfer.phase IN (
+				'preparing', 'awaiting_authorization', 'publishing',
+				'reconciling', 'media'
+			)
 			AND transfer.outcome = 'running'
 			AND group_target.preparation_status = 'succeeded'
 			AND group_target.preparation_result_code = 'prepared'
 			AND group_target.preparation_group_id IS NOT NULL
 			AND group_target.preparation_proposal_root IS NOT NULL
+			AND group_target.publication_status = 'not_started'
+			AND group_target.publication_plan_id IS NULL
 			AND item_target.state = 'running'
+			AND item_target.source_action_id IS NULL
 		ORDER BY target.position, group_target.id, item.position;
 	`
-	rows, err := repository.pool.Query(ctx, query, transferID)
+	rows, err := repository.pool.Query(
+		ctx,
+		query,
+		transferID,
+		publicationPlanningWaveGroupLimit,
+	)
 	if err != nil {
 		return transfer_service.PublicationPlanningSource{}, fmt.Errorf(
 			"query publication planning source: %w",
@@ -159,7 +203,7 @@ func (repository *Repository) LoadPublicationPlanningSource(
 				"publication planning group identity changed within result",
 			)
 		}
-		var card cardimport_service.AggregatedCard
+		var card cardpipeline.Card
 		if err := json.Unmarshal(payload, &card); err != nil {
 			return transfer_service.PublicationPlanningSource{}, fmt.Errorf(
 				"decode publication planning item payload: %w",
@@ -176,9 +220,8 @@ func (repository *Repository) LoadPublicationPlanningSource(
 		)
 	}
 
-	// An empty source is valid when preparation rejected or could not resolve
-	// every group-target. The planner will still persist a zero-action plan and
-	// let the transfer reducer finish the already-terminal item results.
+	// An empty source is valid when another planner claimed the selected wave
+	// after the transfer was listed.
 	if err := source.Validate(); err != nil {
 		return transfer_service.PublicationPlanningSource{}, err
 	}

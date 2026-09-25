@@ -11,10 +11,7 @@ func (r *UsersRepository) DeleteUser(
 	ctx context.Context,
 	telegramID int64,
 ) error {
-	ctx, cancel := context.WithTimeout(
-		ctx,
-		r.pool.OpTimeout(),
-	)
+	ctx, cancel := r.pool.OperationContext(ctx)
 	defer cancel()
 
 	const query = `

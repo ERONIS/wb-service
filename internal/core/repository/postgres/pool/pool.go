@@ -24,7 +24,7 @@ type Pool interface {
 	) (int64, error)
 	Close()
 
-	OpTimeout() time.Duration
+	OperationContext(context.Context) (context.Context, context.CancelFunc)
 }
 
 type ConnectionPool struct {
@@ -63,6 +63,11 @@ func NewConnectionPool(config Config, ctx context.Context) (*ConnectionPool, err
 
 }
 
-func (p *ConnectionPool) OpTimeout() time.Duration {
-	return p.opTimeout
+// OperationContext applies the process-wide PostgreSQL operation timeout.
+// Transaction-owned methods keep using the transaction context supplied by
+// the unit of work and must not call this helper.
+func (p *ConnectionPool) OperationContext(
+	parent context.Context,
+) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, p.opTimeout)
 }

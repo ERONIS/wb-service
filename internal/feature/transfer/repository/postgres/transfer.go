@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 
 	"github.com/jackc/pgx/v5"
@@ -44,9 +44,9 @@ type rowScanner interface {
 
 func (repository *Repository) FindByBatch(
 	ctx context.Context,
-	batchID cardimport_service.BatchID,
+	batchID cardpipeline.BatchID,
 ) (transfer_service.Transfer, error) {
-	ctx, cancel := context.WithTimeout(ctx, repository.pool.OpTimeout())
+	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 	return loadByBatch(ctx, repository.pool, batchID)
 }
@@ -55,7 +55,7 @@ func (repository *Repository) FindByID(
 	ctx context.Context,
 	transferID transfer_service.TransferID,
 ) (transfer_service.Transfer, error) {
-	ctx, cancel := context.WithTimeout(ctx, repository.pool.OpTimeout())
+	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 
 	query := `
@@ -81,10 +81,41 @@ func (repository *Repository) FindByID(
 	return transfer, nil
 }
 
+func (repository *Repository) ListTargetCabinetIDs(
+	ctx context.Context,
+	transferID transfer_service.TransferID,
+) ([]transfer_service.CabinetID, error) {
+	ctx, cancel := repository.pool.OperationContext(ctx)
+	defer cancel()
+	const query = `
+		SELECT cabinet_id
+		FROM wb.transfer_targets
+		WHERE transfer_id = $1
+		ORDER BY position;
+	`
+	rows, err := repository.pool.Query(ctx, query, transferID)
+	if err != nil {
+		return nil, fmt.Errorf("select transfer targets: %w", err)
+	}
+	defer rows.Close()
+	result := make([]transfer_service.CabinetID, 0)
+	for rows.Next() {
+		var cabinetID string
+		if err := rows.Scan(&cabinetID); err != nil {
+			return nil, fmt.Errorf("scan transfer target: %w", err)
+		}
+		result = append(result, transfer_service.CabinetID(cabinetID))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate transfer targets: %w", err)
+	}
+	return result, nil
+}
+
 func loadByBatch(
 	ctx context.Context,
 	db core_postgres_transaction.DBTX,
-	batchID cardimport_service.BatchID,
+	batchID cardpipeline.BatchID,
 ) (transfer_service.Transfer, error) {
 	query := `
 		SELECT ` + transferColumns + `
@@ -288,7 +319,7 @@ func scanTransfer(row rowScanner) (transfer_service.Transfer, error) {
 		)
 	}
 	transfer.ID = transfer_service.TransferID(id)
-	transfer.BatchID = cardimport_service.BatchID(batchID)
+	transfer.BatchID = cardpipeline.BatchID(batchID)
 	if finishedAt.Valid {
 		value := finishedAt.Time
 		transfer.FinishedAt = &value

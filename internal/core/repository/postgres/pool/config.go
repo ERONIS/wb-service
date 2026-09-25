@@ -18,7 +18,7 @@ type Config struct {
 	Database string `envconfig:"DB"       required:"true"`
 
 	// Timeout — максимальное время выполнения одного запроса к базе данных.
-	// Используется репозиториями через Pool.OpTimeout() + context.WithTimeout.
+	// Используется репозиториями через Pool.OperationContext().
 	Timeout time.Duration `envconfig:"TIMEOUT"  required:"true"`
 }
 

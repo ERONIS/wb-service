@@ -15,7 +15,7 @@ func (r *Repository) GetCollectingSessionView(
 	ctx context.Context,
 	authorTelegramID int64,
 ) (cardimport_service.SessionView, error) {
-	ctx, cancel := context.WithTimeout(ctx, r.pool.OpTimeout())
+	ctx, cancel := r.pool.OperationContext(ctx)
 	defer cancel()
 
 	const query = `
@@ -48,7 +48,7 @@ func (r *Repository) GetSessionView(
 	authorTelegramID int64,
 	sessionID cardimport_service.SessionID,
 ) (cardimport_service.SessionView, error) {
-	ctx, cancel := context.WithTimeout(ctx, r.pool.OpTimeout())
+	ctx, cancel := r.pool.OperationContext(ctx)
 	defer cancel()
 
 	session, err := r.getSession(ctx, authorTelegramID, sessionID)
@@ -187,6 +187,11 @@ func (r *Repository) loadSessionView(
 		LEFT JOIN wb.card_import_files AS file
 			ON file.id = issue.file_id
 		WHERE issue.session_id = $1
+			AND issue.code NOT IN (
+				'vendor_code_across_files',
+				'barcode_across_files',
+				'duplicate_barcode_in_file'
+			)
 		ORDER BY
 			CASE issue.severity WHEN 'error' THEN 0 ELSE 1 END,
 			issue.id

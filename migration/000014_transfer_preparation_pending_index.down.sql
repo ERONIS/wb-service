@@ -1,0 +1,3 @@
+DROP INDEX wb.publication_actions_plan_unfinished_idx;
+
+DROP INDEX wb.transfer_group_targets_preparation_pending_idx;

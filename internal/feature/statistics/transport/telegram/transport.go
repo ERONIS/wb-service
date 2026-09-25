@@ -18,12 +18,26 @@ var (
 	buttonAction         = tele.Btn{Unique: "stats_action"}
 	buttonAttention      = tele.Btn{Text: "⚠️ Требуют внимания", Unique: "stats_attention"}
 	buttonAttentionItem  = tele.Btn{Unique: "stats_attention_item"}
+	buttonCheckInWB      = tele.Btn{Text: "🔍 Проверить в WB", Unique: "stats_check_wb"}
+	buttonCheckAllInWB   = tele.Btn{Text: "🔍 Проверить все в WB", Unique: "stats_check_all_wb"}
 	buttonMarkPresent    = tele.Btn{Text: "✅ Подтвердить карточку", Unique: "stats_mark_present"}
 	buttonMarkRejected   = tele.Btn{Text: "⛔ Подтвердить отклонение", Unique: "stats_mark_rejected"}
 	buttonCloseAttention = tele.Btn{Text: "Оставить без отправки", Unique: "stats_close_attention"}
 	buttonCurrentSession = tele.Btn{Text: "🔄 Обновить", Unique: "stats_current_session"}
 	buttonCabinetTasks   = tele.Btn{Unique: "stats_cabinet_tasks"}
 )
+
+type CardVerificationInfo struct {
+	NMID      int64
+	IMTID     int64
+	SubjectID int64
+	Title     string
+	Brand     string
+}
+
+type CardVerifier interface {
+	FindCardByVendorCode(ctx context.Context, cabinetID string, vendorCode string) (*CardVerificationInfo, error)
+}
 
 type StatisticsService interface {
 	ListOperations(context.Context, statistics_service.OperationFilter) ([]statistics_service.OperationRow, error)
@@ -36,6 +50,8 @@ type StatisticsService interface {
 	AggregateActions(context.Context, statistics_service.AggregateFilter) (statistics_service.ActionTotals, error)
 	AggregateErrors(context.Context, statistics_service.AggregateFilter) ([]statistics_service.ErrorGroup, error)
 	ListAttention(context.Context, statistics_service.AttentionFilter) ([]statistics_service.AttentionRow, error)
+	ResolveVerifiedCard(context.Context, int64, int64, int64, int64) error
+	RequeueCardForCreation(context.Context, int64) error
 }
 
 type ManualResolver interface {
@@ -57,6 +73,7 @@ type Handler struct {
 	manualResolver ManualResolver
 	batches        BatchReader
 	cabinetNames   map[string]string
+	cardVerifier   CardVerifier
 }
 
 func New(
@@ -66,6 +83,7 @@ func New(
 	manualResolver ManualResolver,
 	batches BatchReader,
 	cabinetNames map[string]string,
+	cardVerifier CardVerifier,
 ) *Handler {
 	if ctx == nil || bot == nil || statistics == nil || manualResolver == nil ||
 		batches == nil {
@@ -82,6 +100,7 @@ func New(
 		manualResolver: manualResolver,
 		batches:        batches,
 		cabinetNames:   names,
+		cardVerifier:   cardVerifier,
 	}
 }
 
@@ -91,6 +110,8 @@ func (handler *Handler) Register(menu *core_transport_telegram.Handler) {
 	menu.RegisterCallback(buttonAction, domain.RoleAdmin, handler.openAction)
 	menu.RegisterCallback(buttonAttention, domain.RoleAdmin, handler.listAttention)
 	menu.RegisterCallback(buttonAttentionItem, domain.RoleAdmin, handler.openAttention)
+	menu.RegisterCallback(buttonCheckInWB, domain.RoleAdmin, handler.checkAttention)
+	menu.RegisterCallback(buttonCheckAllInWB, domain.RoleAdmin, handler.checkAllAttention)
 	menu.RegisterCallback(buttonMarkPresent, domain.RoleAdmin, handler.markPresent)
 	menu.RegisterCallback(buttonMarkRejected, domain.RoleAdmin, handler.markRejected)
 	menu.RegisterCallback(buttonCloseAttention, domain.RoleAdmin, handler.closeAttention)

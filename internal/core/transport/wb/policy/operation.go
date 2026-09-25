@@ -10,6 +10,7 @@ import (
 const (
 	BodyModeNone          BodyMode      = "none"
 	BodyModeJSON          BodyMode      = "json"
+	BodyModeMultipart     BodyMode      = "multipart"
 	OperationKindRead     OperationKind = "read"
 	OperationKindMutation OperationKind = "mutation"
 )
@@ -36,6 +37,7 @@ type Operation struct {
 	responseMode     BodyMode
 	maxRequestBytes  int64
 	maxResponseBytes int64
+	headers          http.Header
 }
 
 // OperationSpec описывает операцию для закрытого API-каталога.
@@ -51,6 +53,7 @@ type OperationSpec struct {
 	ResponseMode     BodyMode
 	MaxRequestBytes  int64
 	MaxResponseBytes int64
+	Headers          http.Header
 }
 
 // NewOperation создаёт проверенную операцию для закрытых catalog-пакетов WB Core.
@@ -77,6 +80,10 @@ func (mode BodyMode) IsNone() bool {
 
 func (mode BodyMode) IsJSON() bool {
 	return mode == BodyModeJSON
+}
+
+func (mode BodyMode) IsMultipart() bool {
+	return mode == BodyModeMultipart
 }
 
 func (kind OperationKind) IsRead() bool {
@@ -142,6 +149,10 @@ func (operation Operation) MaxResponseBytes() int64 {
 	return operation.maxResponseBytes
 }
 
+func (operation Operation) Headers() http.Header {
+	return operation.headers.Clone()
+}
+
 func buildOperation(spec OperationSpec) Operation {
 	return Operation{
 		id:        spec.ID,
@@ -157,6 +168,7 @@ func buildOperation(spec OperationSpec) Operation {
 		responseMode:     spec.ResponseMode,
 		maxRequestBytes:  spec.MaxRequestBytes,
 		maxResponseBytes: spec.MaxResponseBytes,
+		headers:          spec.Headers.Clone(),
 	}
 }
 
@@ -197,12 +209,20 @@ func validateOperationIdentityAndModes(spec OperationSpec) error {
 		)
 	}
 
-	if !spec.RequestMode.IsNone() && !spec.RequestMode.IsJSON() {
+	if !spec.RequestMode.IsNone() && !spec.RequestMode.IsJSON() &&
+		!spec.RequestMode.IsMultipart() {
 		return fmt.Errorf(
 			"operation %q has unsupported request body mode %q",
 			spec.ID,
 			spec.RequestMode,
 		)
+	}
+	for name, values := range spec.Headers {
+		if strings.EqualFold(name, "Authorization") ||
+			strings.EqualFold(name, "Content-Type") || len(values) != 1 ||
+			strings.TrimSpace(name) == "" || strings.TrimSpace(values[0]) == "" {
+			return fmt.Errorf("operation %q has invalid fixed header %q", spec.ID, name)
+		}
 	}
 
 	if !spec.ResponseMode.IsNone() && !spec.ResponseMode.IsJSON() {

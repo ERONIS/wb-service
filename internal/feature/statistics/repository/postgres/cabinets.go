@@ -9,6 +9,42 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+// Media belongs to an individual item. The group outcome must not make its
+// successfully completed siblings look broken (or still uploading).
+const cabinetTaskMediaJoin = `
+		LEFT JOIN (
+			SELECT DISTINCT ON (member.transfer_item_target_id)
+			       member.transfer_id, member.transfer_item_target_id,
+			       action.id, action.state, action.outcome_class, action.outcome_code
+			FROM wb.publication_action_members AS member
+			JOIN wb.publication_actions AS action
+			  ON action.transfer_id = member.transfer_id AND action.id = member.action_id
+			WHERE member.transfer_id = $1
+			  AND action.kind = 'upload_media' AND action.state <> 'superseded'
+			ORDER BY member.transfer_item_target_id, action.id DESC
+		) AS media ON media.transfer_id = item.transfer_id
+		          AND media.transfer_item_target_id = item.item_target_id
+		LEFT JOIN LATERAL (
+			SELECT CASE
+				WHEN item.state = 'terminal' AND item.outcome_class NOT IN ('success', 'skipped')
+					THEN item.outcome_class
+				WHEN media.state = 'terminal' AND media.outcome_class = 'rejected' THEN 'partial'
+				WHEN media.state = 'terminal' THEN media.outcome_class
+				WHEN media.id IS NOT NULL THEN 'running'
+				WHEN item.state = 'terminal' AND item.outcome_class IN ('success', 'skipped')
+					THEN item.outcome_class
+				ELSE group_target.overall_outcome
+			END AS overall_outcome,
+			CASE
+				WHEN media.state = 'planned' THEN 'not_started'
+				WHEN media.state IN ('dispatching', 'reconciling') THEN 'running'
+				WHEN media.state = 'terminal' AND media.outcome_class = 'success' THEN 'succeeded'
+				WHEN media.state = 'terminal' THEN media.outcome_class
+				ELSE group_target.media_status
+			END AS media_status
+		) AS task ON true
+`
+
 func (repository *Repository) ListCabinetProgress(
 	ctx context.Context,
 	transferID int64,
@@ -23,35 +59,37 @@ func (repository *Repository) ListCabinetProgress(
 			target.cabinet_id,
 			COUNT(item.item_target_id),
 			COUNT(item.item_target_id) FILTER (
-				WHERE group_target.overall_outcome = 'running'
+				WHERE task.overall_outcome = 'running'
 				  AND group_target.preparation_status <> 'running'
 				  AND group_target.publication_status <> 'running'
-				  AND group_target.media_status <> 'running'
+				  AND task.media_status <> 'running'
 			),
 			COUNT(item.item_target_id) FILTER (
-				WHERE group_target.overall_outcome = 'running'
+				WHERE task.overall_outcome = 'running'
 				  AND (
 					group_target.preparation_status = 'running'
 					OR group_target.publication_status = 'running'
-					OR group_target.media_status = 'running'
+					OR task.media_status = 'running'
 				  )
 			),
 			COUNT(item.item_target_id) FILTER (
-				WHERE group_target.overall_outcome <> 'running'
+				WHERE task.overall_outcome <> 'running'
 			),
 			COUNT(item.item_target_id) FILTER (
-				WHERE group_target.overall_outcome IN ('success', 'skipped')
+				WHERE task.overall_outcome IN ('success', 'skipped')
 				  AND item.outcome_class IN ('success', 'skipped')
 			),
 			COUNT(item.item_target_id) FILTER (
-				WHERE group_target.overall_outcome <> 'running'
+				WHERE task.overall_outcome <> 'running'
 				  AND (
-					group_target.overall_outcome NOT IN ('success', 'skipped')
+					task.overall_outcome NOT IN ('success', 'skipped')
 					OR item.outcome_class NOT IN ('success', 'skipped')
 				  )
 			),
 			COUNT(item.item_target_id) FILTER (
-				WHERE group_target.attention_code IS NOT NULL
+				WHERE (media.id IS NULL AND group_target.attention_code IS NOT NULL
+				       AND task.overall_outcome IN ('unresolved', 'internal_error'))
+				   OR media.outcome_class IN ('unresolved', 'internal_error')
 				   OR (
 					item.outcome_class IN ('unresolved', 'internal_error')
 					AND item.attention_closed_at IS NULL
@@ -64,6 +102,7 @@ func (repository *Repository) ListCabinetProgress(
 		LEFT JOIN wb.transfer_group_targets AS group_target
 		  ON group_target.transfer_id = item.transfer_id
 		 AND group_target.id = item.group_target_id
+		` + cabinetTaskMediaJoin + `
 		WHERE target.transfer_id = $1
 		GROUP BY target.id, target.position, target.cabinet_id
 		ORDER BY target.position, target.id`
@@ -137,9 +176,11 @@ func (repository *Repository) ListCabinetTasks(
 			COALESCE(item.nm_id, 0),
 			group_target.preparation_status,
 			group_target.publication_status,
-			group_target.media_status,
-			group_target.overall_outcome,
+			task.media_status,
+			task.overall_outcome,
 			COALESCE(group_target.attention_code, ''),
+			COALESCE(media.state, ''),
+			COALESCE(media.outcome_code, ''),
 			item.created_at,
 			item.started_at,
 			item.finished_at
@@ -150,6 +191,7 @@ func (repository *Repository) ListCabinetTasks(
 		JOIN wb.transfer_groups AS source_group
 		  ON source_group.transfer_id = group_target.transfer_id
 		 AND source_group.id = group_target.source_group_id
+		` + cabinetTaskMediaJoin + `
 		WHERE item.transfer_id = $1
 		  AND item.target_id = $2
 		ORDER BY item.item_position, item.item_target_id
@@ -189,6 +231,8 @@ func (repository *Repository) ListCabinetTasks(
 			&item.MediaStatus,
 			&item.OverallOutcome,
 			&item.AttentionCode,
+			&item.MediaActionState,
+			&item.MediaOutcomeCode,
 			&item.CreatedAt,
 			&startedAt,
 			&finishedAt,

@@ -16,6 +16,8 @@ type Prepared struct {
 	urlString   string
 	requestMode policy.BodyMode
 	bodyBytes   []byte
+	contentType string
+	headers     http.Header
 }
 
 // NewHTTPRequest создаёт независимый HTTP request для одной попытки.
@@ -30,7 +32,7 @@ func (prepared Prepared) NewHTTPRequest(
 	}
 
 	var body io.Reader
-	if prepared.requestMode.IsJSON() {
+	if prepared.requestMode.IsJSON() || prepared.requestMode.IsMultipart() {
 		if prepared.bodyBytes == nil {
 			return nil, errRequestNotPrepared
 		}
@@ -48,8 +50,13 @@ func (prepared Prepared) NewHTTPRequest(
 		return nil, errHTTPRequestBuildFailed
 	}
 
-	if prepared.requestMode.IsJSON() {
-		httpRequest.Header.Set("Content-Type", "application/json")
+	for name, values := range prepared.headers {
+		for _, value := range values {
+			httpRequest.Header.Add(name, value)
+		}
+	}
+	if prepared.contentType != "" {
+		httpRequest.Header.Set("Content-Type", prepared.contentType)
 	}
 
 	return httpRequest, nil

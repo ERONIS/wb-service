@@ -16,7 +16,7 @@ func (repository *Repository) LoadErrorCursor(
 	ctx context.Context,
 	cabinetID cardpublication_service.CabinetID,
 ) (cardpublication_service.ErrorCursor, error) {
-	ctx, cancel := context.WithTimeout(ctx, repository.pool.OpTimeout())
+	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 	const query = `
 		SELECT cabinet_id, cursor_updated_at, cursor_batch_uuid, revision, polled_at

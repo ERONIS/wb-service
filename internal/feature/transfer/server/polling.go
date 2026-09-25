@@ -3,7 +3,12 @@ package transfer_server
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"time"
+
+	"github.com/ERONIS/wb-service/internal/core/observability"
+	"go.uber.org/zap"
 )
 
 type Processor interface {
@@ -47,31 +52,116 @@ func NewPollingWithWake(
 	return polling
 }
 
-func (polling *Polling) Run(ctx context.Context, onError ErrorHandler) error {
+func (polling *Polling) Run(ctx context.Context, onError ErrorHandler, loggers ...*zap.Logger) error {
 	if ctx == nil {
 		return errors.New("run transfer polling: context is nil")
 	}
-	process := func() {
-		for _, processor := range polling.processors {
-			if err := processor.ProcessPending(ctx); err != nil {
-				if ctx.Err() == nil && onError != nil {
-					onError(err)
-				}
+	logger := observability.Logger(loggers...)
+	var errorMu sync.Mutex
+	reportError := func(err error) {
+		if err == nil || ctx.Err() != nil || onError == nil {
+			return
+		}
+		// Error handlers were called serially by the old polling loop. Preserve
+		// that contract while the processors themselves run independently.
+		errorMu.Lock()
+		defer errorMu.Unlock()
+		onError(err)
+	}
+
+	var wait sync.WaitGroup
+	for index, processor := range polling.processors {
+		index, processor := index, processor
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			var wake <-chan struct{}
+			if index == 0 {
+				// A finalized batch only needs to wake the workflow/discovery
+				// processor. Downstream processors observe its committed state on
+				// their own ticks and never wait behind its work.
+				wake = polling.wake
 			}
+			polling.runProcessor(ctx, logger, index, processor, wake, reportError)
+		}()
+	}
+	<-ctx.Done()
+	wait.Wait()
+	return nil
+}
+
+func (polling *Polling) runProcessor(
+	ctx context.Context,
+	logger *zap.Logger,
+	index int,
+	processor Processor,
+	wake <-chan struct{},
+	reportError ErrorHandler,
+) {
+	var cycle int64
+	process := func(trigger string, scheduledAt time.Time) {
+		cycle++
+		startedAt := time.Now()
+		scheduleDelay := startedAt.Sub(scheduledAt)
+		if scheduleDelay < 0 {
+			scheduleDelay = 0
+		}
+		fields := []zap.Field{
+			zap.Int64("poll_cycle", cycle),
+			zap.String("trigger", trigger),
+			zap.String("processor", fmt.Sprintf("%T", processor)),
+			zap.Int("processor_index", index),
+		}
+		processorLogger := logger.With(fields...)
+		if scheduleDelay > polling.interval {
+			processorLogger.Warn(
+				"Transfer polling schedule delayed",
+				zap.String("event", "poll_schedule_delay"),
+				zap.Duration("schedule_delay", scheduleDelay),
+				zap.Duration("poll_interval", polling.interval),
+			)
+		}
+		processorLogger.Debug("Transfer polling processor started")
+		err := processor.ProcessPending(ctx)
+		observability.LogTimingDebug(
+			processorLogger,
+			"transfer",
+			"poll_processor",
+			startedAt,
+			err,
+			zap.Duration("poll_interval", polling.interval),
+			zap.Duration("schedule_delay", scheduleDelay),
+		)
+		observability.LogTimingDebug(
+			processorLogger,
+			"transfer",
+			"poll_cycle",
+			startedAt,
+			err,
+			zap.Int("processors_count", len(polling.processors)),
+			zap.Duration("poll_interval", polling.interval),
+			zap.Duration("schedule_delay", scheduleDelay),
+			zap.Bool("interval_exceeded", time.Since(startedAt) > polling.interval),
+		)
+		if err != nil {
+			reportError(err)
 		}
 	}
 
-	process()
+	if ctx.Err() != nil {
+		return
+	}
+	process("startup", time.Now())
 	ticker := time.NewTicker(polling.interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return nil
-		case <-polling.wake:
-			process()
-		case <-ticker.C:
-			process()
+			return
+		case <-wake:
+			process("wake", time.Now())
+		case scheduledAt := <-ticker.C:
+			process("tick", scheduledAt)
 		}
 	}
 }
