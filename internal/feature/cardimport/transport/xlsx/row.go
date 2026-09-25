@@ -68,7 +68,7 @@ func parseRow(
 	price := parsePositiveIntField(
 		columns.value(row, columnPrice),
 		"price_invalid",
-		"Цена должна быть положительным целым числом.",
+		"Цена должна быть положительным числом.",
 		sheetName,
 		rowNumber,
 		columns.firstColumn(columnPrice),

@@ -10,9 +10,11 @@ import (
 )
 
 const (
-	mainMenuText     = "🏠 <b>Главное меню</b>\n\nВыберите действие:"
-	CallbackMainMenu = "core_main_menu"
-	mainMenuColumns  = 1
+	mainMenuText         = "🏠 <b>Главное меню</b>\n\nВыберите действие:"
+	mainMenuReplyText    = "🏠 Главное меню"
+	CallbackMainMenu     = "core_main_menu"
+	mainMenuColumns      = 1
+	replyKeyboardMessage = "Кнопка «Главное меню» добавлена."
 )
 
 type menuItem struct {
@@ -41,8 +43,16 @@ func (h *Handler) RegisterMainMenu() {
 	h.RegisterHandler(
 		"/start",
 		domain.RoleUser,
-		h.handleMainMenu,
+		h.handleStart,
 	)
+}
+
+// handleStart keeps the chat clean and forces a fresh main menu and reply keyboard.
+// This ensures that clearing chat history in Telegram properly displays the menu again.
+func (h *Handler) handleStart(ctx tele.Context) error {
+	_ = ctx.Delete()
+	_ = InstallReplyKeyboard(ctx, replyKeyboardMessage, h.mainMenuReplyMarkup())
+	return h.renderMainMenuFresh(ctx)
 }
 
 // RegisterMenuItem добавляет кнопку в главное меню
@@ -70,6 +80,26 @@ func (h *Handler) RegisterMenuItem(
 func (h *Handler) handleMainMenu(
 	ctx tele.Context,
 ) error {
+	return h.renderMainMenu(ctx)
+}
+
+func (h *Handler) handleMainMenuReply(ctx tele.Context) error {
+	_ = ctx.Delete()
+	return h.renderMainMenuFresh(ctx)
+}
+
+func (h *Handler) renderMainMenu(ctx tele.Context) error {
+	return h.renderMainMenuWith(ctx, false)
+}
+
+func (h *Handler) renderMainMenuFresh(ctx tele.Context) error {
+	return h.renderMainMenuWith(ctx, true)
+}
+
+func (h *Handler) renderMainMenuWith(ctx tele.Context, fresh bool) error {
+	if sender := ctx.Sender(); sender != nil {
+		h.EndTextFlows(sender.ID)
+	}
 	markup, err := h.mainMenuMarkup(ctx)
 	if err != nil {
 		return fmt.Errorf(
@@ -78,10 +108,19 @@ func (h *Handler) handleMainMenu(
 		)
 	}
 
-	return ctx.EditOrSend(
-		mainMenuText,
-		markup,
-	)
+	if fresh {
+		return SendNewMenu(ctx, mainMenuText, markup)
+	}
+	return ctx.EditOrSend(mainMenuText, markup)
+}
+
+func (h *Handler) mainMenuReplyMarkup() *tele.ReplyMarkup {
+	markup := h.bot.NewMarkup()
+	markup.ResizeKeyboard = true
+	markup.IsPersistent = true
+	markup.Placeholder = "Выберите действие"
+	markup.Reply(markup.Row(markup.Text(mainMenuReplyText)))
+	return markup
 }
 
 // mainMenuMarkup строит меню для пользователя с учётом его роли.
@@ -114,7 +153,6 @@ func (h *Handler) mainMenuMarkup(
 			)
 		}
 	}
-
 	markup.Inline(
 		markup.Split(
 			mainMenuColumns,

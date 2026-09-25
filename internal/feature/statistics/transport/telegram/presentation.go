@@ -1,7 +1,6 @@
 package statistics_telegram_transport
 
 import (
-	"errors"
 	"fmt"
 	"strconv"
 
@@ -254,14 +253,13 @@ func operationStatus(row statistics_service.OperationRow) string {
 }
 
 func parsePositiveInt64(arguments []string, index, expected int) (int64, error) {
-	if len(arguments) != expected || index < 0 || index >= len(arguments) {
-		return 0, errors.New("invalid callback arguments")
-	}
-	value, err := strconv.ParseInt(arguments[index], 36, 64)
-	if err != nil || value <= 0 {
-		return 0, errors.New("invalid callback ID")
-	}
-	return value, nil
+	return core_transport_telegram.ParseInt64Argument(
+		arguments,
+		index,
+		expected,
+		36,
+		1,
+	)
 }
 
 func callbackInt(value int64) string {

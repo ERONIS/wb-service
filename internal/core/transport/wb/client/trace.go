@@ -34,6 +34,7 @@ type requestTrace struct {
 	statusCode      int
 	delivery        DeliveryState
 	errorCode       string
+	err             error
 	observationErrs int
 	maxAttempts     int
 	attemptCount    int
@@ -165,15 +166,17 @@ func (trace *requestTrace) complete(
 	trace.statusCode = result.statusCode
 	trace.delivery = result.delivery
 	trace.errorCode = classifiedErrorCode(executeErr)
+	trace.err = executeErr
 }
+
+const slowLimiterWaitLogThreshold = time.Second
 
 func (trace *requestTrace) log(logger *zap.Logger) {
 	if trace == nil || logger == nil {
 		return
 	}
 
-	logger.Info(
-		"WB request completed",
+	fields := []zap.Field{
 		zap.String("event", "wb_request_completed"),
 		zap.String("request_id", trace.requestID),
 		zap.String("cabinet_id", string(trace.cabinetID)),
@@ -194,7 +197,19 @@ func (trace *requestTrace) log(logger *zap.Logger) {
 		zap.String("result", trace.resultLabel()),
 		zap.String("error_code", trace.errorCode),
 		zap.Int("rate_limit_observation_errors", trace.observationErrs),
-	)
+	}
+	if trace.err != nil {
+		fields = append(fields, zap.NamedError("error", trace.err))
+	}
+	if trace.errorCode != "" {
+		logger.Warn("WB request completed", fields...)
+		return
+	}
+	if trace.limiterWait >= slowLimiterWaitLogThreshold {
+		logger.Info("WB request completed", fields...)
+		return
+	}
+	logger.Debug("WB request completed", fields...)
 }
 
 func (trace *requestTrace) attemptStatuses() []int {

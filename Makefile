@@ -115,4 +115,5 @@ admin-bootstrap:
 	@echo "Admin с TG ID $(ADMIN_TG_ID) создан или обновлён"
 
 wb-service-run:
+	@$(MAKE) migrate-up
 	@go run cmd/wb-service/main.go

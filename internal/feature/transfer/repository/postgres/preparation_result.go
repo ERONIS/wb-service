@@ -31,7 +31,7 @@ func (repository *Repository) ApplyPreparationResult(
 	if command.Status == transfer_service.PreparationResultSucceeded {
 		proposalRoot = command.ProposalRoot[:]
 	}
-	if transferPhase != "preparing" {
+	if !preparationPipelinePhase(transferPhase) {
 		return ensureSamePreparationResult(ctx, tx, command)
 	}
 
@@ -44,6 +44,14 @@ func (repository *Repository) ApplyPreparationResult(
 			preparation_group_id = $6,
 			preparation_result_code = $7,
 			preparation_proposal_root = $8,
+			publication_status = CASE
+				WHEN $3 = 'succeeded' THEN group_target.publication_status
+				ELSE 'skipped'
+			END,
+			media_status = CASE
+				WHEN $3 = 'succeeded' THEN group_target.media_status
+				ELSE 'skipped'
+			END,
 			overall_outcome = CASE $3
 				WHEN 'succeeded' THEN 'running'
 				WHEN 'rejected' THEN 'rejected'
@@ -67,7 +75,10 @@ func (repository *Repository) ApplyPreparationResult(
 				SELECT 1
 				FROM wb.transfers AS transfer
 				WHERE transfer.id = group_target.transfer_id
-					AND transfer.phase = 'preparing'
+					AND transfer.phase IN (
+						'preparing', 'awaiting_authorization', 'publishing',
+						'reconciling', 'media'
+					)
 					AND transfer.outcome = 'running'
 			);
 	`
@@ -121,31 +132,74 @@ func (repository *Repository) ApplyPreparationResult(
 	}
 
 	const advanceTransfer = `
-		WITH counts AS (
+		WITH group_counts AS (
 			SELECT
 				COUNT(*) AS total,
-				COUNT(*) FILTER (
-					WHERE preparation_status IN ('succeeded', 'rejected', 'unresolved')
-				) AS terminal
+				COUNT(*) FILTER (WHERE overall_outcome <> 'running') AS terminal,
+				COUNT(*) FILTER (WHERE overall_outcome = 'rejected') AS rejected,
+				COUNT(*) FILTER (WHERE overall_outcome = 'partial') AS partial,
+				COUNT(*) FILTER (WHERE overall_outcome = 'unresolved') AS unresolved,
+				COUNT(*) FILTER (WHERE overall_outcome = 'internal_error') AS internal_error
 			FROM wb.transfer_group_targets
 			WHERE transfer_id = $1
 		)
 		UPDATE wb.transfers AS transfer
 		SET
-			phase = 'awaiting_authorization',
-			revision = transfer.revision + 1,
+			phase = CASE
+				WHEN group_counts.terminal = group_counts.total THEN 'finished'
+				WHEN transfer.phase = 'preparing' THEN 'awaiting_authorization'
+				ELSE transfer.phase
+			END,
+			outcome = CASE
+				WHEN group_counts.terminal <> group_counts.total THEN 'running'
+				WHEN group_counts.unresolved > 0 OR group_counts.internal_error > 0
+					THEN 'unresolved'
+				WHEN group_counts.rejected = group_counts.total THEN 'rejected'
+				WHEN group_counts.rejected > 0 OR group_counts.partial > 0 THEN 'partial'
+				ELSE 'succeeded'
+			END,
+			attention_code = CASE
+				WHEN group_counts.terminal = group_counts.total
+				 AND (group_counts.unresolved > 0 OR group_counts.internal_error > 0)
+					THEN 'preparation_requires_attention'
+				ELSE NULL
+			END,
+			finished_at = CASE
+				WHEN group_counts.terminal = group_counts.total THEN CURRENT_TIMESTAMP
+				ELSE NULL
+			END,
+			revision = revision + 1,
 			updated_at = CURRENT_TIMESTAMP
-		FROM counts
+		FROM group_counts
 		WHERE transfer.id = $1
-			AND transfer.phase = 'preparing'
+			AND transfer.phase IN (
+				'preparing', 'awaiting_authorization', 'publishing',
+				'reconciling', 'media'
+			)
 			AND transfer.outcome = 'running'
-			AND counts.total = transfer.group_targets_count
-			AND counts.terminal = counts.total;
+			AND group_counts.total = transfer.group_targets_count
+			AND NOT EXISTS (
+				SELECT 1
+				FROM wb.transfer_group_targets AS group_target
+				WHERE group_target.transfer_id = $1
+					AND group_target.preparation_status NOT IN (
+						'succeeded', 'rejected', 'unresolved'
+					)
+			);
 	`
 	if _, err := tx.Exec(ctx, advanceTransfer, command.TransferID); err != nil {
 		return fmt.Errorf("advance transfer after preparation: %w", err)
 	}
 	return nil
+}
+
+func preparationPipelinePhase(phase string) bool {
+	switch phase {
+	case "preparing", "awaiting_authorization", "publishing", "reconciling", "media":
+		return true
+	default:
+		return false
+	}
 }
 
 func lockTransferForPipelineResult(

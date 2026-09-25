@@ -17,10 +17,7 @@ func (r *UsersRepository) SaveUser(
 	ctx context.Context,
 	user domain.User,
 ) (domain.User, error) {
-	ctx, cancel := context.WithTimeout(
-		ctx,
-		r.pool.OpTimeout(),
-	)
+	ctx, cancel := r.pool.OperationContext(ctx)
 	defer cancel()
 
 	const query = `

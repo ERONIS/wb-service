@@ -26,7 +26,7 @@ func (r *Repository) GetOrCreateCollectingSession(
 	authorTelegramID int64,
 	purpose cardimport_service.Purpose,
 ) (cardimport_service.Session, error) {
-	ctx, cancel := context.WithTimeout(ctx, r.pool.OpTimeout())
+	ctx, cancel := r.pool.OperationContext(ctx)
 	defer cancel()
 
 	const query = `
@@ -81,7 +81,7 @@ func (r *Repository) GetSession(
 	authorTelegramID int64,
 	sessionID cardimport_service.SessionID,
 ) (cardimport_service.Session, error) {
-	ctx, cancel := context.WithTimeout(ctx, r.pool.OpTimeout())
+	ctx, cancel := r.pool.OperationContext(ctx)
 	defer cancel()
 
 	return r.getSession(ctx, authorTelegramID, sessionID)
@@ -129,7 +129,7 @@ func (r *Repository) CancelSession(
 	authorTelegramID int64,
 	sessionID cardimport_service.SessionID,
 ) (cardimport_service.Session, error) {
-	ctx, cancel := context.WithTimeout(ctx, r.pool.OpTimeout())
+	ctx, cancel := r.pool.OperationContext(ctx)
 	defer cancel()
 
 	const query = `

@@ -141,6 +141,35 @@ func (service *Service) ListAttention(
 	return service.reader.ListAttention(ctx, filter)
 }
 
+func (service *Service) ResolveVerifiedCard(
+	ctx context.Context,
+	itemTargetID int64,
+	nmID int64,
+	imtID int64,
+	subjectID int64,
+) error {
+	if ctx == nil {
+		return errors.New("statistics context is nil")
+	}
+	if itemTargetID <= 0 || nmID <= 0 {
+		return errors.New("invalid arguments for resolve verified card")
+	}
+	return service.reader.ResolveVerifiedCard(ctx, itemTargetID, nmID, imtID, subjectID)
+}
+
+func (service *Service) RequeueCardForCreation(
+	ctx context.Context,
+	itemTargetID int64,
+) error {
+	if ctx == nil {
+		return errors.New("statistics context is nil")
+	}
+	if itemTargetID <= 0 {
+		return errors.New("invalid arguments for requeue card for creation")
+	}
+	return service.reader.RequeueCardForCreation(ctx, itemTargetID)
+}
+
 func normalizeAggregate(
 	ctx context.Context,
 	filter AggregateFilter,
@@ -152,3 +181,4 @@ func normalizeAggregate(
 }
 
 var _ Reader = (*Service)(nil)
+

@@ -9,10 +9,15 @@ import (
 
 func (h *Handler) showCardsMenu(ctx tele.Context) error {
 	markup := h.bot.NewMarkup()
-	markup.Inline(
-		markup.Row(buttonTransfer),
-		markup.Row(core_transport_telegram.MainMenuButton()),
-	)
+	actions := make([]tele.Btn, 0, 1+len(h.additionalMenuButtons))
+	actions = append(actions, buttonTransfer)
+	actions = append(actions, h.additionalMenuButtons...)
+	rows := make([]tele.Row, 0, len(actions)+1)
+	for _, action := range actions {
+		rows = append(rows, markup.Row(action))
+	}
+	rows = append(rows, markup.Row(core_transport_telegram.MainMenuButton()))
+	markup.Inline(rows...)
 
 	return ctx.EditOrSend(
 		"📦 <b>Карточки</b>\n\nВыберите действие:",
@@ -21,7 +26,7 @@ func (h *Handler) showCardsMenu(ctx tele.Context) error {
 }
 
 func (h *Handler) startTransfer(ctx tele.Context) error {
-	authorTelegramID, err := senderTelegramID(ctx)
+	authorTelegramID, err := core_transport_telegram.SenderID(ctx)
 	if err != nil {
 		return sendServiceError(ctx, err)
 	}
@@ -46,7 +51,7 @@ func (h *Handler) startTransfer(ctx tele.Context) error {
 }
 
 func (h *Handler) cancel(ctx tele.Context) error {
-	authorTelegramID, err := senderTelegramID(ctx)
+	authorTelegramID, err := core_transport_telegram.SenderID(ctx)
 	if err != nil {
 		return sendServiceError(ctx, err)
 	}
@@ -75,8 +80,31 @@ func (h *Handler) cancel(ctx tele.Context) error {
 	)
 }
 
+func (h *Handler) continueImport(ctx tele.Context) error {
+	authorTelegramID, err := core_transport_telegram.SenderID(ctx)
+	if err != nil {
+		return sendServiceError(ctx, err)
+	}
+	command, err := parseContinueCommand(ctx.Args())
+	if err != nil {
+		return core_transport_telegram.Notify(ctx, "cardimport.stale_continue", "⚠️ Кнопка устарела. Откройте текущую загрузку заново.")
+	}
+	command.AuthorTelegramID = authorTelegramID
+
+	view, err := h.service.Continue(h.ctx, command)
+	if err != nil {
+		return sendServiceError(ctx, err)
+	}
+
+	text, markup := h.sessionView(view)
+	return ctx.EditOrSend(
+		"➡️ Ошибочные строки и карточки пропущены.\n\n"+text,
+		markup,
+	)
+}
+
 func (h *Handler) finalize(ctx tele.Context) error {
-	actor, err := senderTrustedActor(ctx)
+	actor, err := core_transport_telegram.ActorFromContext(ctx)
 	if err != nil {
 		return sendServiceError(ctx, err)
 	}

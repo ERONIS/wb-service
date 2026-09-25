@@ -62,6 +62,12 @@ func TestCabinetTaskStatus(t *testing.T) {
 		{name: "media after card creation", task: statistics_service.CabinetTaskRow{State: "terminal", OutcomeClass: "success", OverallOutcome: "running", MediaStatus: "running"}, phase: "media", want: "📸 Загружается фото"},
 		{name: "success", task: statistics_service.CabinetTaskRow{State: "terminal", OutcomeClass: "success", OverallOutcome: "success", NMID: 123}, want: "✅ Готово · nmID 123"},
 		{name: "attention", task: statistics_service.CabinetTaskRow{State: "terminal", OutcomeClass: "unresolved"}, want: "⚠️ Нужна проверка"},
+		{name: "own media complete", task: statistics_service.CabinetTaskRow{State: "terminal", OutcomeClass: "success", OverallOutcome: "success", MediaActionState: "terminal", MediaOutcomeCode: "WB_MEDIA_VISIBLE", NMID: 123}, want: "✅ Готово · nmID 123"},
+		{name: "checking uncertain upload", task: statistics_service.CabinetTaskRow{State: "terminal", OutcomeClass: "success", OverallOutcome: "running", MediaActionState: "reconciling", MediaStatus: "running"}, want: "🕐 Проверяются фото в WB"},
+		{name: "media queued in partial group", task: statistics_service.CabinetTaskRow{State: "terminal", OutcomeClass: "success", OverallOutcome: "running", PublicationStatus: "partial", MediaActionState: "planned", MediaStatus: "not_started"}, want: "🟡 Фото в очереди"},
+		{name: "old rate limited upload", task: statistics_service.CabinetTaskRow{State: "terminal", OutcomeClass: "success", OverallOutcome: "unresolved", MediaActionState: "terminal", MediaOutcomeCode: "WB_MEDIA_TRANSPORT_RATE_LIMITED"}, want: "⚠️ Фото: превышен лимит WB"},
+		{name: "old partial upload", task: statistics_service.CabinetTaskRow{State: "terminal", OutcomeClass: "success", OverallOutcome: "unresolved", MediaActionState: "terminal", MediaOutcomeCode: "WB_MEDIA_PARTIAL_UPLOAD"}, want: "⚠️ Фото загружены частично"},
+		{name: "media visibility expired", task: statistics_service.CabinetTaskRow{State: "terminal", OutcomeClass: "success", OverallOutcome: "unresolved", MediaActionState: "terminal", MediaOutcomeCode: "WB_MEDIA_VISIBILITY_TIMEOUT"}, want: "⚠️ Не подтверждена загрузка всех фото"},
 	}
 
 	for _, test := range tests {

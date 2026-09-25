@@ -1,6 +1,10 @@
 package config
 
-import "time"
+import (
+	"time"
+
+	"github.com/ERONIS/wb-service/internal/core/domain"
+)
 
 type Config struct {
 	BaseURL  string
@@ -14,4 +18,4 @@ type CabinetConfig struct {
 	Token string `json:"-"`
 }
 
-type CabinetID string
+type CabinetID = domain.CabinetID

@@ -58,6 +58,12 @@ var contentBucketSpecs = []policy.BucketSpec{
 		MaxWaiters: maxWaitersPerBucket,
 	}),
 	mustBucketSpec(policy.BucketSpec{
+		ID:         bucketIDCardsUpdate,
+		Interval:   6 * time.Second,
+		Burst:      5,
+		MaxWaiters: maxWaitersPerBucket,
+	}),
+	mustBucketSpec(policy.BucketSpec{
 		ID:         bucketIDMediaFiles,
 		Interval:   600 * time.Millisecond,
 		Burst:      5,

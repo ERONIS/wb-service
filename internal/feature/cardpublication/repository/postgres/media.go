@@ -20,7 +20,7 @@ func (repository *Repository) ListDispatchableMediaActions(
 	if limit <= 0 || limit > 100 {
 		return nil, errors.New("dispatchable media action limit is invalid")
 	}
-	ctx, cancel := context.WithTimeout(ctx, repository.pool.OpTimeout())
+	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 	const query = `
 		WITH dispatchable AS (
@@ -33,7 +33,11 @@ func (repository *Repository) ListDispatchableMediaActions(
 				live_auth.revision AS authorization_revision,
 				plan.plan_digest,
 				plan.target_set_root,
-				target.position AS target_position
+				target.position AS target_position,
+				ROW_NUMBER() OVER (
+					PARTITION BY target.cabinet_id
+					ORDER BY transfer.id, action.id
+				) AS cabinet_rank
 			FROM wb.publication_actions AS action
 			JOIN wb.publication_plans AS plan
 			  ON plan.transfer_id = action.transfer_id
@@ -50,15 +54,15 @@ func (repository *Repository) ListDispatchableMediaActions(
 			JOIN wb.publication_action_members AS media_member
 			  ON media_member.transfer_id = action.transfer_id
 			 AND media_member.action_id = action.id
-			JOIN wb.publication_action_members AS product_member
+			LEFT JOIN wb.publication_action_members AS product_member
 			  ON product_member.transfer_id = media_member.transfer_id
 			 AND product_member.transfer_item_target_id
 			     = media_member.transfer_item_target_id
-			JOIN wb.publication_actions AS product_action
+			LEFT JOIN wb.publication_actions AS product_action
 			  ON product_action.transfer_id = product_member.transfer_id
 			 AND product_action.id = product_member.action_id
 			 AND product_action.plan_id = action.plan_id
-			JOIN wb.publication_attributions AS attribution
+			LEFT JOIN wb.publication_attributions AS attribution
 			  ON attribution.transfer_id = product_member.transfer_id
 			 AND attribution.action_member_id = product_member.id
 			 AND attribution.level IN ('direct', 'observed_after_attempt')
@@ -69,16 +73,24 @@ func (repository *Repository) ListDispatchableMediaActions(
 			  ON identity.cabinet_id = target.cabinet_id
 			 AND identity.vendor_code_key = media_member.vendor_code
 			 AND identity.state = 'remote_present'
-			 AND identity.nm_id = attribution.nm_id
+			 AND identity.nm_id IS NOT NULL
+			 AND (attribution.nm_id IS NULL OR identity.nm_id = attribution.nm_id)
 			 AND identity.active_action_id IS NULL
 			WHERE action.kind = 'upload_media'
 				AND action.state = 'planned'
 				AND action.authorization_id IS NULL
 				AND media_member.outcome_class IS NULL
-				AND product_action.kind IN ('create_group', 'add_to_group')
-				AND product_action.state = 'terminal'
-				AND plan.state = 'executing'
-				AND transfer.phase IN ('reconciling', 'media')
+				AND (
+					(product_action.id IS NOT NULL
+					 AND product_action.kind IN ('create_group', 'add_to_group')
+					 AND product_action.state = 'terminal'
+					 AND plan.state = 'executing'
+					 AND transfer.phase IN ('reconciling', 'media'))
+					OR
+					(product_action.id IS NULL
+					 AND plan.state IN ('awaiting_authorization', 'executing')
+					 AND transfer.phase IN ('awaiting_authorization', 'publishing', 'reconciling', 'media'))
+				)
 				AND transfer.outcome = 'running'
 				AND live_auth.state = 'authorized'
 				AND live_auth.expires_at > CURRENT_TIMESTAMP
@@ -87,20 +99,12 @@ func (repository *Repository) ListDispatchableMediaActions(
 					FROM wb.publication_attempts AS attempt
 					WHERE attempt.action_id = action.id
 				)
-				AND NOT EXISTS (
-					SELECT 1
-					FROM wb.publication_actions AS unfinished_product
-					WHERE unfinished_product.transfer_id = action.transfer_id
-					  AND unfinished_product.plan_id = action.plan_id
-					  AND unfinished_product.kind IN ('create_group', 'add_to_group')
-					  AND unfinished_product.state NOT IN ('terminal', 'superseded')
-				)
 		)
 		SELECT
 			transfer_id, action_id, target_id, cabinet_id,
 			authorization_id, authorization_revision, plan_digest, target_set_root
 		FROM dispatchable
-		ORDER BY target_position, action_id
+		ORDER BY cabinet_rank, target_position, cabinet_id, action_id
 		LIMIT $1;
 	`
 	rows, err := repository.pool.Query(ctx, query, limit)
@@ -129,7 +133,7 @@ func (repository *Repository) ListInterruptedMediaActions(
 	if limit <= 0 || limit > 100 {
 		return nil, errors.New("interrupted media action limit is invalid")
 	}
-	ctx, cancel := context.WithTimeout(ctx, repository.pool.OpTimeout())
+	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 	const query = `
 		SELECT
@@ -187,7 +191,7 @@ func (repository *Repository) ListPendingMediaActions(
 	if limit <= 0 || limit > 100 {
 		return nil, errors.New("pending media action limit is invalid")
 	}
-	ctx, cancel := context.WithTimeout(ctx, repository.pool.OpTimeout())
+	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 	const query = `
 		WITH pending AS (
@@ -226,6 +230,9 @@ func (repository *Repository) ListPendingMediaActions(
 			JOIN wb.publication_action_members AS media_member
 			  ON media_member.transfer_id = action.transfer_id
 			 AND media_member.action_id = action.id
+			JOIN wb.product_identities AS identity
+			  ON identity.cabinet_id = target.cabinet_id
+			 AND identity.vendor_code_key = media_member.vendor_code
 			WHERE action.kind = 'upload_media'
 				AND action.state = 'planned'
 				AND action.authorization_id IS NULL
@@ -233,33 +240,38 @@ func (repository *Repository) ListPendingMediaActions(
 				AND plan.state = 'executing'
 				AND transfer.phase IN ('reconciling', 'media')
 				AND transfer.outcome = 'running'
-				AND EXISTS (
-					SELECT 1
-					FROM wb.publication_action_members AS product_member
-					JOIN wb.publication_actions AS product_action
-					  ON product_action.transfer_id = product_member.transfer_id
-					 AND product_action.id = product_member.action_id
-					JOIN wb.publication_attributions AS attribution
-					  ON attribution.transfer_id = product_member.transfer_id
-					 AND attribution.action_member_id = product_member.id
-					 AND attribution.level IN ('direct', 'observed_after_attempt')
-					WHERE product_member.transfer_id = media_member.transfer_id
-					  AND product_member.transfer_item_target_id
-					      = media_member.transfer_item_target_id
-					  AND product_action.plan_id = action.plan_id
-					  AND attribution.plan_digest = plan.plan_digest
-					  AND attribution.cabinet_id = target.cabinet_id
-					  AND attribution.group_target_id = media_member.group_target_id
-					  AND product_action.kind IN ('create_group', 'add_to_group')
-					  AND product_action.state = 'terminal'
-				)
-				AND NOT EXISTS (
-					SELECT 1
-					FROM wb.publication_actions AS unfinished_product
-					WHERE unfinished_product.transfer_id = action.transfer_id
-					  AND unfinished_product.plan_id = action.plan_id
-					  AND unfinished_product.kind IN ('create_group', 'add_to_group')
-					  AND unfinished_product.state NOT IN ('terminal', 'superseded')
+				AND identity.state = 'remote_present'
+				AND identity.nm_id IS NOT NULL
+				AND identity.active_action_id IS NULL
+				AND (
+					EXISTS (
+						SELECT 1
+						FROM wb.publication_action_members AS product_member
+						JOIN wb.publication_actions AS product_action
+						  ON product_action.transfer_id = product_member.transfer_id
+						 AND product_action.id = product_member.action_id
+						JOIN wb.publication_attributions AS attribution
+						  ON attribution.transfer_id = product_member.transfer_id
+						 AND attribution.action_member_id = product_member.id
+						 AND attribution.level IN ('direct', 'observed_after_attempt')
+						WHERE product_member.transfer_id = media_member.transfer_id
+						  AND product_member.transfer_item_target_id
+						      = media_member.transfer_item_target_id
+						  AND product_action.plan_id = action.plan_id
+						  AND attribution.plan_digest = plan.plan_digest
+						  AND attribution.cabinet_id = target.cabinet_id
+						  AND attribution.group_target_id = media_member.group_target_id
+						  AND (attribution.nm_id IS NULL OR identity.nm_id = attribution.nm_id)
+						  AND product_action.kind IN ('create_group', 'add_to_group')
+						  AND product_action.state = 'terminal'
+					)
+					OR NOT EXISTS (
+						SELECT 1
+						FROM wb.publication_action_members AS product_member
+						WHERE product_member.transfer_id = media_member.transfer_id
+						  AND product_member.transfer_item_target_id
+						      = media_member.transfer_item_target_id
+					)
 				)
 		)
 		SELECT
@@ -327,7 +339,7 @@ func (repository *Repository) LockMediaAction(
 			media_member.request_member_index,
 			media_member.vendor_code,
 			attribution.id,
-			attribution.nm_id,
+			COALESCE(attribution.nm_id, identity.nm_id),
 			identity.revision,
 			attempt.id,
 			attempt.recheck_observation_id,
@@ -360,7 +372,8 @@ func (repository *Repository) LockMediaAction(
 				  AND counted_attribution.plan_digest = plan.plan_digest
 				  AND counted_attribution.cabinet_id = target.cabinet_id
 				  AND counted_attribution.group_target_id = media_member.group_target_id
-			)
+			),
+			product_action.id IS NOT NULL
 		FROM wb.publication_actions AS action
 		JOIN wb.publication_plans AS plan
 		  ON plan.transfer_id = action.transfer_id
@@ -374,15 +387,15 @@ func (repository *Repository) LockMediaAction(
 		JOIN wb.publication_action_members AS media_member
 		  ON media_member.transfer_id = action.transfer_id
 		 AND media_member.action_id = action.id
-		JOIN wb.publication_action_members AS product_member
+		LEFT JOIN wb.publication_action_members AS product_member
 		  ON product_member.transfer_id = media_member.transfer_id
 		 AND product_member.transfer_item_target_id
 		     = media_member.transfer_item_target_id
-		JOIN wb.publication_actions AS product_action
+		LEFT JOIN wb.publication_actions AS product_action
 		  ON product_action.transfer_id = product_member.transfer_id
 		 AND product_action.id = product_member.action_id
 		 AND product_action.plan_id = action.plan_id
-		JOIN wb.publication_attributions AS attribution
+		LEFT JOIN wb.publication_attributions AS attribution
 		  ON attribution.transfer_id = product_member.transfer_id
 		 AND attribution.action_member_id = product_member.id
 		 AND attribution.level IN ('direct', 'observed_after_attempt')
@@ -392,7 +405,7 @@ func (repository *Repository) LockMediaAction(
 		JOIN wb.product_identities AS identity
 		  ON identity.cabinet_id = target.cabinet_id
 		 AND identity.vendor_code_key = media_member.vendor_code
-		 AND identity.nm_id = attribution.nm_id
+		 AND (attribution.nm_id IS NULL OR identity.nm_id = attribution.nm_id)
 		LEFT JOIN wb.publication_attempts AS attempt
 		  ON attempt.transfer_id = action.transfer_id
 		 AND attempt.action_id = action.id
@@ -401,17 +414,23 @@ func (repository *Repository) LockMediaAction(
 			AND action.target_id = $3
 			AND target.cabinet_id = $4
 			AND action.kind = 'upload_media'
-			AND product_action.kind IN ('create_group', 'add_to_group')
-			AND product_action.state = 'terminal'
+			AND (
+				(product_action.id IS NOT NULL
+				 AND product_action.kind IN ('create_group', 'add_to_group')
+				 AND product_action.state = 'terminal')
+				OR
+				product_action.id IS NULL
+			)
 			AND plan.plan_digest = $6
 			AND plan.target_set_root = $7
 			AND identity.state = 'remote_present'
+			AND identity.nm_id IS NOT NULL
 			AND (
 				(action.state = 'planned'
 				 AND action.authorization_id IS NULL
 				 AND identity.active_action_id IS NULL)
 				OR
-				(action.state = 'dispatching'
+				(action.state IN ('dispatching', 'reconciling')
 				 AND action.authorization_id = live_auth.id
 				 AND identity.active_transfer_id = action.transfer_id
 				 AND identity.active_action_id = action.id)
@@ -424,11 +443,13 @@ func (repository *Repository) LockMediaAction(
 		sellerKey, generation                  []byte
 		preflightID                            pgtype.Int8
 		attemptID, recheckID                   pgtype.Int8
+		attributionID                          pgtype.Int8
 		attemptRequestDigest                   []byte
 		attemptRequestPayload                  []byte
 		attemptStartedAt                       pgtype.Timestamptz
 		currentAuthorizationRevision           int64
 		memberCount, attributionCount          int64
+		hasProductAction                       bool
 	)
 	err := tx.QueryRow(
 		ctx,
@@ -457,7 +478,7 @@ func (repository *Repository) LockMediaAction(
 		&action.Member.TransferItemTargetID,
 		&action.Member.RequestMemberIndex,
 		&action.Member.VendorCode,
-		&action.AttributionID,
+		&attributionID,
 		&action.NMID,
 		&action.IdentityRevision,
 		&attemptID,
@@ -468,6 +489,7 @@ func (repository *Repository) LockMediaAction(
 		&currentAuthorizationRevision,
 		&memberCount,
 		&attributionCount,
+		&hasProductAction,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return cardpublication_service.MediaAction{},
@@ -482,9 +504,12 @@ func (repository *Repository) LockMediaAction(
 		len(mediaRoot) != len(action.MediaLinkSetRoot) ||
 		len(sellerKey) != len(action.SellerKey) ||
 		len(generation) != len(action.ClientGeneration) || !preflightID.Valid ||
-		memberCount != 1 || attributionCount != 1 {
+		memberCount != 1 || (hasProductAction && attributionCount != 1) || (!hasProductAction && attributionCount != 0) {
 		return cardpublication_service.MediaAction{},
 			cardpublication_service.ErrMediaActionConflict
+	}
+	if attributionID.Valid {
+		action.AttributionID = attributionID.Int64
 	}
 	copy(action.RequestDigest[:], requestDigest)
 	copy(action.MemberSetDigest[:], memberDigest)
@@ -611,7 +636,7 @@ func (repository *Repository) BeginMediaAttempt(
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE transfer_id = $1
 			AND id = $2
-			AND state = 'executing';
+			AND state IN ('awaiting_authorization', 'executing');
 	`
 	result, err = tx.Exec(ctx, beginPlan, action.TransferID, action.PlanID)
 	if err != nil {
@@ -656,7 +681,7 @@ func (repository *Repository) BeginMediaAttempt(
 		command.Baseline.CapturedAt,
 		command.RequestDigest[:],
 		command.RequestPayload,
-		action.AttributionID,
+		nullablePositive(action.AttributionID),
 	).Scan(&attempt.ID, &attempt.StartedAt); err != nil {
 		return cardpublication_service.MediaAttempt{},
 			fmt.Errorf("insert publication media attempt: %w", err)
@@ -740,20 +765,32 @@ func (repository *Repository) RecordMediaResult(
 	attempt cardpublication_service.MediaAttempt,
 	mediaResult cardpublication_service.MediaMutationResult,
 ) (cardpublication_service.MediaGroupResult, error) {
+	if err := recordMediaAttemptResult(ctx, tx, action, attempt, mediaResult); err != nil {
+		return cardpublication_service.MediaGroupResult{}, err
+	}
+	return finishMediaAction(ctx, tx, action, mediaResult.OutcomeClass, mediaResult.OutcomeCode)
+}
+
+func recordMediaAttemptResult(
+	ctx context.Context,
+	tx core_postgres_transaction.DBTX,
+	action cardpublication_service.MediaAction,
+	attempt cardpublication_service.MediaAttempt,
+	mediaResult cardpublication_service.MediaMutationResult,
+) error {
 	if tx == nil || action.State != "dispatching" || action.AttemptID != attempt.ID ||
 		attempt.ActionID != action.ActionID || attempt.TransferID != action.TransferID ||
 		attempt.AuthorizationID != action.AuthorizationID ||
 		attempt.AttributionID != action.AttributionID ||
 		attempt.RequestDigest != action.AttemptRequestDigest ||
 		!equalBytes(attempt.RequestPayload, action.AttemptRequestPayload) {
-		return cardpublication_service.MediaGroupResult{},
-			cardpublication_service.ErrMediaActionConflict
+		return cardpublication_service.ErrMediaActionConflict
 	}
 	if err := mediaResult.Validate(); err != nil {
-		return cardpublication_service.MediaGroupResult{}, err
+		return err
 	}
 	const lockAttempt = `
-		SELECT request_digest, request_payload, attribution_id
+		SELECT request_digest, request_payload, COALESCE(attribution_id, 0)
 		FROM wb.publication_attempts
 		WHERE transfer_id = $1
 			AND id = $2
@@ -772,14 +809,12 @@ func (repository *Repository) RecordMediaResult(
 		action.ActionID,
 		action.AuthorizationID,
 	).Scan(&storedDigest, &storedPayload, &storedAttributionID); err != nil {
-		return cardpublication_service.MediaGroupResult{},
-			fmt.Errorf("lock publication media attempt result: %w", err)
+		return fmt.Errorf("lock publication media attempt result: %w", err)
 	}
 	if !equalBytes(storedDigest, attempt.RequestDigest[:]) ||
 		!equalBytes(storedPayload, attempt.RequestPayload) ||
 		storedAttributionID != action.AttributionID {
-		return cardpublication_service.MediaGroupResult{},
-			cardpublication_service.ErrMediaActionConflict
+		return cardpublication_service.ErrMediaActionConflict
 	}
 	var httpStatus any
 	if mediaResult.HTTPStatus > 0 {
@@ -815,13 +850,21 @@ func (repository *Repository) RecordMediaResult(
 		mediaResult.UnmatchedCount,
 	)
 	if err != nil {
-		return cardpublication_service.MediaGroupResult{},
-			fmt.Errorf("finish publication media attempt: %w", err)
+		return fmt.Errorf("finish publication media attempt: %w", err)
 	}
 	if result.RowsAffected() != 1 {
-		return cardpublication_service.MediaGroupResult{},
-			cardpublication_service.ErrMediaActionConflict
+		return cardpublication_service.ErrMediaActionConflict
 	}
+	return nil
+}
+
+func finishMediaAction(
+	ctx context.Context,
+	tx core_postgres_transaction.DBTX,
+	action cardpublication_service.MediaAction,
+	outcomeClass transfer_service.ResultClass,
+	outcomeCode string,
+) (cardpublication_service.MediaGroupResult, error) {
 	const finishMember = `
 		UPDATE wb.publication_action_members
 		SET outcome_class = $4,
@@ -834,14 +877,14 @@ func (repository *Repository) RecordMediaResult(
 			AND id = $3
 			AND outcome_class IS NULL;
 	`
-	result, err = tx.Exec(
+	result, err := tx.Exec(
 		ctx,
 		finishMember,
 		action.TransferID,
 		action.ActionID,
 		action.Member.ID,
-		mediaResult.OutcomeClass,
-		mediaResult.OutcomeCode,
+		outcomeClass,
+		outcomeCode,
 		action.NMID,
 	)
 	if err != nil {
@@ -864,7 +907,7 @@ func (repository *Repository) RecordMediaResult(
 			AND id = $2
 			AND authorization_id = $3
 			AND kind = 'upload_media'
-			AND state = 'dispatching';
+			AND state = $6;
 	`
 	result, err = tx.Exec(
 		ctx,
@@ -872,8 +915,9 @@ func (repository *Repository) RecordMediaResult(
 		action.TransferID,
 		action.ActionID,
 		action.AuthorizationID,
-		mediaResult.OutcomeClass,
-		mediaResult.OutcomeCode,
+		outcomeClass,
+		outcomeCode,
+		action.State,
 	)
 	if err != nil {
 		return cardpublication_service.MediaGroupResult{},

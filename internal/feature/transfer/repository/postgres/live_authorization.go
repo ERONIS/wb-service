@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 
@@ -58,7 +59,7 @@ func (repository *Repository) RequestLive(
 	); err != nil || found {
 		return replay, err
 	}
-	open, found, err := lockOpenLiveAuthorization(ctx, tx, command.TransferID)
+	open, found, err := lockOpenLiveAuthorization(ctx, tx, command.TransferID, plan.PlanID)
 	if err != nil {
 		return transfer_service.LiveAuthorization{}, err
 	}
@@ -484,7 +485,9 @@ func (repository *Repository) LockValidLive(
 			action.authorization_id,
 			plan.state,
 			plan.plan_digest,
-			plan.target_set_root
+			plan.target_set_root,
+			batch.source_kind,
+			owner.role
 		FROM wb.publication_actions AS action
 		JOIN wb.publication_plans AS plan
 		  ON plan.transfer_id = action.transfer_id
@@ -494,6 +497,12 @@ func (repository *Repository) LockValidLive(
 		 AND target.id = action.target_id
 		JOIN wb.transfers AS transfer
 		  ON transfer.id = action.transfer_id
+		JOIN wb.card_batches AS batch
+		  ON batch.id = transfer.batch_id
+		JOIN wb.api_cabinets AS cabinet
+		  ON cabinet.cabinet_id = target.cabinet_id
+		JOIN wb.users AS owner
+		  ON owner.tg_id = cabinet.owner_tg_id
 		WHERE action.transfer_id = $1
 			AND action.id = $2
 			AND action.plan_id = $3
@@ -515,6 +524,8 @@ func (repository *Repository) LockValidLive(
 		planState        string
 		planDigest       []byte
 		planTargetRoot   []byte
+		batchSourceKind  string
+		ownerRole        string
 	)
 	if err := tx.QueryRow(
 		ctx,
@@ -538,6 +549,8 @@ func (repository *Repository) LockValidLive(
 		&planState,
 		&planDigest,
 		&planTargetRoot,
+		&batchSourceKind,
+		&ownerRole,
 	); err != nil {
 		return transfer_service.LiveAuthorizationEvidence{}, fmt.Errorf(
 			"lock live authorization target: %w",
@@ -551,10 +564,16 @@ func (repository *Repository) LockValidLive(
 		!bytes.Equal(planDigest, check.PlanDigest[:]) ||
 		!bytes.Equal(planTargetRoot, check.TargetSetRoot[:]) ||
 		!expiresAt.After(now) || !contentRead || !contentWrite ||
-		(phase != "awaiting_authorization" && phase != "publishing" &&
+		(phase != "preparing" && phase != "awaiting_authorization" && phase != "publishing" &&
 			phase != "reconciling" && phase != "media") || outcome != "running" ||
 		actionState != "planned" || actionAuthID.Valid ||
 		(planState != "awaiting_authorization" && planState != "executing") {
+		return transfer_service.LiveAuthorizationEvidence{}, transfer_service.ErrLiveAuthorization
+	}
+	// Cabinet-copy is an explicitly selected, owner-scoped operation. Every
+	// regular XLSX fan-out action must still belong to a partner or admin at
+	// dispatch time, so revoking either privileged role prevents later WB mutation.
+	if !targetOwnerMayMutate(batchSourceKind, ownerRole) {
 		return transfer_service.LiveAuthorizationEvidence{}, transfer_service.ErrLiveAuthorization
 	}
 	return transfer_service.LiveAuthorizationEvidence{
@@ -572,6 +591,12 @@ func (repository *Repository) LockValidLive(
 		ApprovedAt:       *authorization.ApprovedAt,
 		ExpiresAt:        authorization.ExpiresAt,
 	}, nil
+}
+
+func targetOwnerMayMutate(batchSourceKind, ownerRole string) bool {
+	return batchSourceKind == "wb_cabinet" ||
+		ownerRole == string(domain.RolePartner) ||
+		ownerRole == string(domain.RoleAdmin)
 }
 
 func loadLiveCommandReplay(
@@ -684,15 +709,17 @@ func lockOpenLiveAuthorization(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
 	transferID transfer_service.TransferID,
+	planID int64,
 ) (transfer_service.LiveAuthorization, bool, error) {
 	query := `
 		SELECT ` + liveAuthorizationColumns + `
 		FROM wb.transfer_live_authorizations AS live_auth
 		WHERE live_auth.transfer_id = $1
+			AND live_auth.plan_id = $2
 			AND live_auth.state IN ('requested', 'authorized')
 		FOR UPDATE;
 	`
-	authorization, err := scanLiveAuthorization(tx.QueryRow(ctx, query, transferID))
+	authorization, err := scanLiveAuthorization(tx.QueryRow(ctx, query, transferID, planID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return transfer_service.LiveAuthorization{}, false, nil
 	}

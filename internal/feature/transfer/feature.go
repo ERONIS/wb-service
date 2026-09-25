@@ -7,11 +7,11 @@ import (
 
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
 	transfer_postgres_repository "github.com/ERONIS/wb-service/internal/feature/transfer/repository/postgres"
 	transfer_server "github.com/ERONIS/wb-service/internal/feature/transfer/server"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 	transfer_config_transport "github.com/ERONIS/wb-service/internal/feature/transfer/transport/config"
+	"go.uber.org/zap"
 )
 
 type Mode = transfer_config_transport.Mode
@@ -51,9 +51,10 @@ func New(
 	ctx context.Context,
 	postgresPool core_postgres_pool.Pool,
 	uow core_postgres_transaction.UnitOfWork,
-	batchReader cardimport_service.BatchReader,
+	batchReader transfer_service.BatchReader,
 	targetTransport transfer_service.TargetTransport,
 	config Config,
+	loggers ...*zap.Logger,
 ) (*Feature, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("initialize transfer feature: context is nil")
@@ -73,15 +74,13 @@ func New(
 		targetTransport,
 		config.CohortName,
 	)
-	if err := targets.VerifyAtStartup(ctx); err != nil {
-		return nil, fmt.Errorf("verify transfer targets at startup: %w", err)
-	}
 	service := transfer_service.New(
 		repository,
 		batchReader,
 		targets,
 		uow,
 		config.CapacityPolicy(),
+		loggers...,
 	)
 	return &Feature{
 		service: service,
@@ -121,6 +120,7 @@ func (feature *Feature) ConfigureLiveAuthorization(
 	feature.automaticAuthorization = transfer_service.NewAutomaticAuthorizationProcessor(
 		plans,
 		service,
+		feature.service.Logger(),
 	)
 }
 
@@ -177,5 +177,5 @@ func (feature *Feature) RunPolling(
 		feature.pollingInterval,
 		feature.pollingWake,
 		processors...,
-	).Run(ctx, onError)
+	).Run(ctx, onError, feature.service.Logger())
 }

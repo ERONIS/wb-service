@@ -19,11 +19,11 @@ func (repository *Repository) BeginPublicationAction(
 	}
 	const update = `
 		UPDATE wb.transfers
-		SET phase = 'publishing',
+		SET phase = CASE WHEN phase = 'media' THEN 'media' ELSE 'publishing' END,
 		    revision = revision + 1,
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1
-			AND phase IN ('awaiting_authorization', 'publishing', 'reconciling')
+			AND phase IN ('awaiting_authorization', 'publishing', 'reconciling', 'media')
 			AND outcome = 'running';
 	`
 	result, err := tx.Exec(ctx, update, transferID)
@@ -46,11 +46,11 @@ func (repository *Repository) MarkPublicationReconciling(
 	}
 	const update = `
 		UPDATE wb.transfers
-		SET phase = 'reconciling',
+		SET phase = CASE WHEN phase = 'media' THEN 'media' ELSE 'reconciling' END,
 		    revision = revision + 1,
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1
-			AND phase IN ('publishing', 'reconciling')
+			AND phase IN ('publishing', 'reconciling', 'media')
 			AND outcome = 'running';
 	`
 	result, err := tx.Exec(ctx, update, transferID)
@@ -103,202 +103,223 @@ func (repository *Repository) ApplyPublicationActionResult(
 	if err := command.Validate(); err != nil {
 		return err
 	}
-	transfer, err := lockTransferByID(ctx, tx, command.TransferID)
-	if err != nil {
+
+	if err := finishPublicationActionItems(ctx, tx, command); err != nil {
 		return err
 	}
-	if transfer.Outcome != transfer_service.OutcomeRunning ||
-		(transfer.Phase != transfer_service.PhasePublishing &&
-			transfer.Phase != transfer_service.PhaseReconciling) {
+	if err := skipPublicationActionMedia(ctx, tx, command); err != nil {
+		return err
+	}
+	affectedGroupSet := make(map[int64]struct{}, len(command.Items)+len(command.SkipMediaForGroups))
+	for _, item := range command.Items {
+		affectedGroupSet[item.GroupTargetID] = struct{}{}
+	}
+	for _, groupTargetID := range command.SkipMediaForGroups {
+		affectedGroupSet[groupTargetID] = struct{}{}
+	}
+	affectedGroups := make([]int64, 0, len(affectedGroupSet))
+	for groupTargetID := range affectedGroupSet {
+		affectedGroups = append(affectedGroups, groupTargetID)
+	}
+	if err := finishPublicationActionGroups(
+		ctx,
+		tx,
+		command.TransferID,
+		affectedGroups,
+	); err != nil {
+		return err
+	}
+
+	return advanceOrFinishPublicationTransfer(
+		ctx,
+		tx,
+		command.TransferID,
+		transfer_service.PhaseReconciling,
+	)
+}
+
+func finishPublicationActionItems(
+	ctx context.Context,
+	tx core_postgres_transaction.DBTX,
+	command transfer_service.ApplyPublicationActionResultCommand,
+) error {
+	groupTargetIDs := make([]int64, len(command.Items))
+	itemTargetIDs := make([]int64, len(command.Items))
+	outcomeClasses := make([]string, len(command.Items))
+	outcomeCodes := make([]string, len(command.Items))
+	nmIDs := make([]int64, len(command.Items))
+	for index, item := range command.Items {
+		groupTargetIDs[index] = item.GroupTargetID
+		itemTargetIDs[index] = item.TransferItemTargetID
+		outcomeClasses[index] = string(item.OutcomeClass)
+		outcomeCodes[index] = item.OutcomeCode
+		nmIDs[index] = item.NMID
+	}
+	const finish = `
+		WITH terminal_item AS (
+			SELECT *
+			FROM UNNEST(
+				$3::bigint[], $4::bigint[], $5::text[], $6::text[], $7::bigint[]
+			) AS source(
+				group_target_id, item_target_id, outcome_class, outcome_code, nm_id
+			)
+		)
+		UPDATE wb.transfer_item_targets AS item_target
+		SET state = 'terminal',
+		    outcome_class = terminal_item.outcome_class,
+		    outcome_code = terminal_item.outcome_code,
+		    nm_id = NULLIF(terminal_item.nm_id, 0),
+		    finished_at = CURRENT_TIMESTAMP,
+		    revision = item_target.revision + 1,
+		    updated_at = CURRENT_TIMESTAMP
+		FROM terminal_item
+		WHERE item_target.transfer_id = $1
+			AND item_target.source_action_id = $2
+			AND item_target.group_target_id = terminal_item.group_target_id
+			AND item_target.id = terminal_item.item_target_id
+			AND item_target.state = 'running'
+			AND EXISTS (
+				SELECT 1
+				FROM wb.transfers AS active_transfer
+				WHERE active_transfer.id = item_target.transfer_id
+				  AND active_transfer.phase IN ('publishing', 'reconciling', 'media')
+				  AND active_transfer.outcome = 'running'
+			);
+	`
+	result, err := tx.Exec(
+		ctx,
+		finish,
+		command.TransferID,
+		command.ActionID,
+		groupTargetIDs,
+		itemTargetIDs,
+		outcomeClasses,
+		outcomeCodes,
+		nmIDs,
+	)
+	if err != nil {
+		return fmt.Errorf("finish publication item projections: %w", err)
+	}
+	if result.RowsAffected() != int64(len(command.Items)) {
 		return transfer_service.ErrPreparationResultConflict
 	}
+	return nil
+}
 
-	affectedGroups := make(map[int64]struct{})
-	for _, item := range command.Items {
-		var nmID any
-		if item.NMID > 0 {
-			nmID = item.NMID
-		}
-		const finishItem = `
-			UPDATE wb.transfer_item_targets
-			SET state = 'terminal',
-			    outcome_class = $5,
-			    outcome_code = $6,
-			    nm_id = $7,
-			    finished_at = CURRENT_TIMESTAMP,
-			    revision = revision + 1,
-			    updated_at = CURRENT_TIMESTAMP
-			WHERE transfer_id = $1
-				AND group_target_id = $2
-				AND id = $3
-				AND source_action_id = $4
-				AND state = 'running';
-		`
-		result, err := tx.Exec(
-			ctx,
-			finishItem,
-			command.TransferID,
-			item.GroupTargetID,
-			item.TransferItemTargetID,
-			command.ActionID,
-			item.OutcomeClass,
-			item.OutcomeCode,
-			nmID,
-		)
-		if err != nil {
-			return fmt.Errorf("finish publication item projection: %w", err)
-		}
-		if result.RowsAffected() != 1 {
-			return transfer_service.ErrPreparationResultConflict
-		}
-		affectedGroups[item.GroupTargetID] = struct{}{}
+func skipPublicationActionMedia(
+	ctx context.Context,
+	tx core_postgres_transaction.DBTX,
+	command transfer_service.ApplyPublicationActionResultCommand,
+) error {
+	if len(command.SkipMediaForGroups) == 0 {
+		return nil
 	}
-
-	for _, groupTargetID := range command.SkipMediaForGroups {
-		const skipMedia = `
-			UPDATE wb.transfer_group_targets
-			SET media_status = 'skipped',
-			    revision = revision + 1,
-			    updated_at = CURRENT_TIMESTAMP
-			WHERE transfer_id = $1
-				AND id = $2
-				AND media_status IN ('not_started', 'running', 'skipped');
-		`
-		result, err := tx.Exec(ctx, skipMedia, command.TransferID, groupTargetID)
-		if err != nil {
-			return fmt.Errorf("skip publication media projection: %w", err)
-		}
-		if result.RowsAffected() != 1 {
-			return transfer_service.ErrPreparationResultConflict
-		}
-		affectedGroups[groupTargetID] = struct{}{}
+	const skip = `
+		UPDATE wb.transfer_group_targets AS group_target
+		SET media_status = 'skipped',
+		    revision = group_target.revision + 1,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE group_target.transfer_id = $1
+			AND group_target.id = ANY($2::bigint[])
+			AND group_target.media_status IN ('not_started', 'running', 'skipped')
+			AND EXISTS (
+				SELECT 1
+				FROM wb.transfers AS active_transfer
+				WHERE active_transfer.id = group_target.transfer_id
+				  AND active_transfer.phase IN ('publishing', 'reconciling', 'media')
+				  AND active_transfer.outcome = 'running'
+			);
+	`
+	result, err := tx.Exec(ctx, skip, command.TransferID, command.SkipMediaForGroups)
+	if err != nil {
+		return fmt.Errorf("skip publication media projections: %w", err)
 	}
-
-	for groupTargetID := range affectedGroups {
-		const finishGroup = `
-			WITH item_counts AS (
-				SELECT
-					COUNT(*) AS total,
-					COUNT(*) FILTER (WHERE state = 'terminal') AS terminal,
-					COUNT(*) FILTER (WHERE outcome_class = 'rejected') AS rejected,
-					COUNT(*) FILTER (WHERE outcome_class = 'unresolved') AS unresolved,
-					COUNT(*) FILTER (WHERE outcome_class = 'internal_error') AS internal_error,
-					COUNT(*) FILTER (WHERE outcome_class IN ('success', 'skipped')) AS accepted
-				FROM wb.transfer_item_targets
-				WHERE transfer_id = $1 AND group_target_id = $2
-			)
-			UPDATE wb.transfer_group_targets AS group_target
-			SET publication_status = CASE
-					WHEN item_counts.unresolved > 0 OR item_counts.internal_error > 0
-						THEN 'unresolved'
-					WHEN item_counts.rejected = item_counts.total THEN 'rejected'
-					WHEN item_counts.rejected > 0 THEN 'rejected'
-					ELSE 'succeeded'
-				END,
-				    media_status = CASE
-						WHEN group_target.media_status = 'not_started' THEN 'running'
-						ELSE group_target.media_status
-					END,
-				    overall_outcome = CASE
-						WHEN group_target.media_status = 'unresolved'
-							THEN 'unresolved'
-						WHEN group_target.media_status = 'rejected'
-							THEN 'partial'
-						WHEN group_target.media_status IN ('not_started', 'running')
-							THEN 'running'
-						WHEN item_counts.unresolved > 0 OR item_counts.internal_error > 0
-						THEN 'unresolved'
-					WHEN item_counts.rejected = item_counts.total THEN 'rejected'
-					WHEN item_counts.rejected > 0 AND item_counts.accepted > 0 THEN 'partial'
-					ELSE 'success'
-				END,
-				    attention_code = CASE
-						WHEN group_target.media_status = 'unresolved'
-							THEN 'media_requires_attention'
-						WHEN group_target.media_status IN ('not_started', 'running')
-							THEN NULL
-						WHEN item_counts.unresolved > 0 OR item_counts.internal_error > 0
-						THEN 'publication_requires_attention'
-					ELSE NULL
-				END,
-				    finished_at = CASE
-						WHEN group_target.media_status IN ('not_started', 'running') THEN NULL
-						ELSE CURRENT_TIMESTAMP
-					END,
-			    revision = group_target.revision + 1,
-			    updated_at = CURRENT_TIMESTAMP
-			FROM item_counts
-			WHERE group_target.transfer_id = $1
-				AND group_target.id = $2
-					AND group_target.overall_outcome = 'running'
-				AND item_counts.total > 0
-				AND item_counts.terminal = item_counts.total;
-		`
-		result, err := tx.Exec(ctx, finishGroup, command.TransferID, groupTargetID)
-		if err != nil {
-			return fmt.Errorf("finish publication group projection: %w", err)
-		}
-		if result.RowsAffected() != 1 {
-			return transfer_service.ErrPreparationResultConflict
-		}
+	if result.RowsAffected() != int64(len(command.SkipMediaForGroups)) {
+		return transfer_service.ErrPreparationResultConflict
 	}
+	return nil
+}
 
-	const reduceTransfer = `
-		WITH group_counts AS (
+func finishPublicationActionGroups(
+	ctx context.Context,
+	tx core_postgres_transaction.DBTX,
+	transferID transfer_service.TransferID,
+	groupTargetIDs []int64,
+) error {
+	const finish = `
+		WITH affected_group AS (
+			SELECT UNNEST($2::bigint[]) AS group_target_id
+		), item_counts AS (
 			SELECT
+				item_target.group_target_id,
 				COUNT(*) AS total,
-				COUNT(*) FILTER (WHERE overall_outcome <> 'running') AS terminal,
-				COUNT(*) FILTER (WHERE overall_outcome = 'rejected') AS rejected,
-				COUNT(*) FILTER (WHERE overall_outcome = 'partial') AS partial,
-				COUNT(*) FILTER (WHERE overall_outcome = 'unresolved') AS unresolved,
-				COUNT(*) FILTER (WHERE overall_outcome = 'internal_error') AS internal_error,
-				COUNT(*) FILTER (WHERE overall_outcome IN ('success', 'skipped')) AS accepted
-			FROM wb.transfer_group_targets
-				WHERE transfer_id = $1
-			), item_counts AS (
-				SELECT
-					COUNT(*) AS total,
-					COUNT(*) FILTER (WHERE state = 'terminal') AS terminal
-				FROM wb.transfer_item_targets
-				WHERE transfer_id = $1
-			)
-		UPDATE wb.transfers AS transfer
-			SET phase = CASE
-					WHEN group_counts.terminal = group_counts.total THEN 'finished'
-					WHEN item_counts.terminal = item_counts.total THEN 'media'
-					ELSE 'reconciling'
-			END,
-		    outcome = CASE
-				WHEN group_counts.terminal <> group_counts.total THEN 'running'
-				WHEN group_counts.unresolved > 0 OR group_counts.internal_error > 0
+				COUNT(*) FILTER (WHERE item_target.state = 'terminal') AS terminal,
+				COUNT(*) FILTER (WHERE item_target.outcome_class = 'rejected') AS rejected,
+				COUNT(*) FILTER (WHERE item_target.outcome_class = 'unresolved') AS unresolved,
+				COUNT(*) FILTER (WHERE item_target.outcome_class = 'internal_error') AS internal_error,
+				COUNT(*) FILTER (
+					WHERE item_target.outcome_class IN ('success', 'skipped')
+				) AS accepted
+			FROM wb.transfer_item_targets AS item_target
+			JOIN affected_group
+			  ON affected_group.group_target_id = item_target.group_target_id
+			WHERE item_target.transfer_id = $1
+			GROUP BY item_target.group_target_id
+		)
+		UPDATE wb.transfer_group_targets AS group_target
+		SET publication_status = CASE
+				WHEN item_counts.unresolved > 0 OR item_counts.internal_error > 0
 					THEN 'unresolved'
-				WHEN group_counts.rejected = group_counts.total THEN 'rejected'
-				WHEN group_counts.rejected > 0 OR group_counts.partial > 0 THEN 'partial'
+				WHEN item_counts.rejected > 0 THEN 'rejected'
 				ELSE 'succeeded'
 			END,
+		    media_status = CASE
+				WHEN group_target.media_status = 'not_started' THEN 'running'
+				ELSE group_target.media_status
+			END,
+		    overall_outcome = CASE
+				WHEN group_target.media_status = 'unresolved' THEN 'unresolved'
+				WHEN group_target.media_status = 'rejected' THEN 'partial'
+				WHEN group_target.media_status IN ('not_started', 'running') THEN 'running'
+				WHEN item_counts.unresolved > 0 OR item_counts.internal_error > 0
+					THEN 'unresolved'
+				WHEN item_counts.rejected = item_counts.total THEN 'rejected'
+				WHEN item_counts.rejected > 0 AND item_counts.accepted > 0 THEN 'partial'
+				ELSE 'success'
+			END,
 		    attention_code = CASE
-				WHEN group_counts.terminal = group_counts.total
-				 AND (group_counts.unresolved > 0 OR group_counts.internal_error > 0)
+				WHEN group_target.media_status = 'unresolved'
+					THEN 'media_requires_attention'
+				WHEN group_target.media_status IN ('not_started', 'running') THEN NULL
+				WHEN item_counts.unresolved > 0 OR item_counts.internal_error > 0
 					THEN 'publication_requires_attention'
 				ELSE NULL
 			END,
 		    finished_at = CASE
-				WHEN group_counts.terminal = group_counts.total THEN CURRENT_TIMESTAMP
-				ELSE NULL
+				WHEN group_target.media_status IN ('not_started', 'running') THEN NULL
+				ELSE CURRENT_TIMESTAMP
 			END,
-		    revision = transfer.revision + 1,
+		    revision = group_target.revision + 1,
 		    updated_at = CURRENT_TIMESTAMP
-			FROM group_counts, item_counts
-		WHERE transfer.id = $1
-			AND transfer.outcome = 'running'
-				AND group_counts.total = transfer.group_targets_count
-				AND item_counts.total = transfer.item_targets_count;
+		FROM item_counts
+		WHERE group_target.transfer_id = $1
+			AND group_target.id = item_counts.group_target_id
+			AND group_target.overall_outcome = 'running'
+			AND item_counts.total > 0
+			AND item_counts.terminal = item_counts.total
+			AND EXISTS (
+				SELECT 1
+				FROM wb.transfers AS active_transfer
+				WHERE active_transfer.id = group_target.transfer_id
+				  AND active_transfer.phase IN ('publishing', 'reconciling', 'media')
+				  AND active_transfer.outcome = 'running'
+			);
 	`
-	result, err := tx.Exec(ctx, reduceTransfer, command.TransferID)
+	result, err := tx.Exec(ctx, finish, transferID, groupTargetIDs)
 	if err != nil {
-		return fmt.Errorf("reduce transfer publication result: %w", err)
+		return fmt.Errorf("finish publication group projections: %w", err)
 	}
-	if result.RowsAffected() != 1 {
+	if result.RowsAffected() != int64(len(groupTargetIDs)) {
 		return transfer_service.ErrPreparationResultConflict
 	}
 	return nil
@@ -488,14 +509,6 @@ func (repository *Repository) ApplyPublicationMediaResult(
 	if err := command.Validate(); err != nil {
 		return err
 	}
-	transfer, err := lockTransferByID(ctx, tx, command.TransferID)
-	if err != nil {
-		return err
-	}
-	if transfer.Outcome != transfer_service.OutcomeRunning ||
-		transfer.Phase != transfer_service.PhaseMedia {
-		return transfer_service.ErrPreparationResultConflict
-	}
 
 	mediaStatus := "unresolved"
 	switch command.OutcomeClass {
@@ -551,7 +564,14 @@ func (repository *Repository) ApplyPublicationMediaResult(
 				'succeeded', 'rejected', 'unresolved', 'skipped'
 			)
 			AND item_counts.total > 0
-			AND item_counts.terminal = item_counts.total;
+			AND item_counts.terminal = item_counts.total
+			AND EXISTS (
+				SELECT 1
+				FROM wb.transfers AS active_transfer
+				WHERE active_transfer.id = group_target.transfer_id
+				  AND active_transfer.phase = 'media'
+				  AND active_transfer.outcome = 'running'
+			);
 	`
 	result, err := tx.Exec(
 		ctx,
@@ -568,26 +588,75 @@ func (repository *Repository) ApplyPublicationMediaResult(
 		return transfer_service.ErrPreparationResultConflict
 	}
 
-	const reduceTransfer = `
+	return advanceOrFinishPublicationTransfer(
+		ctx,
+		tx,
+		command.TransferID,
+		transfer_service.PhaseMedia,
+	)
+}
+
+func advanceOrFinishPublicationTransfer(
+	ctx context.Context,
+	tx core_postgres_transaction.DBTX,
+	transferID transfer_service.TransferID,
+	activePhase transfer_service.Phase,
+) error {
+	// Child projections are already persisted. Hold the parent row only for
+	// the short reduction so concurrent actions can write disjoint groups.
+	transfer, err := lockTransferByID(ctx, tx, transferID)
+	if err != nil {
+		return err
+	}
+	if transfer.Outcome != transfer_service.OutcomeRunning ||
+		(transfer.Phase != transfer_service.PhasePublishing &&
+			transfer.Phase != transfer_service.PhaseReconciling &&
+			transfer.Phase != transfer_service.PhaseMedia) {
+		return transfer_service.ErrPreparationResultConflict
+	}
+
+	const keepActive = `
+		UPDATE wb.transfers AS transfer
+		SET phase = CASE
+				WHEN transfer.phase = 'media' THEN 'media'
+				ELSE $2
+			END,
+		    revision = transfer.revision + 1,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE transfer.id = $1
+			AND transfer.phase IN ('publishing', 'reconciling', 'media')
+			AND transfer.outcome = 'running'
+			AND EXISTS (
+				SELECT 1
+				FROM wb.transfer_group_targets AS running_group
+				WHERE running_group.transfer_id = transfer.id
+				  AND running_group.overall_outcome = 'running'
+			);
+	`
+	result, err := tx.Exec(ctx, keepActive, transferID, activePhase)
+	if err != nil {
+		return fmt.Errorf("advance active publication transfer: %w", err)
+	}
+	if result.RowsAffected() == 1 {
+		return nil
+	}
+
+	// Only the result that closes the last running group pays for the complete
+	// outcome aggregation. The short parent lock elects that final result.
+	const finish = `
 		WITH group_counts AS (
 			SELECT
 				COUNT(*) AS total,
-				COUNT(*) FILTER (WHERE overall_outcome <> 'running') AS terminal,
 				COUNT(*) FILTER (WHERE overall_outcome = 'rejected') AS rejected,
 				COUNT(*) FILTER (WHERE overall_outcome = 'partial') AS partial,
 				COUNT(*) FILTER (WHERE overall_outcome = 'unresolved') AS unresolved,
-				COUNT(*) FILTER (WHERE overall_outcome = 'internal_error') AS internal_error,
-				COUNT(*) FILTER (WHERE overall_outcome IN ('success', 'skipped')) AS accepted
+				COUNT(*) FILTER (WHERE overall_outcome = 'internal_error') AS internal_error
 			FROM wb.transfer_group_targets
 			WHERE transfer_id = $1
 		)
 		UPDATE wb.transfers AS transfer
-		SET phase = CASE
-				WHEN group_counts.terminal = group_counts.total THEN 'finished'
-				ELSE 'media'
-			END,
+		SET phase = 'finished',
 		    outcome = CASE
-				WHEN group_counts.terminal <> group_counts.total THEN 'running'
 				WHEN group_counts.unresolved > 0 OR group_counts.internal_error > 0
 					THEN 'unresolved'
 				WHEN group_counts.rejected = group_counts.total THEN 'rejected'
@@ -595,26 +664,28 @@ func (repository *Repository) ApplyPublicationMediaResult(
 				ELSE 'succeeded'
 			END,
 		    attention_code = CASE
-				WHEN group_counts.terminal = group_counts.total
-				 AND (group_counts.unresolved > 0 OR group_counts.internal_error > 0)
+				WHEN group_counts.unresolved > 0 OR group_counts.internal_error > 0
 					THEN 'publication_requires_attention'
 				ELSE NULL
 			END,
-		    finished_at = CASE
-				WHEN group_counts.terminal = group_counts.total THEN CURRENT_TIMESTAMP
-				ELSE NULL
-			END,
+		    finished_at = CURRENT_TIMESTAMP,
 		    revision = transfer.revision + 1,
 		    updated_at = CURRENT_TIMESTAMP
 		FROM group_counts
 		WHERE transfer.id = $1
-			AND transfer.phase = 'media'
+			AND transfer.phase IN ('publishing', 'reconciling', 'media')
 			AND transfer.outcome = 'running'
-			AND group_counts.total = transfer.group_targets_count;
+			AND group_counts.total = transfer.group_targets_count
+			AND NOT EXISTS (
+				SELECT 1
+				FROM wb.transfer_group_targets AS running_group
+				WHERE running_group.transfer_id = transfer.id
+				  AND running_group.overall_outcome = 'running'
+			);
 	`
-	result, err = tx.Exec(ctx, reduceTransfer, command.TransferID)
+	result, err = tx.Exec(ctx, finish, transferID)
 	if err != nil {
-		return fmt.Errorf("reduce transfer publication media result: %w", err)
+		return fmt.Errorf("finish publication transfer: %w", err)
 	}
 	if result.RowsAffected() != 1 {
 		return transfer_service.ErrPreparationResultConflict
@@ -626,15 +697,16 @@ func (repository *Repository) ResetPublicationPlanning(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
 	transferID transfer_service.TransferID,
+	planID int64,
 ) error {
-	if tx == nil {
-		return errors.New("reset publication planning: DBTX is nil")
+	if tx == nil || planID <= 0 {
+		return errors.New("reset publication planning dependency is invalid")
 	}
 	transfer, err := lockTransferByID(ctx, tx, transferID)
 	if err != nil {
 		return err
 	}
-	if transfer.Phase != transfer_service.PhaseAwaitingAuthorization ||
+	if !publicationPlanningPhase(transfer.Phase) ||
 		transfer.Outcome != transfer_service.OutcomeRunning {
 		return transfer_service.ErrPreparationResultConflict
 	}
@@ -653,9 +725,10 @@ func (repository *Repository) ResetPublicationPlanning(
 		WHERE item_target.transfer_id = $1
 			AND group_target.transfer_id = item_target.transfer_id
 			AND group_target.id = item_target.group_target_id
+			AND group_target.publication_plan_id = $2
 			AND group_target.preparation_status = 'succeeded';
 	`
-	if _, err := tx.Exec(ctx, resetItems, transferID); err != nil {
+	if _, err := tx.Exec(ctx, resetItems, transferID, planID); err != nil {
 		return fmt.Errorf("reset publication item projections: %w", err)
 	}
 	const resetGroups = `
@@ -664,24 +737,33 @@ func (repository *Repository) ResetPublicationPlanning(
 		    media_status = 'not_started',
 		    overall_outcome = 'running',
 		    attention_code = NULL,
+		    publication_plan_id = NULL,
 		    finished_at = NULL,
 		    revision = revision + 1,
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE transfer_id = $1
+			AND publication_plan_id = $2
 			AND preparation_status = 'succeeded';
 	`
-	if _, err := tx.Exec(ctx, resetGroups, transferID); err != nil {
+	result, err := tx.Exec(ctx, resetGroups, transferID, planID)
+	if err != nil {
 		return fmt.Errorf("reset publication group projections: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return transfer_service.ErrPreparationResultConflict
 	}
 	const touchTransfer = `
 		UPDATE wb.transfers
 		SET revision = revision + 1,
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1
-			AND phase = 'awaiting_authorization'
+			AND phase IN (
+				'preparing', 'awaiting_authorization', 'publishing',
+				'reconciling', 'media'
+			)
 			AND outcome = 'running';
 	`
-	result, err := tx.Exec(ctx, touchTransfer, transferID)
+	result, err = tx.Exec(ctx, touchTransfer, transferID)
 	if err != nil {
 		return fmt.Errorf("reset transfer publication planning: %w", err)
 	}

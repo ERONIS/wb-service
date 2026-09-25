@@ -1,7 +1,10 @@
 package cardimport_telegram_transport
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"time"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
@@ -12,7 +15,7 @@ import (
 )
 
 func (h *Handler) receiveDocument(ctx tele.Context) error {
-	authorTelegramID, err := senderTelegramID(ctx)
+	authorTelegramID, err := core_transport_telegram.SenderID(ctx)
 	if err != nil {
 		return sendServiceError(ctx, err)
 	}
@@ -53,49 +56,137 @@ func (h *Handler) receiveDocument(ctx tele.Context) error {
 		SessionID:        view.ID,
 		FileID:           file.ID,
 	}
-	// Show the upload session as soon as Telegram files are accepted. Parsing
-	// can take noticeably longer, especially for a multi-file send.
-	if err := h.sendUploadedSessionView(ctx, view); err != nil {
-		return err
+	chatID := int64(0)
+	if chat := ctx.Chat(); chat != nil {
+		chatID = chat.ID
+	}
+	h.enqueueRecovery(cardimportRecoveryJob{
+		authorTelegramID: command.AuthorTelegramID,
+		chatID:           chatID,
+		file:             file,
+	}, true)
+
+	// The durable file workflow now runs independently from this Telegram
+	// update. A slow menu request cannot interrupt downloading or parsing.
+	return h.sendUploadedSessionView(ctx, view)
+}
+
+const staleParsingFileAge = 5 * time.Minute
+
+func (h *Handler) resumeFiles(ctx tele.Context) error {
+	authorTelegramID, err := core_transport_telegram.SenderID(ctx)
+	if err != nil {
+		return sendServiceError(ctx, err)
+	}
+	sessionID, err := parseSessionID(ctx.Args())
+	if err != nil {
+		return core_transport_telegram.Notify(ctx, "cardimport.session_argument", "⚠️ Не удалось определить текущую загрузку.")
 	}
 
+	view, err := h.service.GetView(h.ctx, cardimport_service.SessionCommand{
+		AuthorTelegramID: authorTelegramID,
+		SessionID:        sessionID,
+	})
+	if err != nil {
+		return sendServiceError(ctx, err)
+	}
+
+	chatID := int64(0)
+	if chat := ctx.Chat(); chat != nil {
+		chatID = chat.ID
+	}
+	for _, fileView := range view.Files {
+		if !isRecoverableFile(fileView.File, time.Now()) {
+			continue
+		}
+		h.enqueueRecovery(cardimportRecoveryJob{
+			authorTelegramID: authorTelegramID,
+			chatID:           chatID,
+			file:             fileView.File,
+		}, true)
+	}
+	h.wakeRecoveryScheduler()
+	return ctx.Respond(&tele.CallbackResponse{
+		Text: "Файлы уже обрабатываются автоматически.",
+	})
+}
+
+func (h *Handler) processFile(
+	processCtx context.Context,
+	file cardimport_service.File,
+	telegramFile *tele.File,
+	command cardimport_service.ParseFileCommand,
+) (cardimport_service.SessionView, error) {
 	switch file.Status {
 	case cardimport_service.FileStatusReserved:
-		reader, openErr := h.bot.File(&document.File)
-		if openErr != nil {
-			return core_transport_telegram.Notify(ctx, "cardimport.download_failed", "❌ Не удалось скачать файл из Telegram. Отправьте его ещё раз.")
+		if telegramFile == nil {
+			telegramFile = &tele.File{
+				FileID:   file.TelegramFileID,
+				UniqueID: file.TelegramFileUniqueID,
+				FileSize: file.DeclaredSize,
+			}
 		}
-
+		reader, err := h.bot.File(telegramFile)
+		if err != nil {
+			return cardimport_service.SessionView{}, fmt.Errorf(
+				"download reserved Telegram file: %w",
+				err,
+			)
+		}
 		_, storeErr := h.service.StoreFile(
-			h.ctx,
+			processCtx,
 			cardimport_service.StoreFileCommand(command),
 			reader,
 		)
-		_ = reader.Close()
+		closeErr := reader.Close()
 		if storeErr != nil {
-			return sendServiceError(ctx, storeErr)
+			return cardimport_service.SessionView{}, storeErr
+		}
+		if closeErr != nil {
+			return cardimport_service.SessionView{}, fmt.Errorf(
+				"close Telegram file: %w",
+				closeErr,
+			)
 		}
 
 	case cardimport_service.FileStatusStored:
 		// Durable blob уже сохранён: продолжаем оборванную обработку.
 
 	case cardimport_service.FileStatusParsing:
-		return core_transport_telegram.Notify(ctx, "cardimport.file_processing", "⏳ Этот файл уже обрабатывается.")
+		if !isRecoverableFile(file, time.Now()) {
+			return cardimport_service.SessionView{}, fmt.Errorf(
+				"cardimport file is still being processed: %w",
+				core_errors.ErrConflict,
+			)
+		}
 
 	case cardimport_service.FileStatusValid,
 		cardimport_service.FileStatusInvalid:
-		return nil
+		return h.service.GetView(processCtx, cardimport_service.SessionCommand{
+			AuthorTelegramID: command.AuthorTelegramID,
+			SessionID:        command.SessionID,
+		})
 
 	default:
-		return core_transport_telegram.Notify(ctx, "cardimport.file_not_processable", "⚠️ Этот файл больше нельзя обработать.")
+		return cardimport_service.SessionView{}, fmt.Errorf(
+			"cardimport file is not processable: %w",
+			core_errors.ErrConflict,
+		)
 	}
 
-	parsedView, err := h.service.ParseFile(h.ctx, command)
-	if err != nil {
-		return sendServiceError(ctx, err)
-	}
+	return h.service.ParseFile(processCtx, command)
+}
 
-	return h.sendUploadedSessionView(ctx, parsedView)
+func isRecoverableFile(file cardimport_service.File, now time.Time) bool {
+	switch file.Status {
+	case cardimport_service.FileStatusReserved,
+		cardimport_service.FileStatusStored:
+		return true
+	case cardimport_service.FileStatusParsing:
+		return !file.UpdatedAt.After(now.Add(-staleParsingFileAge))
+	default:
+		return false
+	}
 }
 
 // getOrBeginUploadView lets a valid XLSX start a new collecting session even
