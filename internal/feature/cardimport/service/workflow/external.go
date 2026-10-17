@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 )
@@ -54,14 +55,13 @@ func (draft ExternalBatchDraft) Validate() error {
 
 func (service *Service) CreateExternalBatch(
 	ctx context.Context,
-	actor TrustedActor,
+	user domain.User,
 	command CreateExternalBatchCommand,
 ) (BatchHeader, error) {
 	if err := core_errors.RequireContext(ctx); err != nil {
 		return BatchHeader{}, err
 	}
-	actor = actor.Normalized()
-	if err := actor.Validate(); err != nil {
+	if err := user.Validate(); err != nil {
 		return BatchHeader{}, err
 	}
 	if command.SourceKind != BatchSourceWBCabinet || command.SourceReferenceID <= 0 || len(command.Cards) == 0 {
@@ -96,6 +96,12 @@ func (service *Service) CreateExternalBatch(
 	if err != nil {
 		return BatchHeader{}, fmt.Errorf("calculate external card batch checksum: %w", err)
 	}
+
+	var authorID *int64
+	if user.ID > 0 {
+		authorID = &user.ID
+	}
+
 	draft := ExternalBatchDraft{
 		SourceKind:        command.SourceKind,
 		SourceReferenceID: command.SourceReferenceID,
@@ -104,8 +110,9 @@ func (service *Service) CreateExternalBatch(
 		GroupsCount:       len(groups),
 		Checksum:          checksum,
 		AuthorSnapshot: AuthorSnapshot{
-			TelegramUserID: actor.TelegramUserID,
-			DisplayName:    actor.DisplayName,
+			UserID:         authorID,
+			TelegramUserID: user.TelegramID,
+			DisplayName:    user.FullName,
 		},
 	}
 	if err := draft.Validate(); err != nil {

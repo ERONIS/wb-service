@@ -1,10 +1,14 @@
 package registry
 
-import "context"
+import (
+	"context"
+
+	"github.com/ERONIS/wb-service/internal/core/domain"
+)
 
 type TargetTransport interface {
 	Credentials(context.Context, int64) ([]TargetCredential, error)
-	FanoutCredentials(context.Context) ([]TargetCredential, error)
+	CredentialsByOwnerRole(context.Context, domain.UserRole) ([]TargetCredential, error)
 	AllCredentials(context.Context) ([]TargetCredential, error)
 }
 

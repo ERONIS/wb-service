@@ -196,13 +196,6 @@ CREATE TABLE wb.transfer_group_targets (
                             )),
     preparation_result_revision BIGINT NOT NULL DEFAULT 0
                             CHECK (preparation_result_revision IN (0, 1)),
-    preparation_id          BIGINT
-                            CHECK (preparation_id IS NULL OR preparation_id > 0),
-    preparation_group_id    BIGINT
-                            CHECK (
-                                preparation_group_id IS NULL
-                                OR preparation_group_id > 0
-                            ),
     preparation_result_code VARCHAR(128)
                             CHECK (
                                 preparation_result_code IS NULL
@@ -213,6 +206,18 @@ CREATE TABLE wb.transfer_group_targets (
                                 preparation_proposal_root IS NULL
                                 OR octet_length(preparation_proposal_root) = 32
                             ),
+    preparation_item_position INTEGER
+                            CHECK (
+                                preparation_item_position IS NULL
+                                OR preparation_item_position > 0
+                            ),
+    preparation_field       VARCHAR(128)
+                            CHECK (
+                                preparation_field IS NULL
+                                OR char_length(preparation_field) > 0
+                            ),
+    preparation_started_at  TIMESTAMPTZ,
+    preparation_finished_at TIMESTAMPTZ,
     publication_status      TEXT NOT NULL DEFAULT 'not_started'
                             CHECK (publication_status IN (
                                 'not_started', 'running', 'succeeded',
@@ -253,36 +258,45 @@ CREATE TABLE wb.transfer_group_targets (
         (
             preparation_status IN ('not_started', 'running')
             AND preparation_result_revision = 0
-            AND preparation_id IS NULL
-            AND preparation_group_id IS NULL
             AND preparation_result_code IS NULL
             AND preparation_proposal_root IS NULL
+            AND preparation_item_position IS NULL
+            AND preparation_field IS NULL
+            AND preparation_finished_at IS NULL
         )
         OR (
             preparation_status = 'succeeded'
             AND preparation_result_revision = 1
-            AND preparation_id IS NOT NULL
-            AND preparation_group_id IS NOT NULL
             AND preparation_result_code = 'prepared'
             AND preparation_proposal_root IS NOT NULL
+            AND preparation_item_position IS NULL
+            AND preparation_field IS NULL
+            AND preparation_started_at IS NOT NULL
+            AND preparation_finished_at IS NOT NULL
+            AND preparation_finished_at >= preparation_started_at
         )
         OR (
             preparation_status IN ('rejected', 'unresolved')
             AND preparation_result_revision = 1
-            AND preparation_id IS NOT NULL
-            AND preparation_group_id IS NOT NULL
             AND preparation_result_code IS NOT NULL
             AND preparation_proposal_root IS NULL
+            AND preparation_started_at IS NOT NULL
+            AND preparation_finished_at IS NOT NULL
+            AND preparation_finished_at >= preparation_started_at
         )
         OR (
             preparation_status = 'skipped'
             AND preparation_result_revision = 0
-            AND preparation_id IS NULL
-            AND preparation_group_id IS NULL
             AND preparation_result_code IS NULL
             AND preparation_proposal_root IS NULL
+            AND preparation_item_position IS NULL
+            AND preparation_field IS NULL
+            AND preparation_finished_at IS NULL
         )
     ),
+    CHECK (preparation_finished_at IS NULL OR (
+        preparation_started_at IS NOT NULL AND preparation_finished_at >= preparation_started_at
+    )),
     CHECK (
         (
             overall_outcome = 'running'
@@ -310,6 +324,11 @@ CREATE TABLE wb.transfer_group_targets (
 CREATE INDEX transfer_group_targets_preparation_pending_idx
 ON wb.transfer_group_targets (transfer_id)
 WHERE preparation_status NOT IN ('succeeded', 'rejected', 'unresolved');
+
+CREATE INDEX transfer_group_targets_pending_keyset_idx
+ON wb.transfer_group_targets (transfer_id, source_group_id, target_id)
+INCLUDE (id)
+WHERE preparation_status = 'running' AND preparation_result_revision = 0;
 
 CREATE INDEX transfer_group_targets_running_idx
 ON wb.transfer_group_targets (transfer_id)

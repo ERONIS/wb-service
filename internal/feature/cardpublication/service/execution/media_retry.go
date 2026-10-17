@@ -8,43 +8,39 @@ import (
 	"time"
 
 	core_wb "github.com/ERONIS/wb-service/internal/core/transport/wb"
+	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 )
 
-const mediaRequestAttempts = 5
+const mediaDownloadAttempts = 5
 
-func retryMediaRequest[T any](ctx context.Context, wait func(context.Context, time.Duration) error,
-	call func() (T, error),
-) (T, error) {
-	var result T
+func retryMediaDownload(ctx context.Context, wait func(context.Context, time.Duration) error,
+	call func() (contentapi.DownloadedMediaFile, error),
+) (contentapi.DownloadedMediaFile, error) {
+	var result contentapi.DownloadedMediaFile
 	var err error
-	var dispatchedErr error
-	for attempt := 0; attempt < mediaRequestAttempts; attempt++ {
+	for attempt := 0; attempt < mediaDownloadAttempts; attempt++ {
 		if ctx.Err() != nil {
-			return result, errors.Join(dispatchedErr, err, ctx.Err())
+			return result, errors.Join(err, ctx.Err())
 		}
 		result, err = call()
 		if err == nil {
 			return result, nil
 		}
-		var classified core_wb.ClassifiedError
-		if errors.As(err, &classified) && classified.Delivery() != core_wb.NotDispatched {
-			dispatchedErr = err
+		if ctx.Err() != nil || attempt == mediaDownloadAttempts-1 {
+			return result, err
 		}
-		if ctx.Err() != nil || attempt == mediaRequestAttempts-1 {
-			return result, errors.Join(dispatchedErr, err)
-		}
-		delay, retry := mediaRetryDelay(err, attempt)
+		delay, retry := mediaDownloadRetryDelay(err, attempt)
 		if !retry {
-			return result, errors.Join(dispatchedErr, err)
+			return result, err
 		}
 		if waitErr := wait(ctx, delay); waitErr != nil {
-			return result, errors.Join(dispatchedErr, err, waitErr)
+			return result, errors.Join(err, waitErr)
 		}
 	}
 	return result, err
 }
 
-func mediaRetryDelay(err error, attempt int) (time.Duration, bool) {
+func mediaDownloadRetryDelay(err error, attempt int) (time.Duration, bool) {
 	delay := time.Second * time.Duration(1<<min(attempt, 5))
 	var classified core_wb.ClassifiedError
 	if errors.As(err, &classified) {

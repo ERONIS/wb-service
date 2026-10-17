@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// UpdateUser обновляет данные пользователя в wb.users по его tg_id.
 func (r *UsersRepository) UpdateUser(
 	ctx context.Context,
 	user domain.User,
@@ -45,9 +46,9 @@ func (r *UsersRepository) UpdateUser(
 		user.TelegramID,
 	)
 
-	var model UserModel
+	var dto userRowDTO
 
-	if err := model.Scan(row); err != nil {
+	if err := dto.Scan(row); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.User{}, fmt.Errorf(
 				"user with TelegramID='%d': %w",
@@ -63,5 +64,5 @@ func (r *UsersRepository) UpdateUser(
 		)
 	}
 
-	return modelToDomain(model), nil
+	return dtoToDomain(dto), nil
 }

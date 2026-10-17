@@ -4,18 +4,18 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 )
 
 func (s *Service) Finalize(
 	ctx context.Context,
-	actor TrustedActor,
+	user domain.User,
 	command FinalizeCommand,
 ) (BatchHeader, error) {
-	actor = actor.Normalized()
 	command = command.normalized()
-	if err := actor.Validate(); err != nil {
+	if err := user.Validate(); err != nil {
 		return BatchHeader{}, err
 	}
 	if err := command.validate(); err != nil {
@@ -31,7 +31,7 @@ func (s *Service) Finalize(
 			batch, err = s.repository.Finalize(
 				ctx,
 				tx,
-				actor,
+				user,
 				command,
 				commandDigest,
 			)

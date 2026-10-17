@@ -62,70 +62,7 @@ func (repository *Repository) ApplyPublicationPlanResult(
 		return nil
 	}
 
-	const reduceTransfer = `
-		WITH group_counts AS (
-			SELECT
-				COUNT(*) AS total,
-				COUNT(*) FILTER (WHERE overall_outcome <> 'running') AS terminal,
-				COUNT(*) FILTER (WHERE overall_outcome = 'rejected') AS rejected,
-				COUNT(*) FILTER (WHERE overall_outcome = 'partial') AS partial,
-				COUNT(*) FILTER (WHERE overall_outcome = 'unresolved') AS unresolved,
-				COUNT(*) FILTER (WHERE overall_outcome = 'internal_error') AS internal_error
-			FROM wb.transfer_group_targets
-			WHERE transfer_id = $1
-		), item_counts AS (
-			SELECT
-				COUNT(*) AS total,
-				COUNT(*) FILTER (WHERE state = 'terminal') AS terminal
-			FROM wb.transfer_item_targets
-			WHERE transfer_id = $1
-		)
-		UPDATE wb.transfers AS transfer
-		SET phase = CASE
-				WHEN group_counts.terminal = group_counts.total
-				 AND item_counts.terminal = item_counts.total THEN 'finished'
-				ELSE transfer.phase
-			END,
-		    outcome = CASE
-				WHEN group_counts.terminal <> group_counts.total
-				  OR item_counts.terminal <> item_counts.total THEN 'running'
-				WHEN group_counts.unresolved > 0 OR group_counts.internal_error > 0
-					THEN 'unresolved'
-				WHEN group_counts.rejected = group_counts.total THEN 'rejected'
-				WHEN group_counts.rejected > 0 OR group_counts.partial > 0 THEN 'partial'
-				ELSE 'succeeded'
-			END,
-		    attention_code = CASE
-				WHEN group_counts.terminal = group_counts.total
-				 AND (group_counts.unresolved > 0 OR group_counts.internal_error > 0)
-					THEN 'terminal_item_requires_attention'
-				ELSE NULL
-			END,
-		    finished_at = CASE
-				WHEN group_counts.terminal = group_counts.total
-				 AND item_counts.terminal = item_counts.total THEN CURRENT_TIMESTAMP
-				ELSE NULL
-			END,
-		    revision = transfer.revision + 1,
-		    updated_at = CURRENT_TIMESTAMP
-		FROM group_counts, item_counts
-		WHERE transfer.id = $1
-			AND transfer.phase IN (
-				'preparing', 'awaiting_authorization', 'publishing',
-				'reconciling', 'media'
-			)
-			AND transfer.outcome = 'running'
-			AND group_counts.total = transfer.group_targets_count
-			AND item_counts.total = transfer.item_targets_count;
-	`
-	result, err := tx.Exec(ctx, reduceTransfer, command.TransferID)
-	if err != nil {
-		return fmt.Errorf("reduce transfer after zero-action plan: %w", err)
-	}
-	if result.RowsAffected() != 1 {
-		return transfer_service.ErrPreparationResultConflict
-	}
-	return nil
+	return reduceTransferAfterPlanning(ctx, tx, command.TransferID)
 }
 
 func updatePublicationPlanGroups(

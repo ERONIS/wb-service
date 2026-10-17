@@ -646,7 +646,6 @@ func validateLoadedGroup(group loadedPlanningGroup) error {
 		group.Proposal.SourceGroupID != group.Source.SourceGroupID ||
 		group.Proposal.TargetID != group.Source.TargetID ||
 		CabinetID(group.Proposal.CabinetID) != CabinetID(group.Source.CabinetID) ||
-		int64(group.Proposal.PreparationGroupID) != group.Source.PreparationGroupID ||
 		Digest(group.Proposal.Proposal.ProposalRoot) != Digest(group.Source.ProposalRoot) ||
 		len(group.Proposal.Members) != len(group.Source.Members) {
 		return errors.New("prepared proposal differs from publication planning source")

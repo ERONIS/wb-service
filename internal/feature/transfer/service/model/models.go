@@ -315,11 +315,11 @@ func (snapshot MutationTargetSnapshot) Validate(now time.Time) error {
 		case target.Position != index+1:
 			return invalidTargetSnapshot("target positions are not contiguous")
 		case strings.TrimSpace(string(target.CabinetID)) != string(target.CabinetID) ||
-			target.CabinetID == "" || len(target.CabinetID) > 128:
+			target.CabinetID.Validate() != nil:
 			return invalidTargetSnapshot("cabinet ID is invalid")
-		case target.SellerKey == (SellerKey{}):
+		case target.SellerKey.IsZero():
 			return invalidTargetSnapshot("seller key is empty")
-		case target.ClientGeneration == (ClientGeneration{}):
+		case target.ClientGeneration.IsZero():
 			return invalidTargetSnapshot("client generation is empty")
 		case target.BindingRevision <= 0:
 			return invalidTargetSnapshot("binding revision must be positive")

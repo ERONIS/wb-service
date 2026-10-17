@@ -21,13 +21,12 @@ type PublicationPlanningMember struct {
 }
 
 type PublicationPlanningGroup struct {
-	GroupTargetID      int64
-	SourceGroupID      int64
-	TargetID           int64
-	CabinetID          CabinetID
-	PreparationGroupID int64
-	ProposalRoot       Digest
-	Members            []PublicationPlanningMember
+	GroupTargetID int64
+	SourceGroupID int64
+	TargetID      int64
+	CabinetID     CabinetID
+	ProposalRoot  Digest
+	Members       []PublicationPlanningMember
 }
 
 type PublicationPlanningSource struct {
@@ -43,7 +42,7 @@ func (source PublicationPlanningSource) Validate() error {
 	seenItemTargets := make(map[int64]struct{})
 	for groupIndex, group := range source.Groups {
 		if group.GroupTargetID <= 0 || group.SourceGroupID <= 0 ||
-			group.TargetID <= 0 || group.PreparationGroupID <= 0 ||
+			group.TargetID <= 0 ||
 			group.ProposalRoot == (Digest{}) || len(group.Members) == 0 ||
 			strings.TrimSpace(string(group.CabinetID)) != string(group.CabinetID) ||
 			group.CabinetID == "" {

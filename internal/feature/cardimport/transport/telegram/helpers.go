@@ -17,91 +17,29 @@ import (
 const sessionViewFilesLimit = 10
 
 func parseSessionID(arguments []string) (cardimport_service.SessionID, error) {
-	if len(arguments) != 1 {
-		return 0, fmt.Errorf("unexpected arguments count: %d", len(arguments))
-	}
-
-	value, err := core_transport_telegram.ParseInt64Argument(
-		arguments, 0, 1, 10, 1,
-	)
-	if err != nil {
-		return 0, fmt.Errorf("invalid session ID %q", arguments[0])
-	}
-
-	return cardimport_service.SessionID(value), nil
+	value, err := core_transport_telegram.ParseInt64Argument(arguments, 0, 1, 10, 1)
+	return cardimport_service.SessionID(value), err
 }
 
-func parseFinalizeCommand(
-	arguments []string,
-) (cardimport_service.FinalizeCommand, error) {
-	if len(arguments) != 2 {
-		return cardimport_service.FinalizeCommand{}, fmt.Errorf(
-			"unexpected arguments count: %d",
-			len(arguments),
-		)
-	}
-
-	sessionValue, err := core_transport_telegram.ParseInt64Argument(
-		arguments, 0, 2, 10, 1,
-	)
+func parseFinalizeCommand(arguments []string) (cardimport_service.FinalizeCommand, error) {
+	id, revision, err := core_transport_telegram.ParseIDAndRevision(arguments)
 	if err != nil {
-		return cardimport_service.FinalizeCommand{}, fmt.Errorf(
-			"invalid session ID %q",
-			arguments[0],
-		)
+		return cardimport_service.FinalizeCommand{}, err
 	}
-	revision, err := core_transport_telegram.ParseInt64Argument(
-		arguments, 1, 2, 10, 0,
-	)
-	if err != nil {
-		return cardimport_service.FinalizeCommand{}, fmt.Errorf(
-			"invalid session revision %q",
-			arguments[1],
-		)
-	}
-
 	return cardimport_service.FinalizeCommand{
-		SessionID:        cardimport_service.SessionID(sessionValue),
+		SessionID:        cardimport_service.SessionID(id),
 		ExpectedRevision: revision,
-		IdempotencyKey: fmt.Sprintf(
-			"telegram:%d:%d",
-			sessionValue,
-			revision,
-		),
+		IdempotencyKey:   fmt.Sprintf("telegram:%d:%d", id, revision),
 	}, nil
 }
 
-func parseContinueCommand(
-	arguments []string,
-) (cardimport_service.ContinueCommand, error) {
-	if len(arguments) != 2 {
-		return cardimport_service.ContinueCommand{}, fmt.Errorf(
-			"unexpected arguments count: %d",
-			len(arguments),
-		)
-	}
-
-	sessionValue, err := core_transport_telegram.ParseInt64Argument(
-		arguments, 0, 2, 10, 1,
-	)
+func parseContinueCommand(arguments []string) (cardimport_service.ContinueCommand, error) {
+	id, revision, err := core_transport_telegram.ParseIDAndRevision(arguments)
 	if err != nil {
-		return cardimport_service.ContinueCommand{}, fmt.Errorf(
-			"invalid session ID %q",
-			arguments[0],
-		)
+		return cardimport_service.ContinueCommand{}, err
 	}
-	revision, err := core_transport_telegram.ParseInt64Argument(
-		arguments, 1, 2, 10, 0,
-	)
-	if err != nil {
-		return cardimport_service.ContinueCommand{}, fmt.Errorf(
-			"invalid session revision %q",
-			arguments[1],
-		)
-	}
-
 	return cardimport_service.ContinueCommand{
-		SessionID:        cardimport_service.SessionID(sessionValue),
+		SessionID:        cardimport_service.SessionID(id),
 		ExpectedRevision: revision,
 	}, nil
 }
@@ -306,19 +244,6 @@ func unfinishedFilesCount(view cardimport_service.SessionView) int {
 		case cardimport_service.FileStatusReserved,
 			cardimport_service.FileStatusStored,
 			cardimport_service.FileStatusParsing:
-			count++
-		}
-	}
-	return count
-}
-
-func recoverableFilesCount(
-	view cardimport_service.SessionView,
-	now time.Time,
-) int {
-	count := 0
-	for _, file := range view.Files {
-		if isRecoverableFile(file.File, now) {
 			count++
 		}
 	}

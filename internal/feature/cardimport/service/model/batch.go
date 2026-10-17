@@ -1,7 +1,6 @@
 package model
 
 import (
-	"github.com/ERONIS/wb-service/internal/core/domain"
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 )
 
@@ -16,7 +15,6 @@ type BatchItemID = cardpipeline.BatchItemID
 type Digest = cardpipeline.Digest
 type SourceGroupKey = cardpipeline.SourceGroupKey
 type BatchCursor = cardpipeline.BatchCursor
-type TrustedActor = domain.Actor
 type AuthorSnapshot = cardpipeline.AuthorSnapshot
 type BatchHeader = cardpipeline.BatchHeader
 type BatchItem = cardpipeline.BatchItem

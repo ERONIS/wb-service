@@ -163,6 +163,56 @@ func validPreparationActivation(
 		activeItems == totalItems
 }
 
+// ListPendingPreparationGroups выбирает порцию целевых групп переноса в статусе running для выполнения подготовки.
+func (repository *Repository) ListPendingPreparationGroups(
+	ctx context.Context,
+	transferID transfer_service.TransferID,
+	limit int,
+	after transfer_service.PreparationPendingGroup,
+) ([]transfer_service.PreparationPendingGroup, error) {
+	if transferID <= 0 || limit <= 0 || after.SourceGroupID < 0 || after.TargetID < 0 {
+		return nil, core_errors.ErrInvalidArgument
+	}
+	ctx, cancel := repository.pool.OperationContext(ctx)
+	defer cancel()
+
+	const query = `
+        SELECT group_target.id, group_target.source_group_id, group_target.target_id, target.cabinet_id
+        FROM wb.transfer_group_targets AS group_target
+        JOIN wb.transfer_targets AS target
+          ON target.transfer_id = group_target.transfer_id AND target.id = group_target.target_id
+        WHERE group_target.transfer_id = $1
+          AND group_target.preparation_status = 'running'
+          AND group_target.preparation_result_revision = 0
+          AND (group_target.source_group_id, group_target.target_id) > ($3::bigint, $4::bigint)
+        ORDER BY group_target.source_group_id, group_target.target_id
+        LIMIT $2;
+    `
+	rows, err := repository.pool.Query(ctx, query, transferID, limit, after.SourceGroupID, after.TargetID)
+	if err != nil {
+		return nil, fmt.Errorf("list pending transfer preparation groups: %w", err)
+	}
+	defer rows.Close()
+
+	groups := make([]transfer_service.PreparationPendingGroup, 0)
+	for rows.Next() {
+		var g transfer_service.PreparationPendingGroup
+		var cab string
+		if err := rows.Scan(&g.GroupTargetID, &g.SourceGroupID, &g.TargetID, &cab); err != nil {
+			return nil, fmt.Errorf("scan pending transfer preparation group: %w", err)
+		}
+		g.CabinetID = transfer_service.CabinetID(cab)
+		if err := g.Validate(); err != nil {
+			return nil, fmt.Errorf("validate pending transfer preparation group: %w", err)
+		}
+		groups = append(groups, g)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pending transfer preparation groups: %w", err)
+	}
+	return groups, nil
+}
+
 func (repository *Repository) LoadPreparationSource(
 	ctx context.Context,
 	transferID transfer_service.TransferID,

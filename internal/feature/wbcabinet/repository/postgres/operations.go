@@ -422,6 +422,15 @@ func (repository *Repository) DeleteByOwner(
 }
 
 func scanStoredCabinet(row rowScanner) (wbcabinet_service.Cabinet, string, error) {
+	return scanCabinetRow(row, true)
+}
+
+func scanCabinet(row rowScanner) (wbcabinet_service.Cabinet, error) {
+	cabinet, _, err := scanCabinetRow(row, false)
+	return cabinet, err
+}
+
+func scanCabinetRow(row rowScanner, withToken bool) (wbcabinet_service.Cabinet, string, error) {
 	var (
 		cabinet          wbcabinet_service.Cabinet
 		sellerKey        []byte
@@ -429,7 +438,7 @@ func scanStoredCabinet(row rowScanner) (wbcabinet_service.Cabinet, string, error
 		token            string
 		tokenProperties  int64
 	)
-	err := row.Scan(
+	fields := []any{
 		&cabinet.ID,
 		&cabinet.OwnerTelegramID,
 		&cabinet.Name,
@@ -445,9 +454,11 @@ func scanStoredCabinet(row rowScanner) (wbcabinet_service.Cabinet, string, error
 		&cabinet.Status,
 		&cabinet.CreatedAt,
 		&cabinet.UpdatedAt,
-		&token,
-	)
-	if err != nil {
+	}
+	if withToken {
+		fields = append(fields, &token)
+	}
+	if err := row.Scan(fields...); err != nil {
 		return wbcabinet_service.Cabinet{}, "", err
 	}
 	if tokenProperties < 0 {
@@ -458,43 +469,6 @@ func scanStoredCabinet(row rowScanner) (wbcabinet_service.Cabinet, string, error
 		return wbcabinet_service.Cabinet{}, "", err
 	}
 	return cabinet, token, nil
-}
-
-func scanCabinet(row rowScanner) (wbcabinet_service.Cabinet, error) {
-	var (
-		cabinet          wbcabinet_service.Cabinet
-		sellerKey        []byte
-		clientGeneration []byte
-		tokenProperties  int64
-	)
-	err := row.Scan(
-		&cabinet.ID,
-		&cabinet.OwnerTelegramID,
-		&cabinet.Name,
-		&sellerKey,
-		&cabinet.BindingRevision,
-		&cabinet.CapabilityRevision,
-		&cabinet.ContentRead,
-		&cabinet.ContentWrite,
-		&tokenProperties,
-		&cabinet.CredentialExpiresAt,
-		&clientGeneration,
-		&cabinet.VerifiedAt,
-		&cabinet.Status,
-		&cabinet.CreatedAt,
-		&cabinet.UpdatedAt,
-	)
-	if err != nil {
-		return wbcabinet_service.Cabinet{}, err
-	}
-	if tokenProperties < 0 {
-		return wbcabinet_service.Cabinet{}, errors.New("stored WB token properties are negative")
-	}
-	cabinet.TokenProperties = wbcabinet_service.TokenProperties(tokenProperties)
-	if err := setDigests(&cabinet, sellerKey, clientGeneration); err != nil {
-		return wbcabinet_service.Cabinet{}, err
-	}
-	return cabinet, nil
 }
 
 func setDigests(

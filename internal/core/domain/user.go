@@ -37,7 +37,7 @@ type User struct {
 	UpdatedAt time.Time
 }
 
-// NewUser восстанавливает пользователя из данных PostgreSQL.
+// NewUser восстанавливает сущность пользователя со всеми атрибутами из хранилища.
 func NewUser(
 	id int64,
 	telegramID int64,
@@ -58,8 +58,8 @@ func NewUser(
 	}
 }
 
-// CreateUser создаёт нового обычного пользователя.
-// ID и даты позже заполнит PostgreSQL через RETURNING.
+// CreateUser инициализирует нового пользователя в памяти с ролью по умолчанию (RoleUser).
+// Поля ID и временные метки остаются нулевыми до момента сохранения в постоянное хранилище.
 func CreateUser(
 	telegramID int64,
 	fullName string,

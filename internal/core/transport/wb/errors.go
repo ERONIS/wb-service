@@ -9,6 +9,8 @@ import (
 
 var ErrCabinetNotFound = fmt.Errorf("WB cabinet: %w", core_errors.ErrNotFound)
 
+var ErrClientGenerationChanged = fmt.Errorf("WB client generation changed: %w", core_errors.ErrConflict)
+
 type DeliveryState = client.DeliveryState
 type ClassifiedError = client.ClassifiedError
 

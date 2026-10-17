@@ -2,17 +2,14 @@ package users_postgres_repository
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
-
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/ERONIS/wb-service/internal/core/repository/postgres/pgerr"
 )
 
-const postgresUniqueViolationCode = "23505"
-
+// SaveUser сохраняет нового пользователя в wb.users и возвращает созданную сущность.
 func (r *UsersRepository) SaveUser(
 	ctx context.Context,
 	user domain.User,
@@ -47,13 +44,10 @@ func (r *UsersRepository) SaveUser(
 		user.Role,
 	)
 
-	var model UserModel
+	var dto userRowDTO
 
-	if err := model.Scan(row); err != nil {
-		var postgresError *pgconn.PgError
-
-		if errors.As(err, &postgresError) &&
-			postgresError.Code == postgresUniqueViolationCode {
+	if err := dto.Scan(row); err != nil {
+		if pgerr.IsUniqueViolation(err) {
 			return domain.User{}, fmt.Errorf(
 				"user with TelegramID='%d' already exists: %w",
 				user.TelegramID,
@@ -67,5 +61,5 @@ func (r *UsersRepository) SaveUser(
 		)
 	}
 
-	return modelToDomain(model), nil
+	return dtoToDomain(dto), nil
 }

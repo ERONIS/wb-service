@@ -74,6 +74,14 @@ type ManualResolutionCommand struct {
 	IdempotencyKey         string
 }
 
+type ResolutionSubjectKey struct {
+	TransferID             transfer_service.TransferID
+	ActionID               int64
+	ActionMemberID         int64
+	ExpectedActionRevision int64
+	AttemptID              int64
+}
+
 func (command ManualResolutionCommand) normalized() ManualResolutionCommand {
 	command.IdempotencyKey = strings.TrimSpace(command.IdempotencyKey)
 	return command
@@ -203,10 +211,10 @@ type ManualResolutionRepository interface {
 		Digest,
 	) (ManualResolution, bool, error)
 
-	LockManualResolutionSubject(
+	LockResolutionSubject(
 		context.Context,
 		core_postgres_transaction.DBTX,
-		ManualResolutionCommand,
+		ResolutionSubjectKey,
 	) (ManualResolutionSubject, error)
 
 	LoadManualObservationEvidence(
@@ -290,7 +298,12 @@ func (resolver *ManualResolver) Resolve(
 				resolution = replay
 				return nil
 			}
-			subject, err := resolver.repository.LockManualResolutionSubject(ctx, tx, command)
+			subject, err := resolver.repository.LockResolutionSubject(ctx, tx, ResolutionSubjectKey{
+				TransferID:             command.TransferID,
+				ActionID:               command.ActionID,
+				ActionMemberID:         command.ActionMemberID,
+				ExpectedActionRevision: command.ExpectedActionRevision,
+			})
 			if err != nil {
 				if errors.Is(err, ErrManualResolutionConflict) {
 					replay, found, replayErr := resolver.repository.LoadManualResolutionReplay(

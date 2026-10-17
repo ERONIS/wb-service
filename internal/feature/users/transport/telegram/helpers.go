@@ -45,7 +45,7 @@ func parseUserCallbackPayload(
 		return 0, 0, err
 	}
 
-	page, err = parsePageNumber(arguments[1])
+	page, err = core_transport_telegram.ParsePageNumber(arguments[1])
 	if err != nil {
 		return 0, 0, fmt.Errorf("parse users page: %w", err)
 	}
@@ -78,4 +78,8 @@ func usersNavigationRows(
 
 func mainMenuRow(markup *tele.ReplyMarkup) tele.Row {
 	return markup.Row(core_transport_telegram.MainMenuButton())
+}
+
+func sendServiceError(ctx tele.Context, err error) error {
+	return core_transport_telegram.NotifyServiceError(ctx, err)
 }

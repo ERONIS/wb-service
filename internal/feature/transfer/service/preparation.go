@@ -6,8 +6,10 @@ import (
 )
 
 type PreparationSourceItem = preparation.PreparationSourceItem
+type PreparationPendingGroup = preparation.PreparationPendingGroup
 type PreparationSource = preparation.PreparationSource
 type PreparationResultStatus = preparation.PreparationResultStatus
+type PreparationArtifact = preparation.PreparationArtifact
 type ApplyPreparationResultCommand = preparation.ApplyPreparationResultCommand
 type PreparationResultRepository = preparation.PreparationResultRepository
 type PreparationResultApplier = preparation.PreparationResultApplier

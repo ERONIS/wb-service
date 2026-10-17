@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
@@ -49,6 +50,34 @@ func (preparer *Preparer) PrepareTarget(
 				zap.String("outcome_code", string(prepared.Outcome.Code)),
 				zap.Int("outcome_item_position", prepared.Outcome.ItemPosition),
 				zap.String("outcome_field", prepared.Outcome.Field),
+				zap.Int("group_item_count", len(group.Items)),
+			}
+			for _, item := range group.Items {
+				if item.Position != prepared.Outcome.ItemPosition {
+					continue
+				}
+				fields = append(fields,
+					zap.String("vendor_code", truncateDiagnosticValue(item.Card.Variant.VendorCode, 120)),
+					zap.Ints("source_rows", item.Card.SourceRows),
+					zap.String("category", truncateDiagnosticValue(item.Card.Category, 120)),
+				)
+				switch prepared.Outcome.Field {
+				case "title":
+					title := strings.TrimSpace(item.Card.Variant.Title)
+					fields = append(fields,
+						zap.Int("title_runes", utf8.RuneCountInString(title)),
+						zap.Int("title_max_runes", contentapi.MaxProductTitleRunes),
+						zap.String("title_input", truncateDiagnosticValue(title, 160)),
+					)
+				case "adult_only_unsupported":
+					adult, valid := parseOptionalBoolean(item.Card.AdultOnly)
+					fields = append(fields,
+						zap.String("adult_only_input", truncateDiagnosticValue(item.Card.AdultOnly, 80)),
+						zap.Bool("adult_only_parsed", adult),
+						zap.Bool("adult_only_valid", valid),
+					)
+				}
+				break
 			}
 			if prepared.Outcome.Details != nil {
 				fields = append(fields, zap.Any("outcome_details", prepared.Outcome.Details))

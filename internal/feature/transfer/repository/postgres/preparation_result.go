@@ -23,16 +23,127 @@ func (repository *Repository) ApplyPreparationResult(
 	if err := command.Validate(); err != nil {
 		return err
 	}
-	transferPhase, err := lockTransferForPipelineResult(ctx, tx, command.TransferID)
+	transferPhase, transferOutcome, err := lockTransferForPipelineResult(ctx, tx, command.TransferID)
 	if err != nil {
 		return err
 	}
-	var proposalRoot []byte
-	if command.Status == transfer_service.PreparationResultSucceeded {
-		proposalRoot = command.ProposalRoot[:]
+
+	// 1. Блокируем строку целевой группы для атомарного чтения текущего состояния
+	const selectGroupTarget = `
+		SELECT
+			preparation_status,
+			preparation_result_revision,
+			preparation_result_code,
+			preparation_proposal_root,
+			preparation_item_position,
+			preparation_field
+		FROM wb.transfer_group_targets
+		WHERE transfer_id = $1 AND id = $2
+		FOR UPDATE;
+	`
+	var (
+		currentStatus       string
+		currentRevision     int64
+		currentResultCode   *string
+		currentProposalRoot []byte
+		currentItemPosition *int
+		currentField        *string
+	)
+	err = tx.QueryRow(ctx, selectGroupTarget, command.TransferID, command.GroupTargetID).Scan(
+		&currentStatus,
+		&currentRevision,
+		&currentResultCode,
+		&currentProposalRoot,
+		&currentItemPosition,
+		&currentField,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return transfer_service.ErrPreparationResultConflict
+		}
+		return fmt.Errorf("lock transfer group target: %w", err)
 	}
-	if !preparationPipelinePhase(transferPhase) {
-		return ensureSamePreparationResult(ctx, tx, command)
+
+	// 2. Проверяем терминальные состояния для идемпотентности
+	if currentStatus == "succeeded" || currentStatus == "rejected" || currentStatus == "unresolved" {
+		if isSamePreparationResult(
+			command,
+			currentStatus,
+			currentRevision,
+			currentResultCode,
+			currentProposalRoot,
+			currentItemPosition,
+			currentField,
+		) {
+			// Идентичный повторный вызов — идемпотентный no-op
+			if command.Artifact != nil {
+				return verifyStoredPreparationArtifact(ctx, tx, command)
+			}
+			return nil
+		}
+		// Конфликтующий повторный вызов с другими данными
+		return transfer_service.ErrPreparationResultConflict
+	}
+
+	// 3. Для нетерминального состояния проверяем, что группа находится в процессе подготовки
+	if !preparationPipelinePhase(transferPhase) || transferOutcome != "running" || currentStatus != "running" || currentRevision != 0 {
+		return transfer_service.ErrPreparationResultConflict
+	}
+
+	// 4. Если подготовка завершилась успехом — сохраняем артефакт предложения WB
+	if command.Status == transfer_service.PreparationResultSucceeded && command.Artifact != nil {
+		const insertArtifact = `
+			INSERT INTO wb.card_preparation_artifacts (
+				group_target_id,
+				transfer_id,
+				subject_id,
+				semantic_digest,
+				metadata_digest,
+				proposal_root,
+				request_payload,
+				metadata_snapshot,
+				limits_free,
+				limits_paid,
+				limits_observed_at
+			)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11);
+		`
+		artifact := command.Artifact
+		if _, err := tx.Exec(
+			ctx,
+			insertArtifact,
+			command.GroupTargetID,
+			command.TransferID,
+			artifact.SubjectID,
+			artifact.SemanticDigest[:],
+			artifact.MetadataDigest[:],
+			artifact.ProposalRoot[:],
+			artifact.RequestPayload,
+			string(artifact.MetadataSnapshot),
+			artifact.LimitsFree,
+			artifact.LimitsPaid,
+			artifact.LimitsObservedAt,
+		); err != nil {
+			return fmt.Errorf("insert card preparation artifact: %w", err)
+		}
+	}
+
+	// 5. Подготавливаем аргументы диагностики для обновления проекции
+	var (
+		proposalRootArg []byte
+		itemPositionArg *int
+		fieldArg        *string
+	)
+	if command.Status == transfer_service.PreparationResultSucceeded {
+		proposalRootArg = command.ProposalRoot[:]
+	}
+	if command.ItemPosition > 0 {
+		pos := command.ItemPosition
+		itemPositionArg = &pos
+	}
+	if command.Field != "" {
+		f := command.Field
+		fieldArg = &f
 	}
 
 	const updateProjection = `
@@ -40,10 +151,12 @@ func (repository *Repository) ApplyPreparationResult(
 		SET
 			preparation_status = $3,
 			preparation_result_revision = $4,
-			preparation_id = $5,
-			preparation_group_id = $6,
-			preparation_result_code = $7,
-			preparation_proposal_root = $8,
+			preparation_result_code = $5,
+			preparation_proposal_root = $6,
+			preparation_item_position = $7,
+			preparation_field = $8,
+			preparation_started_at = $9::TIMESTAMPTZ,
+			preparation_finished_at = $10::TIMESTAMPTZ,
 			publication_status = CASE
 				WHEN $3 = 'succeeded' THEN group_target.publication_status
 				ELSE 'skipped'
@@ -58,11 +171,11 @@ func (repository *Repository) ApplyPreparationResult(
 				WHEN 'unresolved' THEN 'unresolved'
 			END,
 			attention_code = CASE
-				WHEN $3 = 'unresolved' THEN $7::VARCHAR(128)
+				WHEN $3 = 'unresolved' THEN $5::VARCHAR(128)
 				ELSE NULL
 			END,
 			finished_at = CASE
-				WHEN $3 IN ('rejected', 'unresolved') THEN CURRENT_TIMESTAMP
+				WHEN $3 IN ('rejected', 'unresolved') THEN $10::TIMESTAMPTZ
 				ELSE NULL
 			END,
 			revision = group_target.revision + 1,
@@ -70,17 +183,7 @@ func (repository *Repository) ApplyPreparationResult(
 		WHERE group_target.transfer_id = $1
 			AND group_target.id = $2
 			AND group_target.preparation_status = 'running'
-			AND group_target.preparation_result_revision = 0
-			AND EXISTS (
-				SELECT 1
-				FROM wb.transfers AS transfer
-				WHERE transfer.id = group_target.transfer_id
-					AND transfer.phase IN (
-						'preparing', 'awaiting_authorization', 'publishing',
-						'reconciling', 'media'
-					)
-					AND transfer.outcome = 'running'
-			);
+			AND group_target.preparation_result_revision = 0;
 	`
 	result, err := tx.Exec(
 		ctx,
@@ -89,20 +192,21 @@ func (repository *Repository) ApplyPreparationResult(
 		command.GroupTargetID,
 		command.Status,
 		command.Revision,
-		command.PreparationID,
-		command.PreparationGroupID,
 		command.OutcomeCode,
-		proposalRoot,
+		proposalRootArg,
+		itemPositionArg,
+		fieldArg,
+		command.StartedAt,
+		command.FinishedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("update transfer preparation result: %w", err)
 	}
 	if result.RowsAffected() == 0 {
-		if err := ensureSamePreparationResult(ctx, tx, command); err != nil {
-			return err
-		}
+		return transfer_service.ErrPreparationResultConflict
 	}
 
+	// 6. При отклонении группы завершаем связанные дочерние товарные позиции
 	if command.Status != transfer_service.PreparationResultSucceeded {
 		const finishItems = `
 			UPDATE wb.transfer_item_targets
@@ -112,7 +216,7 @@ func (repository *Repository) ApplyPreparationResult(
 					WHEN 'unresolved' THEN 'unresolved'
 				END,
 			    outcome_code = $4,
-			    finished_at = CURRENT_TIMESTAMP,
+			    finished_at = $5::TIMESTAMPTZ,
 			    revision = revision + 1,
 			    updated_at = CURRENT_TIMESTAMP
 			WHERE transfer_id = $1
@@ -126,71 +230,62 @@ func (repository *Repository) ApplyPreparationResult(
 			command.GroupTargetID,
 			command.Status,
 			command.OutcomeCode,
+			command.FinishedAt,
 		); err != nil {
 			return fmt.Errorf("finish transfer preparation items: %w", err)
 		}
 	}
 
-	const advanceTransfer = `
-		WITH group_counts AS (
-			SELECT
-				COUNT(*) AS total,
-				COUNT(*) FILTER (WHERE overall_outcome <> 'running') AS terminal,
-				COUNT(*) FILTER (WHERE overall_outcome = 'rejected') AS rejected,
-				COUNT(*) FILTER (WHERE overall_outcome = 'partial') AS partial,
-				COUNT(*) FILTER (WHERE overall_outcome = 'unresolved') AS unresolved,
-				COUNT(*) FILTER (WHERE overall_outcome = 'internal_error') AS internal_error
-			FROM wb.transfer_group_targets
-			WHERE transfer_id = $1
-		)
-		UPDATE wb.transfers AS transfer
-		SET
-			phase = CASE
-				WHEN group_counts.terminal = group_counts.total THEN 'finished'
-				WHEN transfer.phase = 'preparing' THEN 'awaiting_authorization'
-				ELSE transfer.phase
-			END,
-			outcome = CASE
-				WHEN group_counts.terminal <> group_counts.total THEN 'running'
-				WHEN group_counts.unresolved > 0 OR group_counts.internal_error > 0
-					THEN 'unresolved'
-				WHEN group_counts.rejected = group_counts.total THEN 'rejected'
-				WHEN group_counts.rejected > 0 OR group_counts.partial > 0 THEN 'partial'
-				ELSE 'succeeded'
-			END,
-			attention_code = CASE
-				WHEN group_counts.terminal = group_counts.total
-				 AND (group_counts.unresolved > 0 OR group_counts.internal_error > 0)
-					THEN 'preparation_requires_attention'
-				ELSE NULL
-			END,
-			finished_at = CASE
-				WHEN group_counts.terminal = group_counts.total THEN CURRENT_TIMESTAMP
-				ELSE NULL
-			END,
-			revision = revision + 1,
-			updated_at = CURRENT_TIMESTAMP
-		FROM group_counts
-		WHERE transfer.id = $1
-			AND transfer.phase IN (
-				'preparing', 'awaiting_authorization', 'publishing',
-				'reconciling', 'media'
-			)
-			AND transfer.outcome = 'running'
-			AND group_counts.total = transfer.group_targets_count
-			AND NOT EXISTS (
-				SELECT 1
-				FROM wb.transfer_group_targets AS group_target
-				WHERE group_target.transfer_id = $1
-					AND group_target.preparation_status NOT IN (
-						'succeeded', 'rejected', 'unresolved'
-					)
-			);
-	`
-	if _, err := tx.Exec(ctx, advanceTransfer, command.TransferID); err != nil {
-		return fmt.Errorf("advance transfer after preparation: %w", err)
+	return advanceTransferAfterPreparation(ctx, tx, command.TransferID)
+}
+
+// isSamePreparationResult проверяет совпадение существующего терминального результата подготовки с командой.
+func isSamePreparationResult(
+	command transfer_service.ApplyPreparationResultCommand,
+	currentStatus string,
+	currentRevision int64,
+	currentResultCode *string,
+	currentProposalRoot []byte,
+	currentItemPosition *int,
+	currentField *string,
+) bool {
+	if currentStatus != string(command.Status) || currentRevision != command.Revision {
+		return false
 	}
-	return nil
+	if currentResultCode == nil || *currentResultCode != command.OutcomeCode {
+		return false
+	}
+	if command.Status == transfer_service.PreparationResultSucceeded {
+		if !bytes.Equal(currentProposalRoot, command.ProposalRoot[:]) {
+			return false
+		}
+		if currentItemPosition != nil || currentField != nil {
+			return false
+		}
+	} else {
+		if len(currentProposalRoot) > 0 {
+			return false
+		}
+		if command.ItemPosition == 0 {
+			if currentItemPosition != nil {
+				return false
+			}
+		} else {
+			if currentItemPosition == nil || *currentItemPosition != command.ItemPosition {
+				return false
+			}
+		}
+		if command.Field == "" {
+			if currentField != nil {
+				return false
+			}
+		} else {
+			if currentField == nil || *currentField != command.Field {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func preparationPipelinePhase(phase string) bool {
@@ -206,7 +301,7 @@ func lockTransferForPipelineResult(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
 	transferID transfer_service.TransferID,
-) (string, error) {
+) (string, string, error) {
 	const query = `
 		SELECT phase, outcome
 		FROM wb.transfers
@@ -216,73 +311,33 @@ func lockTransferForPipelineResult(
 	var phase, outcome string
 	if err := tx.QueryRow(ctx, query, transferID).Scan(&phase, &outcome); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return "", transfer_service.ErrPreparationResultConflict
+			return "", "", transfer_service.ErrPreparationResultConflict
 		}
-		return "", fmt.Errorf("lock transfer pipeline projection: %w", err)
+		return "", "", fmt.Errorf("lock transfer pipeline projection: %w", err)
 	}
-	if phase == "initializing" || outcome != "running" {
-		return "", transfer_service.ErrPreparationResultConflict
-	}
-	return phase, nil
+	return phase, outcome, nil
 }
 
-func ensureSamePreparationResult(
-	ctx context.Context,
-	tx core_postgres_transaction.DBTX,
-	command transfer_service.ApplyPreparationResultCommand,
-) error {
-	const load = `
-		SELECT
-			preparation_status,
-			preparation_result_revision,
-			COALESCE(preparation_id, 0),
-			COALESCE(preparation_group_id, 0),
-			COALESCE(preparation_result_code, ''),
-			preparation_proposal_root
-		FROM wb.transfer_group_targets
-		WHERE transfer_id = $1
-			AND id = $2
-		FOR UPDATE;
-	`
-	var (
-		status             string
-		revision           int64
-		preparationID      int64
-		preparationGroupID int64
-		outcomeCode        string
-		proposalRoot       []byte
-	)
-	err := tx.QueryRow(
-		ctx,
-		load,
-		command.TransferID,
-		command.GroupTargetID,
-	).Scan(
-		&status,
-		&revision,
-		&preparationID,
-		&preparationGroupID,
-		&outcomeCode,
-		&proposalRoot,
-	)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return transfer_service.ErrPreparationResultConflict
+var _ transfer_service.PreparationResultRepository = (*Repository)(nil)
+
+// verifyStoredPreparationArtifact сравнивает все факты артефакта без изменения сохранённого результата.
+func verifyStoredPreparationArtifact(ctx context.Context, tx core_postgres_transaction.DBTX, command transfer_service.ApplyPreparationResultCommand) error {
+	const query = `SELECT EXISTS (
+        SELECT 1 FROM wb.card_preparation_artifacts
+        WHERE transfer_id = $1 AND group_target_id = $2
+          AND subject_id = $3 AND semantic_digest = $4 AND metadata_digest = $5
+          AND proposal_root = $6 AND request_payload = $7 AND metadata_snapshot = $8::jsonb
+          AND limits_free = $9 AND limits_paid = $10 AND limits_observed_at = $11
+    );`
+	a := command.Artifact
+	var same bool
+	if err := tx.QueryRow(ctx, query, command.TransferID, command.GroupTargetID,
+		a.SubjectID, a.SemanticDigest[:], a.MetadataDigest[:], a.ProposalRoot[:], a.RequestPayload,
+		string(a.MetadataSnapshot), a.LimitsFree, a.LimitsPaid, a.LimitsObservedAt).Scan(&same); err != nil {
+		return fmt.Errorf("compare preparation artifact: %w", err)
 	}
-	if err != nil {
-		return fmt.Errorf("load transfer preparation result: %w", err)
-	}
-	var expectedRoot []byte
-	if command.Status == transfer_service.PreparationResultSucceeded {
-		expectedRoot = command.ProposalRoot[:]
-	}
-	if status != string(command.Status) || revision != command.Revision ||
-		preparationID != command.PreparationID ||
-		preparationGroupID != command.PreparationGroupID ||
-		outcomeCode != command.OutcomeCode ||
-		!bytes.Equal(proposalRoot, expectedRoot) {
+	if !same {
 		return transfer_service.ErrPreparationResultConflict
 	}
 	return nil
 }
-
-var _ transfer_service.PreparationResultRepository = (*Repository)(nil)

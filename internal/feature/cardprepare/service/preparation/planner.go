@@ -441,6 +441,15 @@ func characteristicValue(
 							position,
 							"directory_value",
 						)
+						result.Outcome.Details = &OutcomeDetails{
+							Reason:                "Значение отсутствует в справочнике WB",
+							SourceField:           specification.Name,
+							CharacteristicID:      specification.CharacteristicID,
+							CharacteristicName:    specification.Name,
+							CharacteristicValue:   truncateDiagnosticValue(value, 160),
+							DirectoryValueCount:   len(directory),
+							DirectoryValuesSample: directoryValuesSample(directory, 8),
+						}
 						return nil, &result
 					}
 					values[index] = canonical
@@ -605,6 +614,25 @@ func exactDirectoryValue(
 		}
 	}
 	return canonical, found, false
+}
+
+func directoryValuesSample(directory []string, limit int) []string {
+	if limit > len(directory) {
+		limit = len(directory)
+	}
+	values := make([]string, 0, limit)
+	for _, value := range directory[:limit] {
+		values = append(values, truncateDiagnosticValue(value, 80))
+	}
+	return values
+}
+
+func truncateDiagnosticValue(value string, limit int) string {
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit]) + "…"
 }
 
 func splitCharacteristicValues(value string) ([]string, bool) {

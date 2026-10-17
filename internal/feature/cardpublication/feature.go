@@ -24,6 +24,7 @@ type Feature struct {
 	productDispatcher        *cardpublication_service.ProductDispatcher
 	mediaDispatcher          *cardpublication_service.MediaDispatcher
 	manualResolver           *cardpublication_service.ManualResolver
+	verifiedCardResolver     *cardpublication_service.VerifiedCardResolver
 	repository               *cardpublication_postgres_repository.Repository
 	transport                cardpublication_service.CatalogTransport
 	catalogReader            *cardpublication_service.CatalogReader
@@ -88,6 +89,11 @@ func New(
 		errorFeed:      errorFeed,
 		livePlanSource: repository,
 		manualResolver: cardpublication_service.NewManualResolver(
+			repository,
+			executionResultApplier,
+			uow,
+		),
+		verifiedCardResolver: cardpublication_service.NewVerifiedCardResolver(
 			repository,
 			executionResultApplier,
 			uow,
@@ -197,6 +203,10 @@ func (feature *Feature) ProductDispatcher() *cardpublication_service.ProductDisp
 
 func (feature *Feature) ManualResolver() *cardpublication_service.ManualResolver {
 	return feature.manualResolver
+}
+
+func (feature *Feature) VerifiedCardResolver() *cardpublication_service.VerifiedCardResolver {
+	return feature.verifiedCardResolver
 }
 
 func (feature *Feature) ErrorFeed() *cardpublication_service.ErrorFeed {

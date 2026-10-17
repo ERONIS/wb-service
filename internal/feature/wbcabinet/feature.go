@@ -2,14 +2,12 @@ package wbcabinet
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
-	core_wb_config "github.com/ERONIS/wb-service/internal/core/transport/wb/config"
 	wbcabinet_postgres_repository "github.com/ERONIS/wb-service/internal/feature/wbcabinet/repository/postgres"
 	wbcabinet_service "github.com/ERONIS/wb-service/internal/feature/wbcabinet/service"
 	wbcabinet_telegram_transport "github.com/ERONIS/wb-service/internal/feature/wbcabinet/transport/telegram"
@@ -37,15 +35,8 @@ func New(
 	}, nil
 }
 
-func (feature *Feature) Initialize(
-	ctx context.Context,
-	bootstrapOwnerID int64,
-	bootstrap []core_wb_config.CabinetConfig,
-) error {
-	return errors.Join(
-		feature.service.Restore(ctx),
-		feature.service.Bootstrap(ctx, bootstrapOwnerID, bootstrap),
-	)
+func (feature *Feature) Initialize(ctx context.Context) error {
+	return feature.service.Restore(ctx)
 }
 
 func (feature *Feature) Service() *wbcabinet_service.Service {

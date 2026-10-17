@@ -18,7 +18,7 @@ import (
 type Feature struct {
 	service      *statistics_service.Service
 	telegram     *statistics_telegram_transport.Handler
-	cardVerifier statistics_telegram_transport.CardVerifier
+	cardVerifier statistics_service.CardVerifier
 }
 
 func New(
@@ -26,16 +26,17 @@ func New(
 	pool core_postgres_pool.Pool,
 	bot *tele.Bot,
 	manualResolver *cardpublication_service.ManualResolver,
+	verifiedResolver *cardpublication_service.VerifiedCardResolver,
 	batches statistics_telegram_transport.BatchReader,
 	cabinetNames map[string]string,
-	cardVerifier statistics_telegram_transport.CardVerifier,
+	cardVerifier statistics_service.CardVerifier,
 ) *Feature {
-	if ctx == nil || pool == nil || bot == nil || manualResolver == nil ||
+	if ctx == nil || pool == nil || bot == nil || manualResolver == nil || verifiedResolver == nil ||
 		batches == nil {
 		panic("statistics dependency is nil")
 	}
 	repository := statistics_postgres_repository.New(pool)
-	service := statistics_service.New(repository)
+	service := statistics_service.New(repository, verifiedResolver)
 	return &Feature{
 		service:      service,
 		cardVerifier: cardVerifier,
@@ -111,7 +112,7 @@ func (feature *Feature) processAttentionOnce(ctx context.Context, logger *zap.Lo
 			continue
 		}
 		if info != nil {
-			if err := feature.service.ResolveVerifiedCard(ctx, item.ItemTargetID, info.NMID, info.IMTID, info.SubjectID); err != nil {
+			if err := feature.service.ResolveVerifiedCard(ctx, item, *info); err != nil {
 				logger.Error("Failed to resolve verified card in auto-resolution",
 					zap.Int64("item_target_id", item.ItemTargetID),
 					zap.Int64("nm_id", info.NMID),
@@ -123,19 +124,6 @@ func (feature *Feature) processAttentionOnce(ctx context.Context, logger *zap.Lo
 				zap.String("cabinet_id", item.CabinetID),
 				zap.String("vendor_code", item.VendorCode),
 				zap.Int64("nm_id", info.NMID),
-			)
-		} else {
-			if err := feature.service.RequeueCardForCreation(ctx, item.ItemTargetID); err != nil {
-				logger.Error("Failed to requeue missing card for creation in auto-resolution",
-					zap.Int64("item_target_id", item.ItemTargetID),
-					zap.String("vendor_code", item.VendorCode),
-					zap.Error(err),
-				)
-				continue
-			}
-			logger.Info("Card not found in WB, automatically requeued for creation",
-				zap.String("cabinet_id", item.CabinetID),
-				zap.String("vendor_code", item.VendorCode),
 			)
 		}
 	}

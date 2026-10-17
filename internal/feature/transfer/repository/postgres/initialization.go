@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
+	core_postgres_sequence "github.com/ERONIS/wb-service/internal/core/repository/postgres/sequence"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 
@@ -325,25 +326,9 @@ func reserveIDs(
 	if count <= 0 {
 		return nil, transfer_service.ErrInitializationConflict
 	}
-	const query = `
-		SELECT nextval($1::regclass)
-		FROM generate_series(1, $2);
-	`
-	rows, err := tx.Query(ctx, query, sequence, count)
+	ids, err := core_postgres_sequence.ReserveIDs(ctx, tx, sequence, count)
 	if err != nil {
 		return nil, fmt.Errorf("reserve transfer initialization IDs: %w", err)
-	}
-	defer rows.Close()
-	ids := make([]int64, 0, count)
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan reserved transfer initialization ID: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate reserved transfer initialization IDs: %w", err)
 	}
 	if len(ids) != count {
 		return nil, transfer_service.ErrInitializationConflict

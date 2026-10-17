@@ -1,6 +1,12 @@
 package statistics_service
 
-import "context"
+import (
+	"context"
+	"time"
+
+	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
+	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
+)
 
 type Reader interface {
 	ListOperations(context.Context, OperationFilter) ([]OperationRow, error)
@@ -13,6 +19,22 @@ type Reader interface {
 	AggregateActions(context.Context, AggregateFilter) (ActionTotals, error)
 	AggregateErrors(context.Context, AggregateFilter) ([]ErrorGroup, error)
 	ListAttention(context.Context, AttentionFilter) ([]AttentionRow, error)
-	ResolveVerifiedCard(context.Context, int64, int64, int64, int64) error
-	RequeueCardForCreation(context.Context, int64) error
+}
+
+type VerifiedCardResolver interface {
+	Resolve(context.Context, cardpublication_service.VerifiedCardCommand, cardpublication_service.VerifiedCardEvidence) error
+}
+
+type CardVerificationInfo struct {
+	Card       contentapi.Card
+	ObservedAt time.Time
+	NMID       int64
+	IMTID      int64
+	SubjectID  int64
+	Title      string
+	Brand      string
+}
+
+type CardVerifier interface {
+	FindCardByVendorCode(ctx context.Context, cabinetID string, vendorCode string) (*CardVerificationInfo, error)
 }

@@ -4,15 +4,12 @@ import (
 	"fmt"
 	"html"
 	"strings"
-	"time"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
 
 	tele "gopkg.in/telebot.v3"
 )
-
-const userCardTimeFormat = "02.01.2006 15:04"
 
 func (h *UsersTgHandler) getUser(
 	ctx tele.Context,
@@ -58,8 +55,8 @@ func userCardText(user domain.User) string {
 		user.TelegramID,
 		nickname,
 		user.Role,
-		formatUserCardTime(user.CreatedAt),
-		formatUserCardTime(user.UpdatedAt),
+		core_transport_telegram.FormatDateTimeUTC(user.CreatedAt),
+		core_transport_telegram.FormatDateTimeUTC(user.UpdatedAt),
 	)
 }
 
@@ -113,12 +110,4 @@ func userCardMarkup(
 	markup.Inline(rows...)
 
 	return markup
-}
-
-func formatUserCardTime(value time.Time) string {
-	if value.IsZero() {
-		return "не указано"
-	}
-
-	return value.UTC().Format(userCardTimeFormat) + " UTC"
 }

@@ -1,6 +1,7 @@
 package cabinetcopy_telegram_transport
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strconv"
@@ -14,6 +15,25 @@ import (
 )
 
 const tagPageSize = 8
+
+func (handler *Handler) appendSessionControls(markup *tele.ReplyMarkup, rows []tele.Row, session cabinetcopy_service.Session) []tele.Row {
+	return append(rows,
+		markup.Row(markup.Data(buttonCancel.Text, buttonCancel.Unique, callbackValues(session)...)),
+		markup.Row(core_transport_telegram.MainMenuButton()),
+	)
+}
+
+func (handler *Handler) parseSessionArgs(ctx tele.Context, exact int) (cabinetcopy_service.SessionID, int64, int64, error) {
+	id, revision, err := sessionArgs(ctx.Args(), exact)
+	if err != nil {
+		return 0, 0, 0, core_errors.ErrConflict
+	}
+	author, err := core_transport_telegram.SenderID(ctx)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return id, revision, author, nil
+}
 
 func (handler *Handler) begin(ctx tele.Context) error {
 	author, err := core_transport_telegram.SenderID(ctx)
@@ -62,9 +82,7 @@ func (handler *Handler) renderSource(ctx tele.Context, session cabinetcopy_servi
 			callbackValues(session, strconv.Itoa(index))...,
 		)))
 	}
-	rows = append(rows, markup.Row(markup.Data(buttonCancel.Text, buttonCancel.Unique, callbackValues(session)...)))
-	rows = append(rows, markup.Row(core_transport_telegram.MainMenuButton()))
-	markup.Inline(rows...)
+	markup.Inline(handler.appendSessionControls(markup, rows, session)...)
 	return ctx.EditOrSend("🔁 <b>Копирование между кабинетами</b>\n\nВыберите кабинет-источник:", markup)
 }
 
@@ -85,9 +103,7 @@ func (handler *Handler) renderTarget(ctx tele.Context, session cabinetcopy_servi
 			callbackValues(session, strconv.Itoa(index))...,
 		)))
 	}
-	rows = append(rows, markup.Row(markup.Data(buttonCancel.Text, buttonCancel.Unique, callbackValues(session)...)))
-	rows = append(rows, markup.Row(core_transport_telegram.MainMenuButton()))
-	markup.Inline(rows...)
+	markup.Inline(handler.appendSessionControls(markup, rows, session)...)
 	text := fmt.Sprintf("🔁 <b>Копирование между кабинетами</b>\n\nИсточник: <b>%s</b>\n\nВыберите кабинет назначения:", escaped(cabinetName(cabinets, session.SourceCabinetID)))
 	return ctx.EditOrSend(text, markup)
 }
@@ -116,9 +132,7 @@ func (handler *Handler) renderCount(ctx tele.Context, session cabinetcopy_servic
 		rows = append(rows, markup.Row(buttons[start:end]...))
 	}
 	rows = append(rows, markup.Row(markup.Data(buttonCustomCount.Text, buttonCustomCount.Unique, callbackValues(session)...)))
-	rows = append(rows, markup.Row(markup.Data(buttonCancel.Text, buttonCancel.Unique, callbackValues(session)...)))
-	rows = append(rows, markup.Row(core_transport_telegram.MainMenuButton()))
-	markup.Inline(rows...)
+	markup.Inline(handler.appendSessionControls(markup, rows, session)...)
 	return ctx.EditOrSend(fmt.Sprintf("🔢 <b>Количество карточек</b>\n\nВыберите количество от 1 до %d:", handler.service.MaxCards()), markup)
 }
 
@@ -140,10 +154,7 @@ func (handler *Handler) renderTags(ctx tele.Context, session cabinetcopy_service
 	if page < 1 {
 		page = 1
 	}
-	totalPages := (len(tags) + tagPageSize - 1) / tagPageSize
-	if totalPages == 0 {
-		totalPages = 1
-	}
+	totalPages := int(core_transport_telegram.CalculateTotalPages(int64(len(tags)), tagPageSize))
 	if page > totalPages {
 		page = totalPages
 	}
@@ -169,24 +180,22 @@ func (handler *Handler) renderTags(ctx tele.Context, session cabinetcopy_service
 			callbackValues(session, strconv.FormatInt(tag.ID, 10), strconv.Itoa(page))...,
 		)))
 	}
-	if totalPages > 1 {
-		paging := make([]tele.Btn, 0, 2)
-		if page > 1 {
-			paging = append(paging, markup.Data("⬅️", buttonTagPage.Unique, callbackValues(session, strconv.Itoa(page-1))...))
-		}
-		if page < totalPages {
-			paging = append(paging, markup.Data("➡️", buttonTagPage.Unique, callbackValues(session, strconv.Itoa(page+1))...))
-		}
-		rows = append(rows, markup.Row(paging...))
+	if navRow, ok := core_transport_telegram.BuildPaginationRow(markup, core_transport_telegram.PaginationConfig{
+		Page:           page,
+		TotalPages:     totalPages,
+		CallbackUnique: buttonTagPage.Unique,
+		ArgPrefix:      callbackValues(session),
+		PrevText:       "⬅️",
+		NextText:       "➡️",
+	}); ok {
+		rows = append(rows, navRow)
 	}
 	continueText := "Продолжить без фильтра"
 	if len(selected) > 0 {
 		continueText = fmt.Sprintf("Продолжить · тегов: %d", len(selected))
 	}
 	rows = append(rows, markup.Row(markup.Data(continueText, buttonPrepare.Unique, callbackValues(session)...)))
-	rows = append(rows, markup.Row(markup.Data(buttonCancel.Text, buttonCancel.Unique, callbackValues(session)...)))
-	rows = append(rows, markup.Row(core_transport_telegram.MainMenuButton()))
-	markup.Inline(rows...)
+	markup.Inline(handler.appendSessionControls(markup, rows, session)...)
 	text := fmt.Sprintf("🏷 <b>Фильтр по тегам</b>\n\nКоличество: <b>%d</b>\nВыберите теги или продолжите без фильтра.", session.RequestedCount)
 	if len(tags) == 0 {
 		text += "\n\nУ исходного кабинета нет тегов."
@@ -230,12 +239,11 @@ func (handler *Handler) renderCancelled(ctx tele.Context) error {
 	return ctx.EditOrSend("Копирование карточек отменено.", markup)
 }
 
-func (handler *Handler) selectSource(ctx tele.Context) error {
-	id, revision, err := sessionArgs(ctx.Args(), 3)
-	if err != nil {
-		return presentError(ctx, core_errors.ErrConflict)
-	}
-	author, err := core_transport_telegram.SenderID(ctx)
+func (handler *Handler) selectCabinet(
+	ctx tele.Context,
+	apply func(context.Context, int64, cabinetcopy_service.SessionID, int64, cabinetcopy_service.CabinetID) (cabinetcopy_service.Session, error),
+) error {
+	id, revision, author, err := handler.parseSessionArgs(ctx, 3)
 	if err != nil {
 		return presentError(ctx, err)
 	}
@@ -247,35 +255,19 @@ func (handler *Handler) selectSource(ctx tele.Context) error {
 	if err != nil {
 		return presentError(ctx, core_errors.ErrInvalidArgument)
 	}
-	session, err := handler.service.SelectSource(handler.ctx, author, id, revision, cabinet)
+	session, err := apply(handler.ctx, author, id, revision, cabinet)
 	if err != nil {
 		return presentError(ctx, err)
 	}
 	return handler.render(ctx, session, 1)
 }
 
+func (handler *Handler) selectSource(ctx tele.Context) error {
+	return handler.selectCabinet(ctx, handler.service.SelectSource)
+}
+
 func (handler *Handler) selectTarget(ctx tele.Context) error {
-	id, revision, err := sessionArgs(ctx.Args(), 3)
-	if err != nil {
-		return presentError(ctx, core_errors.ErrConflict)
-	}
-	author, err := core_transport_telegram.SenderID(ctx)
-	if err != nil {
-		return presentError(ctx, err)
-	}
-	cabinets, err := handler.service.CabinetsForOwner(handler.ctx, author)
-	if err != nil {
-		return presentError(ctx, err)
-	}
-	cabinet, err := decodeCabinet(ctx.Args()[2], cabinets)
-	if err != nil {
-		return presentError(ctx, core_errors.ErrInvalidArgument)
-	}
-	session, err := handler.service.SelectTarget(handler.ctx, author, id, revision, cabinet)
-	if err != nil {
-		return presentError(ctx, err)
-	}
-	return handler.render(ctx, session, 1)
+	return handler.selectCabinet(ctx, handler.service.SelectTarget)
 }
 
 func (handler *Handler) selectCount(ctx tele.Context) error {
@@ -306,11 +298,7 @@ func (handler *Handler) selectCount(ctx tele.Context) error {
 }
 
 func (handler *Handler) requestCustomCount(ctx tele.Context) error {
-	id, revision, err := sessionArgs(ctx.Args(), 2)
-	if err != nil {
-		return presentError(ctx, core_errors.ErrConflict)
-	}
-	author, err := core_transport_telegram.SenderID(ctx)
+	id, revision, author, err := handler.parseSessionArgs(ctx, 2)
 	if err != nil {
 		return presentError(ctx, err)
 	}
@@ -414,18 +402,14 @@ func (handler *Handler) openTagPage(ctx tele.Context) error {
 }
 
 func (handler *Handler) prepare(ctx tele.Context) error {
-	id, revision, err := sessionArgs(ctx.Args(), 2)
+	id, revision, author, err := handler.parseSessionArgs(ctx, 2)
 	if err != nil {
-		return presentError(ctx, core_errors.ErrConflict)
+		return presentError(ctx, err)
 	}
 	markup := handler.bot.NewMarkup()
 	markup.Inline(markup.Row(core_transport_telegram.MainMenuButton()))
 	if err := ctx.EditOrSend("⏳ Получаем карточки и цены из WB…", markup); err != nil {
 		return err
-	}
-	author, err := core_transport_telegram.SenderID(ctx)
-	if err != nil {
-		return presentError(ctx, err)
 	}
 	session, err := handler.service.Prepare(handler.ctx, author, id, revision)
 	if err != nil {
@@ -439,11 +423,11 @@ func (handler *Handler) submit(ctx tele.Context) error {
 	if err != nil {
 		return presentError(ctx, core_errors.ErrConflict)
 	}
-	actor, err := core_transport_telegram.ActorFromContext(ctx)
+	user, err := core_transport_telegram.UserFromContext(ctx)
 	if err != nil {
 		return presentError(ctx, err)
 	}
-	submission, err := handler.service.Submit(handler.ctx, actor, id, revision)
+	submission, err := handler.service.Submit(handler.ctx, user, id, revision)
 	if err != nil {
 		return presentError(ctx, err)
 	}
@@ -452,11 +436,7 @@ func (handler *Handler) submit(ctx tele.Context) error {
 }
 
 func (handler *Handler) cancel(ctx tele.Context) error {
-	id, revision, err := sessionArgs(ctx.Args(), 2)
-	if err != nil {
-		return presentError(ctx, core_errors.ErrConflict)
-	}
-	author, err := core_transport_telegram.SenderID(ctx)
+	id, revision, author, err := handler.parseSessionArgs(ctx, 2)
 	if err != nil {
 		return presentError(ctx, err)
 	}

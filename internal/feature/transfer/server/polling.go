@@ -15,6 +15,16 @@ type Processor interface {
 	ProcessPending(ctx context.Context) error
 }
 
+// ProgressAwareProcessor позволяет процессору сигнализировать диспетчеру опроса о наличии реального продвижения.
+type ProgressAwareProcessor interface {
+	ProcessPendingWithProgress(ctx context.Context) (progress bool, err error)
+}
+
+// ProgressNotifyingProcessor сообщает о продвижении сразу после фиксации порции работы.
+type ProgressNotifyingProcessor interface {
+	ProcessPendingWithNotify(context.Context, func()) error
+}
+
 type ErrorHandler func(error)
 
 type Polling struct {
@@ -67,17 +77,54 @@ func (polling *Polling) Run(ctx context.Context, onError ErrorHandler, loggers .
 		onError(err)
 	}
 
+	stageWakes := make([]chan struct{}, len(polling.processors))
+	for i := range stageWakes {
+		stageWakes[i] = make(chan struct{}, 1)
+	}
+
+	if polling.wake != nil {
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case _, ok := <-polling.wake:
+					if !ok {
+						return
+					}
+					select {
+					case stageWakes[0] <- struct{}{}:
+					default:
+					}
+				}
+			}
+		}()
+	}
+
+	wakeDownstream := func(currentIndex int) {
+		for next := currentIndex + 1; next < len(stageWakes); next++ {
+			select {
+			case stageWakes[next] <- struct{}{}:
+			default:
+			}
+		}
+	}
+
 	var wait sync.WaitGroup
 	for index, processor := range polling.processors {
 		index, processor := index, processor
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			var wake <-chan struct{}
-			if index == 0 {
-				wake = polling.wake
-			}
-			polling.runProcessor(ctx, logger, index, processor, wake, reportError)
+			polling.runProcessor(
+				ctx,
+				logger,
+				index,
+				processor,
+				stageWakes[index],
+				func() { wakeDownstream(index) },
+				reportError,
+			)
 		}()
 	}
 	<-ctx.Done()
@@ -91,6 +138,7 @@ func (polling *Polling) runProcessor(
 	index int,
 	processor Processor,
 	wake <-chan struct{},
+	onSuccess func(),
 	reportError ErrorHandler,
 ) {
 	var cycle int64
@@ -116,10 +164,20 @@ func (polling *Polling) runProcessor(
 				zap.Duration("poll_interval", polling.interval),
 			)
 		}
-		processorLogger.Debug("Transfer polling processor started")
-		err := processor.ProcessPending(ctx)
+		var progress bool
+		var err error
+		if notifier, ok := processor.(ProgressNotifyingProcessor); ok {
+			err = notifier.ProcessPendingWithNotify(ctx, onSuccess)
+		} else if pap, ok := processor.(ProgressAwareProcessor); ok {
+			progress, err = pap.ProcessPendingWithProgress(ctx)
+		} else {
+			err = processor.ProcessPending(ctx)
+		}
 		if err != nil {
 			reportError(err)
+		}
+		if progress && onSuccess != nil {
+			onSuccess()
 		}
 	}
 

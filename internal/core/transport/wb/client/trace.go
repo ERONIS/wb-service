@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	config "github.com/ERONIS/wb-service/internal/core/transport/wb/config"
+	"github.com/ERONIS/wb-service/internal/core/domain"
 	policy "github.com/ERONIS/wb-service/internal/core/transport/wb/policy"
 	transport "github.com/ERONIS/wb-service/internal/core/transport/wb/transport"
 	"go.uber.org/zap"
@@ -21,7 +21,7 @@ type attemptSummary struct {
 
 type requestTrace struct {
 	requestID       string
-	cabinetID       config.CabinetID
+	cabinetID       domain.CabinetID
 	cabinetName     string
 	operation       policy.OperationID
 	method          string

@@ -2,7 +2,7 @@ CREATE SCHEMA wb;
 
 
 CREATE TABLE wb.users (
-    id              SERIAL PRIMARY KEY,
+    id              BIGSERIAL PRIMARY KEY,
 
     tg_id           BIGINT NOT NULL UNIQUE
                     CHECK (tg_id > 0),

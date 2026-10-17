@@ -1,5 +1,4 @@
 include .env
-include .env.wb
 export
 
 PROJECT_ROOT := $(CURDIR)
@@ -19,6 +18,7 @@ export PROJECT_ROOT
 	migrate-down \
 	migrate-action \
 	admin-bootstrap \
+	cabinet-bootstrap \
 	wb-service-run
 
 init: env-init
@@ -28,6 +28,7 @@ env-init:
 	@$(MAKE) env-wait
 	@$(MAKE) migrate-up
 	@$(MAKE) admin-bootstrap
+	@$(MAKE) cabinet-bootstrap
 
 env-up:
 	@docker compose up -d wb-postgresql
@@ -114,6 +115,21 @@ admin-bootstrap:
 		< scripts/bootstrap_admin.sql
 	@echo "Admin с TG ID $(ADMIN_TG_ID) создан или обновлён"
 
+cabinet-bootstrap:
+	@if [ -z "$(ADMIN_TG_ID)" ]; then \
+		echo "Ошибка: ADMIN_TG_ID не задан в .env"; \
+		exit 1; \
+	fi
+	@docker compose exec -T wb-postgresql \
+		psql \
+		-v ON_ERROR_STOP=1 \
+		-v admin_tg_id="$(ADMIN_TG_ID)" \
+		-U "$(POSTGRES_USER)" \
+		-d "$(POSTGRES_DB)" \
+		< scripts/bootstrap_cabinets.sql
+	@echo "Кабинеты WB для Admin с TG ID $(ADMIN_TG_ID) успешно созданы или обновлены"
+
 wb-service-run:
 	@$(MAKE) migrate-up
+	@$(MAKE) env-port-forward
 	@go run cmd/wb-service/main.go

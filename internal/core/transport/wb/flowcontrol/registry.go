@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	config "github.com/ERONIS/wb-service/internal/core/transport/wb/config"
+	"github.com/ERONIS/wb-service/internal/core/domain"
 	policy "github.com/ERONIS/wb-service/internal/core/transport/wb/policy"
 )
 
@@ -36,7 +36,7 @@ var ErrBucketNotRegistered = errors.New(
 )
 
 type limiterKey struct {
-	cabinetID config.CabinetID
+	cabinetID domain.CabinetID
 	bucketID  policy.BucketID
 }
 
@@ -87,7 +87,7 @@ func NewRegistry(
 // Wait ожидает admission для одной пары cabinet и bucket.
 func (registry *Registry) Wait(
 	ctx context.Context,
-	cabinetID config.CabinetID,
+	cabinetID domain.CabinetID,
 	bucketID policy.BucketID,
 ) error {
 	if ctx == nil {
@@ -107,7 +107,7 @@ func (registry *Registry) Wait(
 
 // Observe применяет разрешённые rate-limit headers ответа WB.
 func (registry *Registry) Observe(
-	cabinetID config.CabinetID,
+	cabinetID domain.CabinetID,
 	bucketID policy.BucketID,
 	response *http.Response,
 ) (time.Duration, error) {
@@ -144,7 +144,7 @@ func (registry *Registry) Observe(
 }
 
 func (registry *Registry) limiter(
-	cabinetID config.CabinetID,
+	cabinetID domain.CabinetID,
 	bucketID policy.BucketID,
 ) (*Limiter, error) {
 	if registry == nil ||

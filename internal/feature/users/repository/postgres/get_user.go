@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// GetUserByTelegramID находит пользователя по его TelegramID.
 func (r *UsersRepository) GetUserByTelegramID(
 	ctx context.Context,
 	telegramID int64,
@@ -37,9 +38,9 @@ func (r *UsersRepository) GetUserByTelegramID(
 		telegramID,
 	)
 
-	var model UserModel
+	var dto userRowDTO
 
-	if err := model.Scan(row); err != nil {
+	if err := dto.Scan(row); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.User{}, fmt.Errorf(
 				"user with TelegramID='%d': %w",
@@ -55,5 +56,5 @@ func (r *UsersRepository) GetUserByTelegramID(
 		)
 	}
 
-	return modelToDomain(model), nil
+	return dtoToDomain(dto), nil
 }

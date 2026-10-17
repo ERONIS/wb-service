@@ -9,7 +9,6 @@ import (
 )
 
 type Feature struct {
-	coordinator    *cardprepare_service.Coordinator
 	preparer       *cardprepare_service.Preparer
 	processor      *cardprepare_service.Processor
 	proposalReader cardprepare_service.ProposalReader
@@ -28,13 +27,9 @@ func New(
 	}
 	repository := cardprepare_postgres_repository.New(postgresPool)
 	preparer := cardprepare_service.NewPreparer(catalogTransport, loggers...)
-	coordinator := cardprepare_service.NewCoordinator(repository, uow)
 	return &Feature{
-		coordinator: coordinator,
-		preparer:    preparer,
+		preparer: preparer,
 		processor: cardprepare_service.NewProcessor(
-			repository,
-			coordinator,
 			preparer,
 			transferSource,
 			resultApplier,
@@ -47,10 +42,6 @@ func New(
 
 func (feature *Feature) ProposalReader() cardprepare_service.ProposalReader {
 	return feature.proposalReader
-}
-
-func (feature *Feature) Coordinator() *cardprepare_service.Coordinator {
-	return feature.coordinator
 }
 
 func (feature *Feature) Preparer() *cardprepare_service.Preparer {

@@ -24,7 +24,6 @@ type BatchItemID = model.BatchItemID
 type Digest = model.Digest
 type SourceGroupKey = model.SourceGroupKey
 type BatchCursor = model.BatchCursor
-type TrustedActor = model.TrustedActor
 type AuthorSnapshot = model.AuthorSnapshot
 type BatchHeader = model.BatchHeader
 type BatchItem = model.BatchItem

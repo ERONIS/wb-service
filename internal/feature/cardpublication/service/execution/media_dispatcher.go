@@ -78,8 +78,8 @@ func (action MediaAction) Validate() error {
 		action.TargetSetRoot == (Digest{}) || action.PlanID <= 0 || action.Revision < 0 ||
 		action.RequestDigest == (Digest{}) || len(action.RequestPayload) == 0 ||
 		action.MemberSetDigest == (Digest{}) || action.MediaLinkSetRoot == (Digest{}) ||
-		action.SellerKey == (domain.SellerKey{}) ||
-		action.ClientGeneration == (domain.ClientGeneration{}) ||
+		action.SellerKey.IsZero() ||
+		action.ClientGeneration.IsZero() ||
 		action.CredentialExpiresAt.IsZero() || action.PreflightObservationID <= 0 ||
 		action.Member.ID <= 0 || action.Member.GroupTargetID <= 0 ||
 		action.Member.TransferItemTargetID <= 0 ||
@@ -880,9 +880,7 @@ func executeMediaMutation(
 	if method == MediaUploadByFile {
 		return executeDirectMediaMutation(ctx, transport, cabinetID, generation, request)
 	}
-	response, err := retryMediaRequest(ctx, waitMediaRetry, func() (contentapi.SaveMediaByLinksResponse, error) {
-		return transport.SaveMediaByLinks(ctx, cabinetID, generation, request)
-	})
+	response, err := transport.SaveMediaByLinks(ctx, cabinetID, generation, request)
 	if err != nil {
 		return classifyMediaError(err)
 	}
@@ -937,7 +935,7 @@ func executeDirectMediaMutationWithWait(
 	accepted := 0
 	photoNumber := 0
 	for _, link := range request.Data {
-		file, err := retryMediaRequest(ctx, wait, func() (contentapi.DownloadedMediaFile, error) {
+		file, err := retryMediaDownload(ctx, wait, func() (contentapi.DownloadedMediaFile, error) {
 			return directTransport.DownloadMediaFile(ctx, link)
 		})
 		if err != nil {
@@ -955,9 +953,7 @@ func executeDirectMediaMutationWithWait(
 			NMID: request.NMID, MediaNumber: mediaNumber,
 			FileName: file.FileName, Data: file.Data,
 		}
-		response, err := retryMediaRequest(ctx, wait, func() (contentapi.UploadMediaFileResponse, error) {
-			return directTransport.UploadMediaFile(ctx, cabinetID, generation, upload)
-		})
+		response, err := directTransport.UploadMediaFile(ctx, cabinetID, generation, upload)
 		if err != nil {
 			if accepted > 0 {
 				return partialMediaMutationResult()

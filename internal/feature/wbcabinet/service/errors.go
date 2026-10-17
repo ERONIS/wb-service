@@ -5,17 +5,18 @@ import (
 	"net"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
+	credentials "github.com/ERONIS/wb-service/internal/core/transport/wb/credentials"
 )
 
 var (
-	ErrInvalidCredential       = core_errors.ErrInvalidArgument
-	ErrCredentialExpired       = core_errors.ErrInvalidArgument
-	ErrContentAccess           = core_errors.ErrForbidden
-	ErrIdentityMismatch        = core_errors.ErrConflict
-	ErrDuplicateSeller         = core_errors.ErrConflict
-	ErrCabinetNameTaken        = core_errors.ErrConflict
-	// ErrVerification does not imply that WB rejected the credential: remote
-	// verification may also fail because of a timeout or temporary outage.
+	ErrInvalidCredential = credentials.ErrInvalidCredential
+	ErrCredentialExpired = credentials.ErrCredentialExpired
+	ErrContentAccess     = core_errors.ErrForbidden
+	ErrIdentityMismatch  = core_errors.ErrConflict
+	ErrDuplicateSeller   = core_errors.ErrConflict
+	ErrCabinetNameTaken  = core_errors.ErrConflict
+	// ErrVerification не доказывает отклонение токена: проверка может завершиться
+	// ошибкой из-за таймаута или временной недоступности WB.
 	ErrVerification            = core_errors.ErrUnauthorized
 	ErrVerificationRateLimited = core_errors.ErrRateLimited
 	ErrVerificationTransient   = core_errors.ErrUnavailable

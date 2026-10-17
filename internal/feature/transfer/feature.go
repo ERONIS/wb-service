@@ -69,7 +69,7 @@ func New(
 		panic(fmt.Sprintf("invalid transfer config: %v", err))
 	}
 
-	repository := transfer_postgres_repository.New(postgresPool, uow)
+	repository := transfer_postgres_repository.New(postgresPool)
 	targets := transfer_service.NewMutationTargetRegistry(
 		targetTransport,
 		config.CohortName,

@@ -60,258 +60,133 @@ var (
 		MaxResponseBytes: 16 * 1024,
 	})
 
-	parentCategoriesOperation = mustOperation(policy.OperationSpec{
-		ID:               operationIDParentCategories,
-		Method:           http.MethodGet,
-		Path:             "/content/v2/object/parent/all",
-		BucketID:         bucketIDContentCommon,
-		Kind:             policy.OperationKindRead,
-		RetryMode:        policy.RetryModeReadSafe,
-		SuccessStatuses:  []int{http.StatusOK},
-		RequestMode:      policy.BodyModeNone,
-		ResponseMode:     policy.BodyModeJSON,
-		MaxRequestBytes:  0,
-		MaxResponseBytes: maxParentCategoriesResponseBytes,
-	})
-
-	subjectsOperation = mustOperation(policy.OperationSpec{
-		ID:               operationIDSubjects,
-		Method:           http.MethodGet,
-		Path:             "/content/v2/object/all",
-		BucketID:         bucketIDContentCommon,
-		Kind:             policy.OperationKindRead,
-		RetryMode:        policy.RetryModeReadSafe,
-		SuccessStatuses:  []int{http.StatusOK},
-		RequestMode:      policy.BodyModeNone,
-		ResponseMode:     policy.BodyModeJSON,
-		MaxRequestBytes:  0,
-		MaxResponseBytes: maxSubjectsResponseBytes,
-	})
-
-	cardsLimitsOperation = mustOperation(policy.OperationSpec{
-		ID:               operationIDCardsLimits,
-		Method:           http.MethodGet,
-		Path:             "/content/v2/cards/limits",
-		BucketID:         bucketIDCardsLimitsAndErrors,
-		Kind:             policy.OperationKindRead,
-		RetryMode:        policy.RetryModeReadSafe,
-		SuccessStatuses:  []int{http.StatusOK},
-		RequestMode:      policy.BodyModeNone,
-		ResponseMode:     policy.BodyModeJSON,
-		MaxRequestBytes:  0,
-		MaxResponseBytes: maxCardsLimitsResponseBytes,
-	})
-
-	tagsOperation = mustOperation(policy.OperationSpec{
-		ID:               operationIDTags,
-		Method:           http.MethodGet,
-		Path:             "/content/v2/tags",
-		BucketID:         bucketIDContentCommon,
-		Kind:             policy.OperationKindRead,
-		RetryMode:        policy.RetryModeReadSafe,
-		SuccessStatuses:  []int{http.StatusOK},
-		RequestMode:      policy.BodyModeNone,
-		ResponseMode:     policy.BodyModeJSON,
-		MaxRequestBytes:  0,
-		MaxResponseBytes: maxTagsResponseBytes,
-	})
-
-	brandsOperation = mustOperation(policy.OperationSpec{
-		ID:               operationIDBrands,
-		Method:           http.MethodGet,
-		Path:             "/api/content/v1/brands",
-		BucketID:         bucketIDBrands,
-		Kind:             policy.OperationKindRead,
-		RetryMode:        policy.RetryModeReadSafe,
-		SuccessStatuses:  []int{http.StatusOK},
-		RequestMode:      policy.BodyModeNone,
-		ResponseMode:     policy.BodyModeJSON,
-		MaxRequestBytes:  0,
-		MaxResponseBytes: maxBrandsResponseBytes,
-	})
-
-	directoryColorsOperation = mustOperation(policy.OperationSpec{
-		ID:               operationIDDirectoryColors,
-		Method:           http.MethodGet,
-		Path:             "/content/v2/directory/colors",
-		BucketID:         bucketIDCharacteristics,
-		Kind:             policy.OperationKindRead,
-		RetryMode:        policy.RetryModeReadSafe,
-		SuccessStatuses:  []int{http.StatusOK},
-		RequestMode:      policy.BodyModeNone,
-		ResponseMode:     policy.BodyModeJSON,
-		MaxRequestBytes:  0,
-		MaxResponseBytes: maxDirectoryResponseBytes,
-	})
-
-	directoryKindsOperation = mustOperation(policy.OperationSpec{
-		ID:               operationIDDirectoryKinds,
-		Method:           http.MethodGet,
-		Path:             "/content/v2/directory/kinds",
-		BucketID:         bucketIDCharacteristics,
-		Kind:             policy.OperationKindRead,
-		RetryMode:        policy.RetryModeReadSafe,
-		SuccessStatuses:  []int{http.StatusOK},
-		RequestMode:      policy.BodyModeNone,
-		ResponseMode:     policy.BodyModeJSON,
-		MaxRequestBytes:  0,
-		MaxResponseBytes: maxDirectoryResponseBytes,
-	})
-
-	directoryCountriesOperation = mustOperation(policy.OperationSpec{
-		ID:               operationIDDirectoryCountries,
-		Method:           http.MethodGet,
-		Path:             "/content/v2/directory/countries",
-		BucketID:         bucketIDCharacteristics,
-		Kind:             policy.OperationKindRead,
-		RetryMode:        policy.RetryModeReadSafe,
-		SuccessStatuses:  []int{http.StatusOK},
-		RequestMode:      policy.BodyModeNone,
-		ResponseMode:     policy.BodyModeJSON,
-		MaxRequestBytes:  0,
-		MaxResponseBytes: maxDirectoryResponseBytes,
-	})
-
-	directorySeasonsOperation = mustOperation(policy.OperationSpec{
-		ID:               operationIDDirectorySeasons,
-		Method:           http.MethodGet,
-		Path:             "/content/v2/directory/seasons",
-		BucketID:         bucketIDCharacteristics,
-		Kind:             policy.OperationKindRead,
-		RetryMode:        policy.RetryModeReadSafe,
-		SuccessStatuses:  []int{http.StatusOK},
-		RequestMode:      policy.BodyModeNone,
-		ResponseMode:     policy.BodyModeJSON,
-		MaxRequestBytes:  0,
-		MaxResponseBytes: maxDirectoryResponseBytes,
-	})
-
-	directoryVATOperation = mustOperation(policy.OperationSpec{
-		ID:               operationIDDirectoryVAT,
-		Method:           http.MethodGet,
-		Path:             "/content/v2/directory/vat",
-		BucketID:         bucketIDCharacteristics,
-		Kind:             policy.OperationKindRead,
-		RetryMode:        policy.RetryModeReadSafe,
-		SuccessStatuses:  []int{http.StatusOK},
-		RequestMode:      policy.BodyModeNone,
-		ResponseMode:     policy.BodyModeJSON,
-		MaxRequestBytes:  0,
-		MaxResponseBytes: maxDirectoryResponseBytes,
-	})
-
-	directoryTNVEDOperation = mustOperation(policy.OperationSpec{
-		ID:               operationIDDirectoryTNVED,
-		Method:           http.MethodGet,
-		Path:             "/content/v2/directory/tnved",
-		BucketID:         bucketIDCharacteristics,
-		Kind:             policy.OperationKindRead,
-		RetryMode:        policy.RetryModeReadSafe,
-		SuccessStatuses:  []int{http.StatusOK},
-		RequestMode:      policy.BodyModeNone,
-		ResponseMode:     policy.BodyModeJSON,
-		MaxRequestBytes:  0,
-		MaxResponseBytes: maxDirectoryResponseBytes,
-	})
-
-	cardsListOperation = mustOperation(policy.OperationSpec{
-		ID:               operationIDCardsList,
-		Method:           http.MethodPost,
-		Path:             "/content/v2/get/cards/list",
-		BucketID:         bucketIDCardsList,
-		Kind:             policy.OperationKindRead,
-		RetryMode:        policy.RetryModeReadSafe,
-		SuccessStatuses:  []int{http.StatusOK},
-		RequestMode:      policy.BodyModeJSON,
-		ResponseMode:     policy.BodyModeJSON,
-		MaxRequestBytes:  maxCardsListRequestBytes,
-		MaxResponseBytes: maxCardsListResponseBytes,
-	})
-
-	trashCardsListOperation = mustOperation(policy.OperationSpec{
-		ID:               operationIDTrashCardsList,
-		Method:           http.MethodPost,
-		Path:             "/content/v2/get/cards/trash",
-		BucketID:         bucketIDContentCommon,
-		Kind:             policy.OperationKindRead,
-		RetryMode:        policy.RetryModeReadSafe,
-		SuccessStatuses:  []int{http.StatusOK},
-		RequestMode:      policy.BodyModeJSON,
-		ResponseMode:     policy.BodyModeJSON,
-		MaxRequestBytes:  maxTrashCardsListRequestBytes,
-		MaxResponseBytes: maxTrashCardsListResponseBytes,
-	})
-
-	cardsErrorListOperation = mustOperation(policy.OperationSpec{
-		ID:               operationIDCardsErrorList,
-		Method:           http.MethodPost,
-		Path:             "/content/v2/cards/error/list",
-		BucketID:         bucketIDCardsLimitsAndErrors,
-		Kind:             policy.OperationKindRead,
-		RetryMode:        policy.RetryModeReadSafe,
-		SuccessStatuses:  []int{http.StatusOK},
-		RequestMode:      policy.BodyModeJSON,
-		ResponseMode:     policy.BodyModeJSON,
-		MaxRequestBytes:  maxCardsErrorListRequestBytes,
-		MaxResponseBytes: maxCardsErrorListResponseBytes,
-	})
-
-	uploadCardsOperation = mustOperation(policy.OperationSpec{
-		ID:               operationIDUploadCards,
-		Method:           http.MethodPost,
-		Path:             "/content/v2/cards/upload",
-		BucketID:         bucketIDCardsUpload,
-		Kind:             policy.OperationKindMutation,
-		RetryMode:        policy.RetryModeNever,
-		SuccessStatuses:  []int{http.StatusOK},
-		RequestMode:      policy.BodyModeJSON,
-		ResponseMode:     policy.BodyModeJSON,
-		MaxRequestBytes:  maxUploadCardsRequestBytes,
-		MaxResponseBytes: maxMutationResponseBytes,
-	})
-
-	uploadCardsAddOperation = mustOperation(policy.OperationSpec{
-		ID:               operationIDUploadCardsAdd,
-		Method:           http.MethodPost,
-		Path:             "/content/v2/cards/upload/add",
-		BucketID:         bucketIDCardsUploadAdd,
-		Kind:             policy.OperationKindMutation,
-		RetryMode:        policy.RetryModeNever,
-		SuccessStatuses:  []int{http.StatusOK},
-		RequestMode:      policy.BodyModeJSON,
-		ResponseMode:     policy.BodyModeJSON,
-		MaxRequestBytes:  maxUploadCardsAddRequestBytes,
-		MaxResponseBytes: maxMutationResponseBytes,
-	})
-
-	updateCardsOperation = mustOperation(policy.OperationSpec{
-		ID:               operationIDUpdateCards,
-		Method:           http.MethodPost,
-		Path:             "/content/v2/cards/update",
-		BucketID:         bucketIDCardsUpdate,
-		Kind:             policy.OperationKindMutation,
-		RetryMode:        policy.RetryModeNever,
-		SuccessStatuses:  []int{http.StatusOK},
-		RequestMode:      policy.BodyModeJSON,
-		ResponseMode:     policy.BodyModeJSON,
-		MaxRequestBytes:  maxUpdateCardsRequestBytes,
-		MaxResponseBytes: maxMutationResponseBytes,
-	})
-
-	saveMediaByLinksOperation = mustOperation(policy.OperationSpec{
-		ID:               operationIDSaveMediaByLinks,
-		Method:           http.MethodPost,
-		Path:             "/content/v3/media/save",
-		BucketID:         bucketIDMediaFiles,
-		Kind:             policy.OperationKindMutation,
-		RetryMode:        policy.RetryModeNever,
-		SuccessStatuses:  []int{http.StatusOK},
-		RequestMode:      policy.BodyModeJSON,
-		ResponseMode:     policy.BodyModeJSON,
-		MaxRequestBytes:  maxSaveMediaByLinksRequestBytes,
-		MaxResponseBytes: maxMutationResponseBytes,
-	})
+	parentCategoriesOperation = mustOperation(safeGetJSON(
+		operationIDParentCategories, "/content/v2/object/parent/all",
+		bucketIDContentCommon, maxParentCategoriesResponseBytes,
+	))
+	subjectsOperation = mustOperation(safeGetJSON(
+		operationIDSubjects, "/content/v2/object/all",
+		bucketIDContentCommon, maxSubjectsResponseBytes,
+	))
+	cardsLimitsOperation = mustOperation(safeGetJSON(
+		operationIDCardsLimits, "/content/v2/cards/limits",
+		bucketIDCardsLimitsAndErrors, maxCardsLimitsResponseBytes,
+	))
+	tagsOperation = mustOperation(safeGetJSON(
+		operationIDTags, "/content/v2/tags",
+		bucketIDContentCommon, maxTagsResponseBytes,
+	))
+	brandsOperation = mustOperation(safeGetJSON(
+		operationIDBrands, "/api/content/v1/brands",
+		bucketIDBrands, maxBrandsResponseBytes,
+	))
+	directoryColorsOperation = mustOperation(safeGetJSON(
+		operationIDDirectoryColors, "/content/v2/directory/colors",
+		bucketIDCharacteristics, maxDirectoryResponseBytes,
+	))
+	directoryKindsOperation = mustOperation(safeGetJSON(
+		operationIDDirectoryKinds, "/content/v2/directory/kinds",
+		bucketIDCharacteristics, maxDirectoryResponseBytes,
+	))
+	directoryCountriesOperation = mustOperation(safeGetJSON(
+		operationIDDirectoryCountries, "/content/v2/directory/countries",
+		bucketIDCharacteristics, maxDirectoryResponseBytes,
+	))
+	directorySeasonsOperation = mustOperation(safeGetJSON(
+		operationIDDirectorySeasons, "/content/v2/directory/seasons",
+		bucketIDCharacteristics, maxDirectoryResponseBytes,
+	))
+	directoryVATOperation = mustOperation(safeGetJSON(
+		operationIDDirectoryVAT, "/content/v2/directory/vat",
+		bucketIDCharacteristics, maxDirectoryResponseBytes,
+	))
+	directoryTNVEDOperation = mustOperation(safeGetJSON(
+		operationIDDirectoryTNVED, "/content/v2/directory/tnved",
+		bucketIDCharacteristics, maxDirectoryResponseBytes,
+	))
+	cardsListOperation = mustOperation(safePostJSON(
+		operationIDCardsList, "/content/v2/get/cards/list",
+		bucketIDCardsList, maxCardsListRequestBytes, maxCardsListResponseBytes,
+	))
+	trashCardsListOperation = mustOperation(safePostJSON(
+		operationIDTrashCardsList, "/content/v2/get/cards/trash",
+		bucketIDContentCommon, maxTrashCardsListRequestBytes, maxTrashCardsListResponseBytes,
+	))
+	cardsErrorListOperation = mustOperation(safePostJSON(
+		operationIDCardsErrorList, "/content/v2/cards/error/list",
+		bucketIDCardsLimitsAndErrors, maxCardsErrorListRequestBytes, maxCardsErrorListResponseBytes,
+	))
+	uploadCardsOperation = mustOperation(mutationPostJSON(
+		operationIDUploadCards, "/content/v2/cards/upload",
+		bucketIDCardsUpload, maxUploadCardsRequestBytes,
+	))
+	uploadCardsAddOperation = mustOperation(mutationPostJSON(
+		operationIDUploadCardsAdd, "/content/v2/cards/upload/add",
+		bucketIDCardsUploadAdd, maxUploadCardsAddRequestBytes,
+	))
+	updateCardsOperation = mustOperation(mutationPostJSON(
+		operationIDUpdateCards, "/content/v2/cards/update",
+		bucketIDCardsUpdate, maxUpdateCardsRequestBytes,
+	))
+	saveMediaByLinksOperation = mustOperation(mutationPostJSON(
+		operationIDSaveMediaByLinks, "/content/v3/media/save",
+		bucketIDMediaFiles, maxSaveMediaByLinksRequestBytes,
+	))
 )
+
+func safeGetJSON(
+	id policy.OperationID,
+	path string,
+	bucket policy.BucketID,
+	maxResponseBytes int64,
+) policy.OperationSpec {
+	return policy.OperationSpec{
+		ID:               id,
+		Method:           http.MethodGet,
+		Path:             path,
+		BucketID:         bucket,
+		Kind:             policy.OperationKindRead,
+		RetryMode:        policy.RetryModeReadSafe,
+		SuccessStatuses:  []int{http.StatusOK},
+		RequestMode:      policy.BodyModeNone,
+		ResponseMode:     policy.BodyModeJSON,
+		MaxResponseBytes: maxResponseBytes,
+	}
+}
+
+func safePostJSON(
+	id policy.OperationID,
+	path string,
+	bucket policy.BucketID,
+	maxRequestBytes, maxResponseBytes int64,
+) policy.OperationSpec {
+	spec := safeGetJSON(id, path, bucket, maxResponseBytes)
+	spec.Method = http.MethodPost
+	spec.RequestMode = policy.BodyModeJSON
+	spec.MaxRequestBytes = maxRequestBytes
+	return spec
+}
+
+func mutationPostJSON(
+	id policy.OperationID,
+	path string,
+	bucket policy.BucketID,
+	maxRequestBytes int64,
+) policy.OperationSpec {
+	return policy.OperationSpec{
+		ID:               id,
+		Method:           http.MethodPost,
+		Path:             path,
+		BucketID:         bucket,
+		Kind:             policy.OperationKindMutation,
+		RetryMode:        policy.RetryModeNever,
+		SuccessStatuses:  []int{http.StatusOK},
+		RequestMode:      policy.BodyModeJSON,
+		ResponseMode:     policy.BodyModeJSON,
+		MaxRequestBytes:  maxRequestBytes,
+		MaxResponseBytes: maxMutationResponseBytes,
+	}
+}
 
 func PingOperation() policy.Operation {
 	return pingOperation
@@ -332,23 +207,12 @@ func SubjectCharacteristicsOperation(subjectID int64) (policy.Operation, error) 
 			subjectID,
 		)
 	}
-
-	return policy.NewOperation(policy.OperationSpec{
-		ID:     operationIDSubjectCharacteristics,
-		Method: http.MethodGet,
-		Path: "/content/v2/object/charcs/" + strconv.FormatInt(
-			subjectID,
-			10,
-		),
-		BucketID:         bucketIDContentCommon,
-		Kind:             policy.OperationKindRead,
-		RetryMode:        policy.RetryModeReadSafe,
-		SuccessStatuses:  []int{http.StatusOK},
-		RequestMode:      policy.BodyModeNone,
-		ResponseMode:     policy.BodyModeJSON,
-		MaxRequestBytes:  0,
-		MaxResponseBytes: maxSubjectCharacteristicsResponseBytes,
-	})
+	return policy.NewOperation(safeGetJSON(
+		operationIDSubjectCharacteristics,
+		"/content/v2/object/charcs/"+strconv.FormatInt(subjectID, 10),
+		bucketIDContentCommon,
+		maxSubjectCharacteristicsResponseBytes,
+	))
 }
 
 func CardsLimitsOperation() policy.Operation {

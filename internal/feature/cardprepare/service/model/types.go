@@ -65,6 +65,8 @@ type OutcomeDetails struct {
 	CharacteristicNameKey    string                             `json:"characteristic_name_key"`
 	CharacteristicValue      any                                `json:"characteristic_value"`
 	AvailableCharacteristics []contentapi.SubjectCharacteristic `json:"available_characteristics"`
+	DirectoryValueCount      int                                `json:"directory_value_count,omitempty"`
+	DirectoryValuesSample    []string                           `json:"directory_values_sample,omitempty"`
 }
 
 type SourceGroup struct {

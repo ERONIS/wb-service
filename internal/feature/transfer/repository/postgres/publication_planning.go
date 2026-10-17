@@ -81,7 +81,6 @@ func (repository *Repository) LoadPublicationPlanningSource(
 			WHERE group_target.transfer_id = $1
 			  AND group_target.preparation_status = 'succeeded'
 			  AND group_target.preparation_result_code = 'prepared'
-			  AND group_target.preparation_group_id IS NOT NULL
 			  AND group_target.preparation_proposal_root IS NOT NULL
 			  AND group_target.publication_status = 'not_started'
 			  AND group_target.publication_plan_id IS NULL
@@ -93,7 +92,6 @@ func (repository *Repository) LoadPublicationPlanningSource(
 			group_target.source_group_id,
 			group_target.target_id,
 			target.cabinet_id,
-			group_target.preparation_group_id,
 			group_target.preparation_proposal_root,
 			item.id,
 			item_target.id,
@@ -123,7 +121,6 @@ func (repository *Repository) LoadPublicationPlanningSource(
 			AND transfer.outcome = 'running'
 			AND group_target.preparation_status = 'succeeded'
 			AND group_target.preparation_result_code = 'prepared'
-			AND group_target.preparation_group_id IS NOT NULL
 			AND group_target.preparation_proposal_root IS NOT NULL
 			AND group_target.publication_status = 'not_started'
 			AND group_target.publication_plan_id IS NULL
@@ -149,21 +146,19 @@ func (repository *Repository) LoadPublicationPlanningSource(
 	var current *transfer_service.PublicationPlanningGroup
 	for rows.Next() {
 		var (
-			groupTargetID      int64
-			sourceGroupID      int64
-			targetID           int64
-			cabinetID          string
-			preparationGroupID int64
-			proposalRoot       []byte
-			member             transfer_service.PublicationPlanningMember
-			payload            []byte
+			groupTargetID int64
+			sourceGroupID int64
+			targetID      int64
+			cabinetID     string
+			proposalRoot  []byte
+			member        transfer_service.PublicationPlanningMember
+			payload       []byte
 		)
 		if err := rows.Scan(
 			&groupTargetID,
 			&sourceGroupID,
 			&targetID,
 			&cabinetID,
-			&preparationGroupID,
 			&proposalRoot,
 			&member.TransferItemID,
 			&member.TransferItemTargetID,
@@ -185,18 +180,16 @@ func (repository *Repository) LoadPublicationPlanningSource(
 			}
 			copy(root[:], proposalRoot)
 			source.Groups = append(source.Groups, transfer_service.PublicationPlanningGroup{
-				GroupTargetID:      groupTargetID,
-				SourceGroupID:      sourceGroupID,
-				TargetID:           targetID,
-				CabinetID:          transfer_service.CabinetID(cabinetID),
-				PreparationGroupID: preparationGroupID,
-				ProposalRoot:       root,
+				GroupTargetID: groupTargetID,
+				SourceGroupID: sourceGroupID,
+				TargetID:      targetID,
+				CabinetID:     transfer_service.CabinetID(cabinetID),
+				ProposalRoot:  root,
 			})
 			current = &source.Groups[len(source.Groups)-1]
 		} else if current.SourceGroupID != sourceGroupID ||
 			current.TargetID != targetID ||
-			current.CabinetID != transfer_service.CabinetID(cabinetID) ||
-			current.PreparationGroupID != preparationGroupID {
+			current.CabinetID != transfer_service.CabinetID(cabinetID) {
 			return transfer_service.PublicationPlanningSource{}, errors.New(
 				"publication planning group identity changed within result",
 			)
