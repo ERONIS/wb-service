@@ -421,6 +421,8 @@ func (repository *Repository) CorrectPublicationItemResult(
 				ELSE 'succeeded'
 			END,
 		    overall_outcome = CASE
+				WHEN group_target.media_status = 'unresolved' THEN 'unresolved'
+				WHEN group_target.media_status = 'rejected' THEN 'partial'
 				WHEN item_counts.unresolved > 0 OR item_counts.internal_error > 0
 					THEN 'unresolved'
 				WHEN item_counts.rejected = item_counts.total THEN 'rejected'
@@ -430,6 +432,8 @@ func (repository *Repository) CorrectPublicationItemResult(
 		    attention_code = CASE
 				WHEN item_counts.open_attention > 0
 					THEN 'publication_requires_attention'
+				WHEN group_target.media_status = 'unresolved'
+					THEN COALESCE(group_target.attention_code, 'publication_requires_attention')
 				ELSE NULL
 			END,
 		    revision = group_target.revision + 1,
@@ -639,54 +643,7 @@ func advanceOrFinishPublicationTransfer(
 		return nil
 	}
 
-	const finish = `
-		WITH group_counts AS (
-			SELECT
-				COUNT(*) AS total,
-				COUNT(*) FILTER (WHERE overall_outcome = 'rejected') AS rejected,
-				COUNT(*) FILTER (WHERE overall_outcome = 'partial') AS partial,
-				COUNT(*) FILTER (WHERE overall_outcome = 'unresolved') AS unresolved,
-				COUNT(*) FILTER (WHERE overall_outcome = 'internal_error') AS internal_error
-			FROM wb.transfer_group_targets
-			WHERE transfer_id = $1
-		)
-		UPDATE wb.transfers AS transfer
-		SET phase = 'finished',
-		    outcome = CASE
-				WHEN group_counts.unresolved > 0 OR group_counts.internal_error > 0
-					THEN 'unresolved'
-				WHEN group_counts.rejected = group_counts.total THEN 'rejected'
-				WHEN group_counts.rejected > 0 OR group_counts.partial > 0 THEN 'partial'
-				ELSE 'succeeded'
-			END,
-		    attention_code = CASE
-				WHEN group_counts.unresolved > 0 OR group_counts.internal_error > 0
-					THEN 'publication_requires_attention'
-				ELSE NULL
-			END,
-		    finished_at = CURRENT_TIMESTAMP,
-		    revision = transfer.revision + 1,
-		    updated_at = CURRENT_TIMESTAMP
-		FROM group_counts
-		WHERE transfer.id = $1
-			AND transfer.phase IN ('publishing', 'reconciling', 'media')
-			AND transfer.outcome = 'running'
-			AND group_counts.total = transfer.group_targets_count
-			AND NOT EXISTS (
-				SELECT 1
-				FROM wb.transfer_group_targets AS running_group
-				WHERE running_group.transfer_id = transfer.id
-				  AND running_group.overall_outcome = 'running'
-			);
-	`
-	result, err = tx.Exec(ctx, finish, transferID)
-	if err != nil {
-		return fmt.Errorf("finish publication transfer: %w", err)
-	}
-	if result.RowsAffected() != 1 {
-		return transfer_service.ErrPreparationResultConflict
-	}
-	return nil
+	return finishPublicationTransfer(ctx, tx, transferID)
 }
 
 func (repository *Repository) ResetPublicationPlanning(

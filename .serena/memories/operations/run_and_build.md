@@ -3,14 +3,20 @@
 ## Environment Variables
 - `.env`:
   - `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_PORT`
-  - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_DEBUG`
-  - `ADMIN_TG_ID`, `ADMIN_FULL_NAME` (required for bootstrapping admin)
-  - `LOG_LEVEL` (debug, info, warn, error)
-- `.env.wb`:
-  - `WB_CABINETS`: Comma-separated list or JSON mapping of initial cabinets and API tokens for auto-bootstrap.
+  - `POSTGRES_TIMEOUT`: default request timeout for PostgreSQL queries
+  - `POSTGRES_SSLMODE`: SSL mode (`disable`, `require`, `verify-ca`, `verify-full`, default `disable`)
+  - `POSTGRES_MAX_CONNS`: maximum pool connections (default `25`)
+  - `POSTGRES_MIN_CONNS`: minimum pool connections (default `4`)
+  - `POSTGRES_MAX_CONN_LIFETIME`: max connection lifetime (default `1h`)
+  - `POSTGRES_MAX_CONN_IDLE_TIME`: max connection idle duration (default `30m`)
+  - `POSTGRES_HEALTHCHECK_PERIOD`: background healthcheck interval (default `1m`)
+  - `TELEGRAM_TOKEN`, `TELEGRAM_POLL_TIMEOUT`, etc.
+  - `ADMIN_TG_ID`, `ADMIN_FULL_NAME` (required for bootstrapping admin and admin cabinets)
+  - `LOG_LEVEL` / `LOGGER_LEVEL`
+- The Makefile includes only `.env`; `.env.wb` is no longer used. WB API hosts and the client timeout are configured in code, while cabinets are stored in PostgreSQL (`wb.api_cabinets`). See `mem:core/wb_client`.
 
 ## Common Makefile Targets
-- `make env-init`: Full setup: starts PostgreSQL container, waits for readiness, runs migrations (`migrate-up`), and bootstraps admin user.
+- `make env-init`: Full setup: starts PostgreSQL container, waits for readiness, runs migrations (`migrate-up`), bootstraps admin user (`admin-bootstrap`), and bootstraps initial WB cabinets (`cabinet-bootstrap`).
 - `make env-up` / `make env-down`: Start / stop PostgreSQL docker container.
 - `make env-wait`: Polls PostgreSQL container with `pg_isready`.
 - `make env-cleanup`: Deletes local PostgreSQL volume data in `.runtime/pgdata` (with confirmation).
@@ -19,13 +25,15 @@
 - `make migrate-action action="<command>"`: Runs custom migrate action (e.g. `action="down 2"`, `action="force 7"`, `action=version`).
 - `make migrate-create seq=<name>`: Creates a new SQL migration pair in `migration/`.
 - `make admin-bootstrap`: Executes `scripts/bootstrap_admin.sql` to upsert admin user from `.env`.
-- `make wb-service-run`: Runs the service locally (`go run cmd/wb-service/main.go`).
+- `make cabinet-bootstrap`: Executes `scripts/bootstrap_cabinets.sql` to upsert initial WB cabinets for the admin user.
+- `make wb-service-run`: Applies migrations, starts the loopback PostgreSQL port forwarder, then runs the service locally (`go run cmd/wb-service/main.go`). The host-side `POSTGRES_HOST=127.0.0.1` connection requires that forwarder because the PostgreSQL service itself does not publish port 5432.
 
 ## Testing & Verification Commands
 - Run all unit tests: `go test ./...`
 - Test specific module: `go test ./internal/feature/transfer/...`
-- Check code compilation: `go build -o /dev/null ./cmd/wb-service`
+- Check code compilation: `go build ./cmd/wb-service`
 
 ## Related Memories
 - Overall architecture: `mem:architecture/overview`
 - Database schema: `mem:database/schema`
+- WB Client: `mem:core/wb_client`

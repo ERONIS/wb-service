@@ -94,7 +94,7 @@ type CardImportService interface {
 
 	Finalize(
 		ctx context.Context,
-		actor cardimport_service.TrustedActor,
+		user domain.User,
 		command cardimport_service.FinalizeCommand,
 	) (cardimport_service.BatchHeader, error)
 }

@@ -27,6 +27,7 @@ func TargetSetRoot(snapshot MutationTargetSnapshot) Digest {
 }
 
 type PreparationSource = preparation.PreparationSource
+type PreparationPendingGroup = preparation.PreparationPendingGroup
 type PublicationPlanningSource = publication.PublicationPlanningSource
 
 const MaxPublicationPlanningPageSize = publication.MaxPublicationPlanningPageSize

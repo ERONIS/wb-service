@@ -5,6 +5,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 )
 
@@ -90,7 +91,7 @@ type Repository interface {
 	Finalize(
 		ctx context.Context,
 		tx core_postgres_transaction.DBTX,
-		actor TrustedActor,
+		user domain.User,
 		command FinalizeCommand,
 		commandDigest Digest,
 	) (BatchHeader, error)

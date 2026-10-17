@@ -12,9 +12,6 @@ type Outcome = model.Outcome
 type Result = model.Result
 type SourceGroup = model.SourceGroup
 type SourceItem = model.SourceItem
-type PreparationID = model.PreparationID
-type PreparationGroupID = model.PreparationGroupID
-type StartPreparationCommand = model.StartPreparationCommand
 type ProposalQuery = model.ProposalQuery
 type PreparedMember = model.PreparedMember
 type StoredProposal = model.StoredProposal
@@ -23,6 +20,7 @@ type Preparer = preparation.Preparer
 const (
 	OutcomePrepared                     = model.OutcomePrepared
 	OutcomeTargetTemporarilyUnavailable = model.OutcomeTargetTemporarilyUnavailable
+	OutcomeCatalogContractError         = model.OutcomeCatalogContractError
 )
 
 var ErrPreparationMismatch = model.ErrPreparationMismatch

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
 )
@@ -38,6 +39,21 @@ func (builder *whereBuilder) add(expression string, value any) {
 		builder.conditions,
 		fmt.Sprintf(expression, len(builder.arguments)),
 	)
+}
+
+func (builder *whereBuilder) addIf(condition bool, expression string, value any) {
+	if condition {
+		builder.add(expression, value)
+	}
+}
+
+func (builder *whereBuilder) addCreatedRange(column string, from, to *time.Time) {
+	if from != nil {
+		builder.add(column+" >= $%d", *from)
+	}
+	if to != nil {
+		builder.add(column+" < $%d", *to)
+	}
 }
 
 func (builder *whereBuilder) addRaw(expression string) {

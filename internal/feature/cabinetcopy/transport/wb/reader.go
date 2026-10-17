@@ -7,11 +7,10 @@ import (
 	"sort"
 	"strings"
 
-	core_wb "github.com/ERONIS/wb-service/internal/core/transport/wb"
+	"github.com/ERONIS/wb-service/internal/core/domain"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 	pricesapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/prices/v2"
-	client "github.com/ERONIS/wb-service/internal/core/transport/wb/client"
-	wbconfig "github.com/ERONIS/wb-service/internal/core/transport/wb/config"
+	wb_catalog "github.com/ERONIS/wb-service/internal/core/transport/wb/catalog"
 	cabinetcopy_service "github.com/ERONIS/wb-service/internal/feature/cabinetcopy/service"
 	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
 	wbcabinet_service "github.com/ERONIS/wb-service/internal/feature/wbcabinet/service"
@@ -19,10 +18,12 @@ import (
 
 const maxPriceBatchSize = 1000
 
-type Clientset interface {
-	Cabinets() []core_wb.CabinetInfo
-	ExecutorForCabinet(wbconfig.CabinetID) (client.Executor, error)
-	PricesExecutorForCabinet(wbconfig.CabinetID) (client.Executor, error)
+type ContentClient interface {
+	wb_catalog.CardsLister
+	Tags(context.Context, domain.CabinetID) (contentapi.TagsResponse, error)
+}
+type PricesClient interface {
+	GoodsByNM(context.Context, domain.CabinetID, pricesapi.GoodsByNMRequest) (pricesapi.GoodsResponse, error)
 }
 
 type CabinetSource interface {
@@ -30,31 +31,22 @@ type CabinetSource interface {
 }
 
 type Reader struct {
-	clientset Clientset
-	cabinets  CabinetSource
+	content  ContentClient
+	prices   PricesClient
+	cabinets CabinetSource
 }
 
-func NewReader(clientset Clientset, cabinetSources ...CabinetSource) *Reader {
-	if clientset == nil {
-		panic("cabinet copy WB clientset is nil")
+func NewReader(content ContentClient, prices PricesClient, cabinets CabinetSource) *Reader {
+	if content == nil || prices == nil || cabinets == nil {
+		panic("cabinet copy dependencies are nil")
 	}
-	if len(cabinetSources) > 1 || (len(cabinetSources) == 1 && cabinetSources[0] == nil) {
-		panic("cabinet copy WB cabinet source is invalid")
-	}
-	reader := &Reader{clientset: clientset}
-	if len(cabinetSources) == 1 {
-		reader.cabinets = cabinetSources[0]
-	}
-	return reader
+	return &Reader{content: content, prices: prices, cabinets: cabinets}
 }
 
 func (reader *Reader) CabinetsForOwner(
 	ctx context.Context,
 	ownerTelegramID int64,
 ) ([]cabinetcopy_service.Cabinet, error) {
-	if reader.cabinets == nil {
-		return reader.Cabinets(), nil
-	}
 	targets, err := reader.cabinets.Targets(ctx, ownerTelegramID)
 	if err != nil {
 		return nil, fmt.Errorf("list owned WB cabinets: %w", err)
@@ -69,29 +61,11 @@ func (reader *Reader) CabinetsForOwner(
 	return result, nil
 }
 
-func (reader *Reader) Cabinets() []cabinetcopy_service.Cabinet {
-	cabinets := reader.clientset.Cabinets()
-	result := make([]cabinetcopy_service.Cabinet, len(cabinets))
-	for index := range cabinets {
-		result[index] = cabinetcopy_service.Cabinet{
-			ID:   cabinetcopy_service.CabinetID(cabinets[index].ID),
-			Name: cabinets[index].Name,
-		}
-	}
-	return result
-}
-
 func (reader *Reader) ListTags(
 	ctx context.Context,
 	cabinetID cabinetcopy_service.CabinetID,
 ) ([]cabinetcopy_service.Tag, error) {
-	executor, err := reader.contentExecutor(cabinetID)
-	if err != nil {
-		return nil, err
-	}
-	response, err := client.ExecuteResponse[contentapi.TagsResponse](
-		ctx, executor, contentapi.TagsOperation(), nil, nil,
-	)
+	response, err := reader.content.Tags(ctx, cabinetID)
 	if err != nil {
 		return nil, fmt.Errorf("get WB cabinet tags: %w", err)
 	}
@@ -163,71 +137,20 @@ func (reader *Reader) ReadCards(
 	return items, nil
 }
 
-func (reader *Reader) readContentCards(
-	ctx context.Context,
-	cabinetID cabinetcopy_service.CabinetID,
-	tagIDs []int64,
-	count int,
-) ([]contentapi.Card, error) {
-	executor, err := reader.contentExecutor(cabinetID)
-	if err != nil {
-		return nil, err
-	}
-	cursor := contentapi.CardsListCursor{}
+func (reader *Reader) readContentCards(ctx context.Context, cabinetID cabinetcopy_service.CabinetID, tagIDs []int64, count int) ([]contentapi.Card, error) {
 	result := make([]contentapi.Card, 0, count)
-	seen := make(map[int64]struct{}, count)
-	for len(result) < count {
-		limit := count - len(result)
-		if limit > contentapi.MaxCardsListPageSize {
-			limit = contentapi.MaxCardsListPageSize
-		}
-		cursor.Limit = limit
-		var filter *contentapi.CardsListFilter
-		if len(tagIDs) > 0 {
-			filter = &contentapi.CardsListFilter{TagIDs: append([]int64(nil), tagIDs...)}
-		}
-		response, executeErr := client.ExecuteResponse[contentapi.CardsListResponse](
-			ctx,
-			executor,
-			contentapi.CardsListOperation(),
-			contentapi.CardsListQuery{},
-			contentapi.CardsListRequest{Settings: contentapi.CardsListSettings{
-				Sort:   contentapi.CardsSort{Ascending: true},
-				Filter: filter,
-				Cursor: cursor,
-			}},
-		)
-		if executeErr != nil {
-			return nil, fmt.Errorf("list source WB cards: %w", executeErr)
-		}
-		for _, card := range response.Cards {
-			if card.NMID <= 0 {
-				return nil, errors.New("WB cards response contains invalid nmID")
-			}
-			if _, exists := seen[card.NMID]; exists {
-				continue
-			}
-			seen[card.NMID] = struct{}{}
-			result = append(result, card)
-			if len(result) == count {
-				break
-			}
-		}
-		if len(result) == count {
-			break
-		}
-		if len(response.Cards) < limit {
-			break
-		}
-		next := contentapi.CardsListCursor{
-			UpdatedAt: response.Cursor.UpdatedAt,
-			NMID:      response.Cursor.NMID,
-		}
-		if next.UpdatedAt == cursor.UpdatedAt && next.NMID == cursor.NMID {
-			return nil, errors.New("WB cards cursor did not advance")
-		}
-		cursor.UpdatedAt = next.UpdatedAt
-		cursor.NMID = next.NMID
+	request := contentapi.CardsListRequest{Settings: contentapi.CardsListSettings{
+		Sort: contentapi.CardsSort{Ascending: true}, Cursor: contentapi.CardsListCursor{Limit: min(count, contentapi.MaxCardsListPageSize)},
+	}}
+	if len(tagIDs) > 0 {
+		request.Settings.Filter = &contentapi.CardsListFilter{TagIDs: append([]int64(nil), tagIDs...)}
+	}
+	_, err := wb_catalog.WalkCards(ctx, reader.content, cabinetID, contentapi.CardsListQuery{}, request, count+1, func(card contentapi.Card) bool {
+		result = append(result, card)
+		return len(result) < count
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list source WB cards: %w", err)
 	}
 	return result, nil
 }
@@ -237,10 +160,6 @@ func (reader *Reader) readPrices(
 	cabinetID cabinetcopy_service.CabinetID,
 	cards []contentapi.Card,
 ) (map[int64]map[int64]int64, error) {
-	executor, err := reader.clientset.PricesExecutorForCabinet(wbconfig.CabinetID(cabinetID))
-	if err != nil {
-		return nil, fmt.Errorf("get WB Prices API executor: %w", err)
-	}
 	result := make(map[int64]map[int64]int64, len(cards))
 	for start := 0; start < len(cards); start += maxPriceBatchSize {
 		end := start + maxPriceBatchSize
@@ -251,11 +170,8 @@ func (reader *Reader) readPrices(
 		for index := start; index < end; index++ {
 			nmList[index-start] = cards[index].NMID
 		}
-		response, executeErr := client.ExecuteResponse[pricesapi.GoodsResponse](
-			ctx,
-			executor,
-			pricesapi.GoodsByNMOperation(),
-			nil,
+		response, executeErr := reader.prices.GoodsByNM(
+			ctx, cabinetID,
 			pricesapi.GoodsByNMRequest{NMList: nmList},
 		)
 		if executeErr != nil {
@@ -370,14 +286,6 @@ func mapCard(
 			Video:  strings.TrimSpace(card.Video),
 		},
 	}, nil
-}
-
-func (reader *Reader) contentExecutor(cabinetID cabinetcopy_service.CabinetID) (client.Executor, error) {
-	executor, err := reader.clientset.ExecutorForCabinet(wbconfig.CabinetID(cabinetID))
-	if err != nil {
-		return nil, fmt.Errorf("get WB Content API executor: %w", err)
-	}
-	return executor, nil
 }
 
 func firstNonEmpty(values ...string) string {

@@ -1,7 +1,7 @@
 CREATE TABLE wb.card_import_sessions (
     id                  BIGSERIAL PRIMARY KEY,
 
-    author_user_id      INTEGER
+    author_user_id      BIGINT
                         REFERENCES wb.users(id)
                         ON DELETE SET NULL,
 
@@ -290,7 +290,7 @@ CREATE INDEX card_batch_items_batch_vendor_code_idx
 
 CREATE TABLE wb.cabinet_copy_sessions (
     id                  BIGSERIAL PRIMARY KEY,
-    author_user_id      INTEGER REFERENCES wb.users(id) ON DELETE SET NULL,
+    author_user_id      BIGINT REFERENCES wb.users(id) ON DELETE SET NULL,
     author_telegram_id  BIGINT NOT NULL CHECK (author_telegram_id > 0),
     step                TEXT NOT NULL DEFAULT 'source'
                         CHECK (step IN (

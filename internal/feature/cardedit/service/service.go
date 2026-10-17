@@ -11,7 +11,7 @@ import (
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
-
+	wb_catalog "github.com/ERONIS/wb-service/internal/core/transport/wb/catalog"
 	"go.uber.org/zap"
 )
 
@@ -157,7 +157,7 @@ func (service *Service) Submit(job Job) error {
 		if target.Cabinet.ID == "" || target.Cabinet.Name == "" ||
 			target.Cabinet.BindingRevision <= 0 ||
 			target.Cabinet.CapabilityRevision <= 0 ||
-			target.Cabinet.ClientGeneration == (domain.ClientGeneration{}) || target.NMID <= 0 {
+			target.Cabinet.ClientGeneration.IsZero() || target.NMID <= 0 {
 			return fmt.Errorf("submit card edit: invalid target")
 		}
 		targetKey := string(target.Cabinet.ID) + ":" + strconv.FormatInt(target.NMID, 10)
@@ -245,53 +245,20 @@ func (service *Service) clearActive(key activeKey) {
 	service.mu.Unlock()
 }
 
-func (service *Service) findCards(
-	ctx context.Context,
-	cabinetID domain.CabinetID,
-	textSearch string,
-	nmID int64,
-) ([]contentapi.Card, error) {
-	cursor := contentapi.CardsListCursor{Limit: contentapi.MaxCardsListPageSize}
+func (service *Service) findCards(ctx context.Context, cabinetID domain.CabinetID, textSearch string, nmID int64) ([]contentapi.Card, error) {
 	result := make([]contentapi.Card, 0, 1)
-	seen := make(map[int64]struct{})
-	for page := 0; page < maxSearchPages; page++ {
-		response, err := service.gateway.CardsList(
-			ctx,
-			cabinetID,
-			contentapi.CardsListQuery{Locale: contentapi.LocaleRU},
-			contentapi.CardsListRequest{Settings: contentapi.CardsListSettings{
-				Sort:   contentapi.CardsSort{Ascending: true},
-				Filter: &contentapi.CardsListFilter{TextSearch: textSearch},
-				Cursor: cursor,
-			}},
-		)
-		if err != nil {
-			return nil, err
-		}
-		for _, card := range response.Cards {
-			if nmID > 0 && card.NMID != nmID {
-				continue
-			}
-			if _, exists := seen[card.NMID]; exists {
-				continue
-			}
-			seen[card.NMID] = struct{}{}
+	_, err := wb_catalog.WalkCards(ctx, service.gateway, cabinetID, contentapi.CardsListQuery{Locale: contentapi.LocaleRU}, contentapi.CardsListRequest{Settings: contentapi.CardsListSettings{
+		Sort: contentapi.CardsSort{Ascending: true}, Filter: &contentapi.CardsListFilter{TextSearch: textSearch},
+	}}, maxSearchPages, func(card contentapi.Card) bool {
+		if nmID <= 0 || card.NMID == nmID {
 			result = append(result, card)
 		}
-		if len(response.Cards) < contentapi.MaxCardsListPageSize {
-			return result, nil
-		}
-		next := contentapi.CardsListCursor{
-			UpdatedAt: response.Cursor.UpdatedAt,
-			NMID:      response.Cursor.NMID,
-			Limit:     contentapi.MaxCardsListPageSize,
-		}
-		if next.UpdatedAt == cursor.UpdatedAt && next.NMID == cursor.NMID {
-			return nil, errors.New("WB cards cursor did not advance")
-		}
-		cursor = next
+		return true
+	})
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("WB cards search exceeded %d pages", maxSearchPages)
+	return result, nil
 }
 
 func (service *Service) findCardByNMID(

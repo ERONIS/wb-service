@@ -27,18 +27,6 @@ var (
 	buttonCabinetTasks   = tele.Btn{Unique: "stats_cabinet_tasks"}
 )
 
-type CardVerificationInfo struct {
-	NMID      int64
-	IMTID     int64
-	SubjectID int64
-	Title     string
-	Brand     string
-}
-
-type CardVerifier interface {
-	FindCardByVendorCode(ctx context.Context, cabinetID string, vendorCode string) (*CardVerificationInfo, error)
-}
-
 type StatisticsService interface {
 	ListOperations(context.Context, statistics_service.OperationFilter) ([]statistics_service.OperationRow, error)
 	GetOperation(context.Context, int64) (statistics_service.OperationDetails, error)
@@ -50,8 +38,7 @@ type StatisticsService interface {
 	AggregateActions(context.Context, statistics_service.AggregateFilter) (statistics_service.ActionTotals, error)
 	AggregateErrors(context.Context, statistics_service.AggregateFilter) ([]statistics_service.ErrorGroup, error)
 	ListAttention(context.Context, statistics_service.AttentionFilter) ([]statistics_service.AttentionRow, error)
-	ResolveVerifiedCard(context.Context, int64, int64, int64, int64) error
-	RequeueCardForCreation(context.Context, int64) error
+	ResolveVerifiedCard(context.Context, statistics_service.AttentionRow, statistics_service.CardVerificationInfo) error
 }
 
 type ManualResolver interface {
@@ -73,7 +60,7 @@ type Handler struct {
 	manualResolver ManualResolver
 	batches        BatchReader
 	cabinetNames   map[string]string
-	cardVerifier   CardVerifier
+	cardVerifier   statistics_service.CardVerifier
 }
 
 func New(
@@ -83,7 +70,7 @@ func New(
 	manualResolver ManualResolver,
 	batches BatchReader,
 	cabinetNames map[string]string,
-	cardVerifier CardVerifier,
+	cardVerifier statistics_service.CardVerifier,
 ) *Handler {
 	if ctx == nil || bot == nil || statistics == nil || manualResolver == nil ||
 		batches == nil {

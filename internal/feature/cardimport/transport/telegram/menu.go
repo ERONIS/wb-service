@@ -104,7 +104,7 @@ func (h *Handler) continueImport(ctx tele.Context) error {
 }
 
 func (h *Handler) finalize(ctx tele.Context) error {
-	actor, err := core_transport_telegram.ActorFromContext(ctx)
+	user, err := core_transport_telegram.UserFromContext(ctx)
 	if err != nil {
 		return sendServiceError(ctx, err)
 	}
@@ -113,7 +113,7 @@ func (h *Handler) finalize(ctx tele.Context) error {
 		return core_transport_telegram.Notify(ctx, "cardimport.stale_finalize", "⚠️ Кнопка устарела. Откройте новый перенос заново.")
 	}
 
-	batch, err := h.service.Finalize(h.ctx, actor, command)
+	batch, err := h.service.Finalize(h.ctx, user, command)
 	if err != nil {
 		return sendServiceError(ctx, err)
 	}

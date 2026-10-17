@@ -329,8 +329,8 @@ func (check LiveAuthorizationCheck) validate() error {
 	if check.TransferID <= 0 || check.ActionID <= 0 || check.AuthorizationID <= 0 ||
 		check.ExpectedAuthorizationRevision < 0 || check.PlanDigest == (Digest{}) ||
 		check.TargetSetRoot == (Digest{}) || check.TargetID <= 0 ||
-		check.CabinetID == "" || check.SellerKey == (SellerKey{}) ||
-		check.ClientGeneration == (ClientGeneration{}) {
+		check.CabinetID.IsZero() || check.SellerKey.IsZero() ||
+		check.ClientGeneration.IsZero() {
 		return ErrLiveAuthorization
 	}
 	return nil

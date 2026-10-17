@@ -3,11 +3,11 @@
 Go service automating multi-cabinet Wildberries product operations: card import (Excel), cross-cabinet copying, attribute & characteristic validation, publication planning, rate-limited execution, media polling, error reconciliation, and a Telegram bot interface.
 
 ## Tech Stack & Runtime
-- **Language**: Go 1.26 (`go.mod`)
+- **Language**: Go 1.27.1 (`go.mod`)
 - **Database**: PostgreSQL 18 with `pgx/v5`, connection pooling via `puddle/v2`, schema in `wb` namespace
 - **Interface**: Telegram Bot API via `gopkg.in/telebot.v3`
 - **File Processing**: Excel parser/exporter via `github.com/xuri/excelize/v2`
-- **Logging**: Structured logging via `go.uber.org/zap`
+- **Logging**: Structured logging via `go.uber.org/zap` (guide & summary in `doc/logger.md`)
 - **Integrity**: Deterministic canonical SHA-256 hashing via `internal/core/canonicalhash`
 
 ## Entry Point & Wiring
@@ -18,6 +18,7 @@ Go service automating multi-cabinet Wildberries product operations: card import 
 Read specialized domain memories for details:
 - Architectural patterns, boundaries and invariants: `mem:architecture/overview`
 - Planned transfer architecture simplification and state consolidation: `mem:architecture/transfer_simplification_plan`
+- Planned PostgreSQL repository and schema refactoring: `mem:architecture/postgres_refactoring_plan`
 - Concrete code patterns and implementation mechanics: `mem:architecture/code_patterns`
 - Wildberries Core transport, rate limiting and clientset: `mem:core/wb_client`
 - Telegram bot engine, screen persistence and routing: `mem:core/telegram`

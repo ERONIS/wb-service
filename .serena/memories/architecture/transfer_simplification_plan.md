@@ -2,7 +2,15 @@
 
 ## Status & Scope
 - **Document Reference**: Complete engineering design and implementation specification in `doc/transfer-simplification-plan.md`.
-- **Status**: Proposed target architecture and migration roadmap (not yet applied to database or production code).
+- **Status**: Full implementation completed and verified in codebase. All 7 prioritized steps completed:
+  - Step 1 (Migrations & Clean DB Schema): Migrations 000001–000007 directly define target schema (34 tables). Migration 000008 permanently deleted. Three old preparation tables (`card_preparations`, `card_preparation_groups`, `card_preparation_items`) never created; `wb.card_preparation_artifacts` directly references `wb.transfer_group_targets(transfer_id, id)`.
+  - Step 2 (Diagnostics): Diagnostics (`preparation_item_position`, `preparation_field`, `preparation_started_at`, `preparation_finished_at`) stored in `wb.transfer_group_targets` and updated on completion/rejection.
+  - Step 3 (Atomic & Idempotent Persistence): `ApplyPreparationResult` executes within `uow.WithinTransaction` with `SELECT ... FOR UPDATE` row locks. Identical replays return `nil` (idempotent no-op); conflicting replays return `ErrPreparationResultConflict`.
+  - Step 4 (Fair Scheduling & Batch Looping): `ListPendingPreparationGroups` uses window query `ROW_NUMBER() OVER (PARTITION BY group_target.target_id ORDER BY group_target.id) AS cabinet_rank` and `fairPendingGroupOrder` to interleave cabinets. Advances past transient errors (>1000 groups) without busy loops.
+  - Step 5 (Progress-Linked Stage Wakes): `polling.go` checks `ProgressAwareProcessor`. Stage wakes only propagate downstream when batches achieve real forward progress (`progress == true`); empty or errored passes do not wake downstream stages.
+  - Step 6 (Architecture Consolidation): `transfer` is the single state owner. `cardprepare` is a stateless calculation and validation module without its own job queues.
+  - Step 7 (Verification & Metrics): Clean migration deployment to PostgreSQL container verified. Integration tests, race detector (`go test -race ./...`), concurrency tests (10 parallel workers on same batch), and recovery tests (>1000 groups with transient errors) all pass.
+  - Net Reduction Achieved: ~1 900 lines of Go code and SQL eliminated (exceeding the 1 200–2 000 target). Production binary builds cleanly.
 - **Core Directive**: `transfer` becomes the sole owner of the transfer process and state; `cardprepare` is converted from a separate persisted workflow into a stateless calculation/validation engine without its own database job queues.
 - **Safety Boundary**: Security perimeter (cabinet authorization, token leases, `TargetSetRoot`, WB rate limits, mutation retry prohibition, audit immutability triggers) remains strictly unchanged.
 

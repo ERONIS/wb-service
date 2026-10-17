@@ -52,8 +52,8 @@ func formatTaskSummary(summary taskSummary) string {
 		totalLine = fmt.Sprintf(
 			"Всего: <b>%d</b> · %s %d%%",
 			summary.Total,
-			formatProgressBar(summary.Terminal, summary.Total, 10),
-			calcPercent(summary.Terminal, summary.Total),
+			core_transport_telegram.FormatProgressBar(summary.Terminal, summary.Total, 10),
+			core_transport_telegram.CalcPercent(summary.Terminal, summary.Total),
 		)
 	}
 	return fmt.Sprintf(
@@ -69,33 +69,6 @@ func formatTaskSummary(summary taskSummary) string {
 		summary.Errors,
 		summary.Ready,
 	)
-}
-
-func calcPercent(done, total int64) int64 {
-	if total <= 0 {
-		return 0
-	}
-	if done < 0 {
-		done = 0
-	}
-	if done > total {
-		done = total
-	}
-	return (done*100 + total/2) / total
-}
-
-func formatProgressBar(done, total int64, width int) string {
-	if total <= 0 || width <= 0 {
-		return ""
-	}
-	if done < 0 {
-		done = 0
-	}
-	if done > total {
-		done = total
-	}
-	filled := int(done * int64(width) / total)
-	return "[" + strings.Repeat("#", filled) + strings.Repeat(".", width-filled) + "]"
 }
 
 func (handler *Handler) cabinetName(cabinetID string) string {
@@ -128,7 +101,7 @@ func (handler *Handler) cabinetButtonText(cabinet statistics_service.CabinetProg
 			strings.TrimSpace(handler.cabinetName(cabinet.CabinetID)),
 			40,
 		),
-		calcPercent(cabinet.Terminal, cabinet.Total),
+		core_transport_telegram.CalcPercent(cabinet.Terminal, cabinet.Total),
 	)
 }
 
@@ -207,29 +180,19 @@ func (handler *Handler) openCabinetTasks(ctx tele.Context) error {
 
 	markup := handler.bot.NewMarkup()
 	rows := make([]tele.Row, 0, 5)
-	if totalPages > 1 {
-		buttons := make([]tele.Btn, 0, 2)
-		if page > 1 {
-			buttons = append(buttons, markup.Data(
-				"⬅️ Назад",
-				buttonCabinetTasks.Unique,
-				callbackInt(transferID),
-				callbackInt(targetID),
-				callbackInt(page-1),
-			))
-		}
-		if page < totalPages {
-			buttons = append(buttons, markup.Data(
-				"Вперёд ➡️",
-				buttonCabinetTasks.Unique,
-				callbackInt(transferID),
-				callbackInt(targetID),
-				callbackInt(page+1),
-			))
-		}
-		if len(buttons) > 0 {
-			rows = append(rows, markup.Row(buttons...))
-		}
+	if navRow, ok := core_transport_telegram.BuildPaginationRow(markup, core_transport_telegram.PaginationConfig{
+		Page:           int(page),
+		TotalPages:     int(totalPages),
+		CallbackUnique: buttonCabinetTasks.Unique,
+		ArgPrefix: []string{
+			callbackInt(transferID),
+			callbackInt(targetID),
+		},
+		PageEncoder: func(p int) string {
+			return callbackInt(int64(p))
+		},
+	}); ok {
+		rows = append(rows, navRow)
 	}
 	rows = append(rows, markup.Row(markup.Data(
 		fmt.Sprintf("⬅️ Сеанс №%d", operation.SessionID),
@@ -254,38 +217,40 @@ func findCabinetProgress(
 	return statistics_service.CabinetProgressRow{}, false
 }
 
+var terminalOutcomeLabels = map[string]string{
+	"success":        "✅ Готово",
+	"skipped":        "⏭️ Пропущено",
+	"rejected":       "❌ Не отправлено",
+	"partial":        "⚠️ Завершено частично",
+	"unresolved":     "⚠️ Нужна проверка",
+	"internal_error": "❌ Ошибка обработки",
+}
+
+var phaseLabels = map[string]string{
+	"preparing":              "🔎 Проверяется",
+	"awaiting_authorization": "🕐 Готовится к отправке",
+	"publishing":             "🛠️ Создаётся карточка",
+	"reconciling":            "🕐 Проверяется в WB",
+	"media":                  "📸 Загружается фото",
+}
+
 func cabinetTaskPages(total int64) int64 {
-	if total <= 0 {
-		return 1
-	}
-	return (total + statistics_service.CabinetPageSize - 1) /
-		statistics_service.CabinetPageSize
+	return core_transport_telegram.CalculateTotalPages(total, int64(statistics_service.CabinetPageSize))
 }
 
 func cabinetTaskStatus(task statistics_service.CabinetTaskRow, phase string) string {
-	if task.MediaActionState == "terminal" &&
-		(task.OutcomeClass == "success" || task.OutcomeClass == "skipped") {
-		switch task.OverallOutcome {
-		case "unresolved", "internal_error", "partial":
+	if task.MediaActionState == "terminal" && (task.OutcomeClass == "success" || task.OutcomeClass == "skipped") {
+		if task.OverallOutcome == "unresolved" || task.OverallOutcome == "internal_error" || task.OverallOutcome == "partial" {
 			return mediaFailureStatus(task.MediaOutcomeCode)
 		}
 	}
 	if task.OverallOutcome != "" && task.OverallOutcome != "running" {
-		switch task.OverallOutcome {
-		case "rejected":
-			return "❌ Не отправлено"
-		case "partial":
-			return "⚠️ Завершено частично"
-		case "unresolved":
-			return "⚠️ Нужна проверка"
-		case "internal_error":
-			return "❌ Ошибка обработки"
+		if label, ok := terminalOutcomeLabels[task.OverallOutcome]; ok {
+			return label
 		}
 		return terminalItemStatus(task)
 	}
-	if task.State == "terminal" &&
-		(task.OutcomeClass == "rejected" || task.OutcomeClass == "partial" ||
-			task.OutcomeClass == "unresolved" || task.OutcomeClass == "internal_error") {
+	if task.State == "terminal" {
 		return terminalItemStatus(task)
 	}
 	switch task.MediaStatus {
@@ -310,33 +275,17 @@ func cabinetTaskStatus(task statistics_service.CabinetTaskRow, phase string) str
 			return "🟡 Отправка в очереди"
 		}
 	}
-	switch task.PreparationStatus {
-	case "running":
+	if task.PreparationStatus == "running" {
 		return "🔎 Проверяется"
-	case "not_started":
+	}
+	if task.PreparationStatus == "not_started" || task.State == "pending" {
 		return "🟡 В очереди"
 	}
-
-	switch task.State {
-	case "pending":
-		return "🟡 В очереди"
-	case "running":
-		switch phase {
-		case "preparing":
-			return "🔎 Проверяется"
-		case "awaiting_authorization":
-			return "🕐 Готовится к отправке"
-		case "publishing":
-			return "🛠️ Создаётся карточка"
-		case "reconciling":
-			return "🕐 Проверяется в WB"
-		case "media":
-			return "📸 Загружается фото"
-		default:
-			return "🔵 В работе"
+	if task.State == "running" {
+		if label, ok := phaseLabels[phase]; ok {
+			return label
 		}
-	case "terminal":
-		return terminalItemStatus(task)
+		return "🔵 В работе"
 	}
 	return "❔ Статус неизвестен"
 }
@@ -357,25 +306,13 @@ func mediaFailureStatus(code string) string {
 }
 
 func terminalItemStatus(task statistics_service.CabinetTaskRow) string {
-	switch task.OutcomeClass {
-	case "success":
-		if task.NMID > 0 {
-			return fmt.Sprintf("✅ Готово · nmID %d", task.NMID)
-		}
-		return "✅ Готово"
-	case "skipped":
-		return "⏭️ Пропущено"
-	case "rejected":
-		return "❌ Не отправлено"
-	case "partial":
-		return "⚠️ Завершено частично"
-	case "unresolved":
-		return "⚠️ Нужна проверка"
-	case "internal_error":
-		return "❌ Ошибка обработки"
-	default:
-		return "❔ Статус неизвестен"
+	if task.OutcomeClass == "success" && task.NMID > 0 {
+		return fmt.Sprintf("✅ Готово · nmID %d", task.NMID)
 	}
+	if label, ok := terminalOutcomeLabels[task.OutcomeClass]; ok {
+		return label
+	}
+	return "❔ Статус неизвестен"
 }
 
 func escapeLimited(value string, limit int) string {
@@ -383,14 +320,5 @@ func escapeLimited(value string, limit int) string {
 	if value == "" {
 		return "—"
 	}
-	var result strings.Builder
-	for _, symbol := range value {
-		escaped := html.EscapeString(string(symbol))
-		if result.Len()+len(escaped) > limit {
-			result.WriteString("…")
-			break
-		}
-		result.WriteString(escaped)
-	}
-	return result.String()
+	return html.EscapeString(core_transport_telegram.TruncateRunes(value, limit))
 }

@@ -40,35 +40,14 @@ func (h *UsersTgHandler) ListUsers(
 }
 
 func parseUsersPage(ctx tele.Context) (int, error) {
-	return parsePageArguments(ctx.Args())
-}
-
-func parsePageArguments(arguments []string) (int, error) {
-	if len(arguments) == 0 {
+	args := ctx.Args()
+	if len(args) == 0 {
 		return 1, nil
 	}
-	if len(arguments) != 1 {
-		return 0, fmt.Errorf(
-			"unexpected arguments count: %d",
-			len(arguments),
-		)
+	if len(args) != 1 {
+		return 0, fmt.Errorf("unexpected arguments count: %d", len(args))
 	}
-
-	return parsePageNumber(arguments[0])
-}
-
-func parsePageNumber(value string) (int, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return 1, nil
-	}
-
-	page, err := strconv.Atoi(value)
-	if err != nil || page < 1 {
-		return 0, fmt.Errorf("invalid page %q", value)
-	}
-
-	return page, nil
+	return core_transport_telegram.ParsePageNumber(args[0])
 }
 
 func usersPageText(result users_service.UsersPage) string {
@@ -110,7 +89,6 @@ func usersPageMarkup(
 ) *tele.ReplyMarkup {
 	markup := &tele.ReplyMarkup{}
 	rows := make([]tele.Row, 0, len(result.Users)+3)
-	navigation := make([]tele.Btn, 0, 2)
 
 	rows = append(
 		rows,
@@ -141,33 +119,17 @@ func usersPageMarkup(
 		)
 	}
 
-	if result.Page > 1 {
-		navigation = append(
-			navigation,
-			markup.Data(
-				"⬅️ Назад",
-				buttonListUsers.Unique,
-				strconv.Itoa(result.Page-1),
-			),
-		)
-	}
-
+	totalPages := result.Page
 	if result.HasNext {
-		navigation = append(
-			navigation,
-			markup.Data(
-				"Далее ➡️",
-				buttonListUsers.Unique,
-				strconv.Itoa(result.Page+1),
-			),
-		)
+		totalPages = result.Page + 1
 	}
-
-	if len(navigation) > 0 {
-		rows = append(
-			rows,
-			markup.Row(navigation...),
-		)
+	if navRow, ok := core_transport_telegram.BuildPaginationRow(markup, core_transport_telegram.PaginationConfig{
+		Page:           result.Page,
+		TotalPages:     totalPages,
+		CallbackUnique: buttonListUsers.Unique,
+		NextText:       "Далее ➡️",
+	}); ok {
+		rows = append(rows, navRow)
 	}
 
 	rows = append(rows, mainMenuRow(markup))

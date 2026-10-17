@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	config "github.com/ERONIS/wb-service/internal/core/transport/wb/config"
+	"github.com/ERONIS/wb-service/internal/core/domain"
 	flowcontrol "github.com/ERONIS/wb-service/internal/core/transport/wb/flowcontrol"
 	policy "github.com/ERONIS/wb-service/internal/core/transport/wb/policy"
 	"go.uber.org/zap"
@@ -29,7 +29,7 @@ type Executor interface {
 
 // APIClient содержит общие зависимости для выполнения WB-запросов.
 type APIClient struct {
-	cabinetID       config.CabinetID
+	cabinetID       domain.CabinetID
 	cabinetName     string
 	baseURL         *url.URL
 	httpClient      *http.Client
@@ -41,7 +41,7 @@ type APIClient struct {
 
 // NewAPIClient создаёт внутренний клиент WB API.
 func NewAPIClient(
-	cabinetID config.CabinetID,
+	cabinetID domain.CabinetID,
 	cabinetName string,
 	baseURL *url.URL,
 	httpClient *http.Client,
@@ -86,7 +86,7 @@ func NewAPIClient(
 }
 
 func validateAPIClientDependencies(
-	cabinetID config.CabinetID,
+	cabinetID domain.CabinetID,
 	cabinetName string,
 	baseURL *url.URL,
 	httpClient *http.Client,

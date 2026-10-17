@@ -91,8 +91,8 @@ func (action ProductAction) Validate() error {
 		action.TargetSetRoot == (Digest{}) || action.PlanID <= 0 ||
 		action.Revision < 0 || action.RequestDigest == (Digest{}) ||
 		action.MemberSetDigest == (Digest{}) || len(action.RequestPayload) == 0 ||
-		action.SellerKey == (domain.SellerKey{}) ||
-		action.ClientGeneration == (domain.ClientGeneration{}) ||
+		action.SellerKey.IsZero() ||
+		action.ClientGeneration.IsZero() ||
 		action.CredentialExpiresAt.IsZero() || action.PreflightObservationID <= 0 ||
 		len(action.Members) == 0 {
 		return errors.New("publication product action is invalid")

@@ -3,7 +3,6 @@ package cardedit_telegram_transport
 import (
 	"context"
 	"io"
-	"sync"
 	"time"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
@@ -51,9 +50,7 @@ type Handler struct {
 	parser  Parser
 	flowTTL time.Duration
 	menu    *core_transport_telegram.Handler
-
-	mu       sync.Mutex
-	sessions map[int64]session
+	pending *core_transport_telegram.StateStore[session]
 }
 
 type step uint8
@@ -66,7 +63,6 @@ const (
 
 type session struct {
 	step       step
-	expiresAt  time.Time
 	vendorCode string
 	targets    []cardedit_service.Target
 }
@@ -82,12 +78,12 @@ func New(
 		panic("cardedit Telegram dependency is invalid")
 	}
 	return &Handler{
-		ctx:      ctx,
-		bot:      bot,
-		service:  service,
-		parser:   parser,
-		flowTTL:  flowTTL,
-		sessions: make(map[int64]session),
+		ctx:     ctx,
+		bot:     bot,
+		service: service,
+		parser:  parser,
+		flowTTL: flowTTL,
+		pending: core_transport_telegram.NewStateStore[session](),
 	}
 }
 
@@ -111,23 +107,6 @@ func (handler *Handler) Register(menu *core_transport_telegram.Handler) {
 
 func MenuButton() tele.Btn { return buttonEdit }
 
-func (handler *Handler) setSession(telegramID int64, value session) {
-	handler.mu.Lock()
-	handler.sessions[telegramID] = value
-	handler.mu.Unlock()
-}
-
-func (handler *Handler) getSession(telegramID int64) (session, bool) {
-	handler.mu.Lock()
-	defer handler.mu.Unlock()
-	value, found := handler.sessions[telegramID]
-	if found && time.Now().After(value.expiresAt) {
-		delete(handler.sessions, telegramID)
-		return session{}, false
-	}
-	return value, found
-}
-
 func (handler *Handler) clearSession(telegramID int64) {
 	handler.discardSession(telegramID)
 	if handler.menu != nil {
@@ -136,7 +115,5 @@ func (handler *Handler) clearSession(telegramID int64) {
 }
 
 func (handler *Handler) discardSession(telegramID int64) {
-	handler.mu.Lock()
-	delete(handler.sessions, telegramID)
-	handler.mu.Unlock()
+	handler.pending.Cancel(telegramID)
 }

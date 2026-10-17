@@ -3,13 +3,14 @@ package cabinetcopy_service
 import (
 	"context"
 
+	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 )
 
 type Reader interface {
-	Cabinets() []Cabinet
+	CabinetsForOwner(context.Context, int64) ([]Cabinet, error)
 	ListTags(context.Context, CabinetID) ([]Tag, error)
 	ReadCards(
 		context.Context,
@@ -17,10 +18,6 @@ type Reader interface {
 		[]int64,
 		int,
 	) ([]PreparedItem, error)
-}
-
-type OwnerCabinetReader interface {
-	CabinetsForOwner(context.Context, int64) ([]Cabinet, error)
 }
 
 type Repository interface {
@@ -55,7 +52,7 @@ type Repository interface {
 type BatchWriter interface {
 	CreateExternalBatch(
 		context.Context,
-		cardimport_service.TrustedActor,
+		domain.User,
 		cardimport_service.CreateExternalBatchCommand,
 	) (cardimport_service.BatchHeader, error)
 	GetBatch(

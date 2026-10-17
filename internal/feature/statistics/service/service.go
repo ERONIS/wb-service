@@ -3,17 +3,21 @@ package statistics_service
 import (
 	"context"
 	"errors"
+
+	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
+	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 )
 
 type Service struct {
-	reader Reader
+	reader   Reader
+	resolver VerifiedCardResolver
 }
 
-func New(reader Reader) *Service {
-	if reader == nil {
-		panic("statistics reader is nil")
+func New(reader Reader, resolver VerifiedCardResolver) *Service {
+	if reader == nil || resolver == nil {
+		panic("statistics dependency is nil")
 	}
-	return &Service{reader: reader}
+	return &Service{reader: reader, resolver: resolver}
 }
 
 func (service *Service) ListOperations(
@@ -143,31 +147,28 @@ func (service *Service) ListAttention(
 
 func (service *Service) ResolveVerifiedCard(
 	ctx context.Context,
-	itemTargetID int64,
-	nmID int64,
-	imtID int64,
-	subjectID int64,
+	item AttentionRow,
+	info CardVerificationInfo,
 ) error {
 	if ctx == nil {
 		return errors.New("statistics context is nil")
 	}
-	if itemTargetID <= 0 || nmID <= 0 {
+	if item.ItemTargetID <= 0 || info.NMID <= 0 || info.NMID != info.Card.NMID {
 		return errors.New("invalid arguments for resolve verified card")
 	}
-	return service.reader.ResolveVerifiedCard(ctx, itemTargetID, nmID, imtID, subjectID)
-}
-
-func (service *Service) RequeueCardForCreation(
-	ctx context.Context,
-	itemTargetID int64,
-) error {
-	if ctx == nil {
-		return errors.New("statistics context is nil")
-	}
-	if itemTargetID <= 0 {
-		return errors.New("invalid arguments for requeue card for creation")
-	}
-	return service.reader.RequeueCardForCreation(ctx, itemTargetID)
+	return service.resolver.Resolve(ctx, cardpublication_service.VerifiedCardCommand{
+		TransferID:             transfer_service.TransferID(item.TransferID),
+		ActionID:               item.ActionID,
+		ActionMemberID:         item.ActionMemberID,
+		ExpectedActionRevision: item.ActionRevision,
+		TransferItemTargetID:   item.ItemTargetID,
+		AttemptID:              item.AttemptID,
+		CabinetID:              item.CabinetID,
+		VendorCode:             item.VendorCode,
+	}, cardpublication_service.VerifiedCardEvidence{
+		Card:       info.Card,
+		ObservedAt: info.ObservedAt,
+	})
 }
 
 func normalizeAggregate(

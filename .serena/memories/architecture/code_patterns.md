@@ -19,13 +19,13 @@
 ## 3. WB Client Flow Control & Safety Policy (`internal/core/transport/wb`)
 - **Token Bucket Rate Limiter (`flowcontrol/limiter.go`)**:
   - Powered by `golang.org/x/time/rate.Limiter`.
-  - Rate limits partitioned per cabinet and API bucket (Content, General, Prices).
-  - Dynamic adaptation: observes `X-Ratelimit-*` headers on responses and updates rate/burst or sets `blockedUntil`.
+  - Rate limits partitioned per cabinet and API bucket (Content, Prices).
+  - Response adaptation: observes `X-Ratelimit-*` headers, clamps available tokens to the reported remaining count, and sets `blockedUntil` on HTTP 429 (using `Retry-After` when present). Configured interval and burst remain fixed.
   - Bounded queue: uses `waiters chan struct{}` to reject callers with `ErrLimiterQueueFull` when backlog overflows.
 - **Strict Safe-Retry Policy (`policy/retry.go`)**:
   - Two modes: `RetryModeNever` and `RetryModeReadSafe`.
-  - Only idempotent `GET` reads allow automated retries with exponential backoff.
-  - Mutations (`POST`, `PUT`, `DELETE`) strictly use `RetryModeNever`. If network drops or timeouts occur, operation fails immediately without retry to prevent double creation.
+  - Core retries require read semantics (`OperationKindRead`) and `RetryModeReadSafe`; this includes POST catalog reads.
+  - Mutation operations use `RetryModeNever` inside the core executor. Publication sends link/file mutations once per business attempt; its local retry helper is restricted to downloading external media. Unknown delivery is handled by business reconciliation.
 - **Crash Recovery & Reconciliation**:
   - `ProductDispatcher.ProcessPending` begins by calling `ListInterruptedProductActions` to re-verify actions left in-flight during a service crash before picking up new work.
 
@@ -34,16 +34,22 @@
   - Backed by table `wb.telegram_active_screens`.
   - Stores `(user_id, last_message_id, screen_name)`.
   - Avoids orphaned inline keyboards; edits existing message instead of sending new spam.
-- **Throttling**:
+  - Enforces Single Active Screen invariant through `menuHost.renderChat` across all modules.
+- **Throttling & Size Control**:
   - `menuUpdateInterval = 1500ms`: prevents Telegram HTTP 429 rate limit errors.
   - `menuTextUnitLimit = 4096`: enforces Telegram message size constraints with automatic truncation marker.
+  - Compact Base-36 ID encoding (`EncodeID`, `ParseID`, `ParseBase36Argument`) prevents reaching Telegram's 64-byte `callback_data` limit.
+- **Reusable UI Components**:
+  - `BuildPaginationRow` and `CalculateTotalPages` for standardized inline pagination.
+  - `FormatProgressBar` and `CalcPercent` for deterministic progress rendering.
+  - `FormatDateTime` / `FormatDateTimeUTC` for localized timestamp presentation.
 
 ## 5. Dynamic Cabinet Hot-Reload (`internal/feature/wbcabinet`)
 - **Candidate Pattern (`CredentialCandidate`)**:
   - Unverified tokens are encapsulated in `CredentialCandidate` and cannot be used by feature modules.
-  - Once verified via JWT claims + Content `/ping` + General `/seller-info`, `wbcabinet` calls `runtime.Upsert(candidate)`.
+  - Core credentials parsing is followed by wbcabinet Content `/ping` verification, persistence and `ActivateCandidate`. General API support was removed as unused. Restoration only retries pending generations and does not reverify working clients on every tick.
   - Dynamically updates active `Clientset` in-memory without service restart.
-- **Encryption**: Tokens are encrypted using AES-GCM before writing to `wb.api_cabinets`.
+- **Token storage boundary**: Current wbcabinet repository passes the raw verified token directly to the `wb.api_cabinets.token` TEXT column and reads it back on restoration; application-level AES-GCM encryption is not implemented. Do not assume encryption from earlier architecture notes.
 
 ## 6. Polling Worker Loop (`internal/feature/transfer/server/polling.go`)
 - **Concurrency & Scheduling**:
@@ -68,9 +74,121 @@
 - **Telegram Error Presentation Integration**:
   - `internal/core/transport/telegram.NotifyServiceError(ctx, err, extraCases...)` auto-matches core errors to Russian localized user notifications, collapsing repetitive switch-case error blocks across features into single-line handlers.
 
+## 9. Preparation Pipeline & State Ownership
+- **Transfer Sole State Ownership**: `transfer` owns all state transitions and queue management. `cardprepare` is a calculation/validation engine with no separate database jobs.
+- **Single UoW Transaction**: Proposal artifacts (`card_preparation_artifacts`) and group-target progress (`transfer_group_targets`) are updated atomically in one `uow.WithinTransaction` commit via `ApplyTx`.
+- **Row Locking & Strict Idempotency**: `ApplyTx` locks target rows using `SELECT ... FOR UPDATE`. Replays with identical parameters/diagnostics return `nil` (idempotent no-op). Conflicting replays reject with `ErrPreparationResultConflict`.
+- **Progress-Aware Chained Wake Signaling**: Polling engine supports `ProgressAwareProcessor`. Successful progression triggers `wakeDownstream` through dedicated stage channels (`stageWakes`). Passes with 0 successes or only errors do not wake downstream stages, preventing wake storms.
+- **Fair Scheduling & Starvation Avoidance**: Pending groups query uses window partition ranking (`ROW_NUMBER() OVER (PARTITION BY group_target.target_id ORDER BY group_target.id) AS cabinet_rank`). Combined with `fairPendingGroupOrder`, batches interleave across all cabinets, enabling processors to advance past temporary cabinet failures without busy loops.
+- **Elimination of Legacy Identifiers**: `PreparationID` and `PreparationGroupID` are completely eliminated across `cardprepare`, `transfer`, and `cardpublication`. `ProposalQuery` and `StoredProposal` link directly by `GroupTargetID` and `TransferID`.
+- **Centralized Outcome Aggregation**: `internal/feature/transfer/repository/postgres/outcome.go` centralizes SQL aggregation expressions (`groupOutcomeCountsCTE`, `groupToTransferOutcomeExpression`) and outcome transition functions (`advanceTransferAfterPreparation`, `finishPublicationTransfer`, `reduceTransferAfterPlanning`).
+
+## 10. Unified User Identity (Elimination of `Actor`)
+- **Single Source of Truth**: `internal/core/domain/actor.go` is deleted. The domain model `domain.User` (`internal/core/domain/user.go`) serves as the sole identity across the pipeline, ingestion, and transport layers.
+- **Minimal Codebase / Zero Bloat**: No redundant aliases (`TrustedActor`, `TrustedUser`) and no redundant helper methods on `domain.User`. `user.FullName` is used directly.
+- **Entity Lifecycle Factories**: `domain.CreateUser` serves as the in-memory factory (initializing default `RoleUser` with zero ID/timestamps prior to persistence), shared by `core_transport_telegram.UserFromContext` and `users_service.AddUser`. `domain.NewUser` reconstructs fully populated entities from storage rows.
+- **Telegram Context Extraction**: `core_transport_telegram.UserFromContext(ctx tele.Context)` extracts `domain.User` using `domain.CreateUser(telegramID, name)` with a fallback to `fmt.Sprintf("Telegram %d", telegramID)` (max 100 runes), ensuring `user.Validate()` invariants pass without bloated abstractions.
+- **Batch Author Ingestion**: `cardimport` and `cabinetcopy` bind batch lifecycle directly to `domain.User` (`AuthorSnapshot` populated with `user.TelegramID`, `user.FullName`, and optional `user.ID`).
+
+## 11. Canonical WB Identity Primitives (`internal/core/domain/wb_identity.go`)
+- **Minimal Primitives (Zero Bloat)**:
+  - `domain.CabinetID`: direct `string` type with `IsZero()` and a shared `Validate()` accepting nonempty, trimmed IDs up to 128 bytes (legacy non-UUID values remain supported). `domain.CabinetAccess` is the shared token-free access snapshot used by cabinet management and transfer registry; transfer-specific position, cohort and digest remain in transfer. Redundant intermediate alias `config.CabinetID` removed; feature packages import `domain.CabinetID` directly.
+  - `domain.SellerKey`: `[32]byte` canonical hash with `domain.NewSellerKey(sellerID)`, `IsZero()`, and `String()` (hex). Identity hashing stays stable; parsing/validation belongs at the input boundary.
+  - `domain.ClientGeneration`: `[32]byte` canonical token fingerprint with `domain.NewClientGeneration(token)`, `IsZero()`, and `String()` (hex).
+- **Elimination of Redundant Wrappers & Packages**:
+  - `internal/core/transport/wb/credentials.go` deleted entirely.
+  - Redundant wrappers `sellerKey` and `credentialGeneration` in `wbcabinet/service/token.go` deleted; services call domain constructors directly.
+- **Idiomatic Zero Checks**:
+  - Repetitive raw struct comparisons `k == (domain.SellerKey{})` and `g == (domain.ClientGeneration{})` across `transfer`, `cardpublication`, `cardedit`, and `wbcabinet` are replaced by idiomatic `.IsZero()`.
+
+## 12. PostgreSQL Infrastructure & Observability (`internal/core/repository/postgres`)
+- **Connection Pool Tuning (`pool/config.go` & `pool/pool.go`)**:
+  - `Config` supports production pool controls via env: `POSTGRES_SSLMODE` (disable, require, verify-ca, verify-full), `POSTGRES_MAX_CONNS` (default 25), `POSTGRES_MIN_CONNS` (default 4), `POSTGRES_MAX_CONN_LIFETIME` (default 1h), `POSTGRES_MAX_CONN_IDLE_TIME` (default 30m), `POSTGRES_HEALTHCHECK_PERIOD` (default 1m).
+  - Validated via `Config.Validate()` with self-healing defaults for zero values in test literals.
+  - Safe DSN construction via `net/url.URL` and `net.JoinHostPort` preventing URI injection or parsing failures with special password characters (`@`, `:`, `#`, `%`).
+- **Query & CopyFrom Tracing (`pool/tracer.go`)**:
+  - Implements `pgx.QueryTracer` and `pgx.CopyFromTracer`.
+  - Non-intrusive structured logging into `go.uber.org/zap`: tracks operation signature (first 2 SQL tokens or target table name), execution duration, rows affected/copied, and SQLSTATE codes on error.
+  - Warnings for slow queries exceeding `slowQueryThreshold = 500ms`.
+  - Query arguments are not explicitly logged, but the current tracer still logs raw errors and derives operation names from the first two SQL tokens. This does not guarantee redaction: PostgreSQL error messages or SQL literals can contain data. Safe tracing requires stable operation identifiers and allowlisted error metadata.
+- **Technical Error Classification (`internal/core/repository/postgres/pgerr`)**:
+  - Centralized predicates without changing domain semantics: `IsUniqueViolation` (23505), `IsForeignKeyViolation` (23503), `IsCheckViolation` (23514), `IsSerializationFailure` (40001), `IsDeadlock` (40P01), `IsObjectNotInPrerequisiteState` (55000).
+  - Helper `ConstraintName(err)` for feature-level semantic translation.
+  - Preserves error chain via `errors.As(err, &pgErr)` and `Unwrap`.
+- **Clean Transfer Repository Wiring**:
+  - Dead dependency `uow core_postgres_transaction.UnitOfWork` eliminated from `transfer_postgres_repository.Repository` and constructor `New(pool)`. UoW remains solely at the service/applier level.
+
+## 13. Telegram Transport Boilerplate Reduction Patterns (`internal/*/transport/telegram`)
+- **Table-Driven Status Mappings (`statistics/transport/telegram/cabinet.go`)**:
+  - Replaced 120-line cascading if/switch blocks (`cabinetTaskStatus`, `terminalItemStatus`) with declarative lookup tables (`terminalOutcomeLabels`, `phaseLabels`), cutting 90 lines of repetitive branching.
+- **Consolidated Role & Action Mutators (`users/transport/telegram/user_actions.go`)**:
+  - Deduplicated `setAdmin`, `setPartner`, `revokePartner` via higher-order function `mutateUserRole(ctx, targetID, page, prefix, action)`.
+  - Merged standalone `delete_user.go` into `user_actions.go` and deleted the redundant file.
+- **Session Argument & Footer Controls Extraction (`cabinetcopy/transport/telegram/menu.go`)**:
+  - Unified repetitive step handlers (`selectSource`, `selectTarget`) via `selectCabinet(ctx, apply)`.
+  - Unified session button footers (`appendSessionControls`) and argument parsing (`parseSessionArgs`).
+- **Dead Code Cleanup (`cardimport/transport/telegram/helpers.go`)**:
+  - Eliminated unused `recoverableFilesCount`.
+
+## 14. Repository Modular Decomposition (Phase 2)
+- **cardpublication (`internal/feature/cardpublication/repository/postgres`)**:
+  - Monolithic `product.go` (2 187 lines) decomposed into 7 focused files within package `cardpublication_postgres_repository`:
+    - `product_dispatch.go`: `ListDispatchableProductActions`, `ListInterruptedProductActions`, candidate scanners.
+    - `product_lock.go`: `LockProductAction`, `lockProductIdentities`.
+    - `product_observation.go`: `InsertActionObservation`, byte helpers (`equalBytes`, `nullablePositive`).
+    - `product_plan_control.go`: `PlanAttemptCount`, `SupersedePlanBeforeDispatch`, `AbortPlanAfterDispatch`, `PublicationPlanTerminal`, `reducePublicationPlan`.
+    - `product_attempt.go`: `BeginProductAttempt`, `RecordSubmission`.
+    - `product_retry.go`: `BeginProductRetry`, `RecordProductRetry`.
+    - `product_reconciliation.go`: `ListReconcilingProductActions`, `LoadErrorBatchMatches`, `RecordProductReconciliationPoll`, `FinishProductReconciliation`, `recordProductReconciliationMembers`, `finishPotentialMediaActions`, `PendingMediaGroupTargetIDs`.
+  - Monolithic `media.go` (1 038 lines) decomposed into 4 focused files within package `cardpublication_postgres_repository`:
+    - `media_dispatch.go`: `ListDispatchableMediaActions`, `ListInterruptedMediaActions`, `ListPendingMediaActions`.
+    - `media_lock.go`: `LockMediaAction`.
+    - `media_attempt.go`: `BeginMediaAttempt`, `FinishMediaWithoutAttempt`.
+    - `media_result.go`: `RecordMediaResult`, `recordMediaAttemptResult`, `finishMediaAction`, `loadMediaGroupResult`.
+- **cardimport (`internal/feature/cardimport/repository/postgres`)**:
+  - `batch.go` (874 lines) decomposed:
+    - `batch_external.go`: `CreateExternalBatch`, `loadBatchBySource`.
+    - `batch_finalize.go`: `Finalize`, `lockFinalizeSession`, `validateFinalizeReadiness`, `loadFrozenItems`, `batchItemDomains`, `copyFrozenItems`.
+    - `batch.go`: queries and headers (`GetBatch`, `ListFinalizedBatches`, `loadBatch`, `scanBatchHeader`, `ListBatchItems`).
+- **transfer (`internal/feature/transfer/repository/postgres`)**:
+  - `live_authorization.go` decomposed:
+    - `live_authorization_verify.go`: `LockValidLive`, `targetOwnerMayMutate`.
+    - `live_authorization.go`: state transitions and commands (`RequestLive`, `ApproveLive`, `RevokeLive`, `ChangeLiveState`, etc.).
+- **Zero Breaking Changes**: Public signatures, SQL queries, lock order (`FOR UPDATE`), outcome aggregations, and transaction boundaries completely preserved.
+
+## 15. Private Row DTO Mapping Pattern (Phase 3 Pilot)
+- **Private `rowDTO` vs Public Domain Models**:
+  - Domain models (e.g. `domain.User`) never receive SQL/database tags (`db:"..."`) or nullable database types.
+  - Repositories define private struct `userRowDTO` with explicit `db` tags mapping exact query column aliases (`id`, `tg_id`, `tg_nickname`, `full_name`, `role`, `created_at`, `updated_at`).
+  - DTO conversion uses `domain.NewUser`; the existing benchmark measures only `dtoToDomain`, not pgx scanning, CollectRows or slice conversion. Do not infer zero allocations for repository reads from that benchmark.
+- **Idiomatic pgx v5 Row Collection**:
+  - Multi-row queries use `pgx.CollectRows(rows, pgx.RowToStructByName[userRowDTO])`, eliminating manual `rows.Next()` / `rows.Scan()` / `rows.Close()` boilerplate while guaranteeing proper cursor cleanup.
+  - Scalar and single-row queries retain direct `QueryRow().Scan` on the private DTO to avoid multi-row query lifecycle overhead.
+- **Integrated Error Classification**:
+  - Repositories utilize `pgerr.IsUniqueViolation(err)` rather than local duplicate SQLSTATE `"23505"` constants or manual `*pgconn.PgError` type assertions.
+
+## 16. Verified WB Attention Resolution
+- `statistics/service.Reader` is read-only. Positive WB evidence is passed as full `contentapi.Card` plus observation time to `cardpublication.VerifiedCardResolver`; the compact metadata fields remain for the Telegram view.
+- Resolver's UoW locks transfer first, then the exact publication subject by transfer/action/member/revision/attempt. It rejects stale identities and observations older than the attempt, persists a time-specific `post_submission` observation, checks it against the original upload request, and applies publication plus transfer corrections atomically.
+- Transfer correction recalculates group/master outcome while preserving unresolved or rejected media status. External WB lookup runs before the transaction.
+
+## 17. Statistics Detail Read Pattern
+- `statistics/repository/postgres/operations.go` uses one `collectDetails[T]` path for the five bounded detail lists (groups, items, actions, attempts, authorizations). It performs the `DetailsPageSize + 1` query, scans rows incrementally, preserves list/scan/iteration error context, checks `rows.Err`, closes the cursor, and trims the extra row to report truncation.
+- Row-specific scanners preserve nullable timestamp conversion and column order. Shared `actionDetailsSelect`/`actionDetailsGroupBy` and `attemptDetailsSelect` keep list and single-action reads aligned without changing their filters or result cardinality.
+
+## 18. Statistics Optional Filter Builder
+- `statistics/repository/postgres/whereBuilder.addIf` adds a condition and argument together only when its filter is present. `addCreatedRange` applies inclusive `created_at >= from` and exclusive `created_at < to` using fixed query-local column names and bound time values.
+- Operation, attention, and aggregate readers retain their entity-specific SQL predicates and their original argument order; only the optional-filter boilerplate is shared. Transfer outcome-class translation and per-entity attention semantics remain local to their respective builders.
+
+## 19. Shared PostgreSQL Repository Primitives
+- `core/repository/postgres/pool.Pool` embeds the existing `transaction.DBTX` contract for SQL execution; pool-only methods are transaction creation, close, and `OperationContext`.
+- `core/repository/postgres/sequence.ReserveIDs` reserves a requested batch of IDs from a parameterized `regclass` within the caller's `DBTX`. Transfer initialization and publication planning share the query/row lifecycle; their wrappers retain distinct zero-count and count-mismatch rules. Publication's sequence is the `BIGSERIAL` sequence created for `wb.publication_actions.id`.
+- `wbcabinet/repository/postgres` uses one scanner for common cabinet fields and digest checks. Stored-cabinet reads append the token destination; ordinary cabinet reads omit it.
+
 ## Related Memories
 - Architecture overview: `mem:architecture/overview`
 - Feature modules breakdown: `mem:features/modules`
 - Pipeline lifecycle: `mem:pipeline/lifecycle`
 - Database schema: `mem:database/schema`
 - WB Client: `mem:core/wb_client`
+- PostgreSQL refactoring plan: `mem:architecture/postgres_refactoring_plan`

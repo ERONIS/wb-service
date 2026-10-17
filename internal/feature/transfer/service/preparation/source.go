@@ -49,3 +49,22 @@ func (source PreparationSource) Validate() error {
 	}
 	return nil
 }
+
+// PreparationPendingGroup описывает целевую группу карточек, ожидающую расчёта подготовки.
+type PreparationPendingGroup struct {
+	GroupTargetID int64
+	SourceGroupID int64
+	TargetID      int64
+	CabinetID     model.CabinetID
+}
+
+// Validate проверяет корректность идентификаторов и кабинета целевой группы.
+func (group PreparationPendingGroup) Validate() error {
+	if group.GroupTargetID <= 0 || group.SourceGroupID <= 0 || group.TargetID <= 0 ||
+		strings.TrimSpace(string(group.CabinetID)) != string(group.CabinetID) ||
+		group.CabinetID == "" {
+		return errors.New("transfer preparation pending group is invalid")
+	}
+	return nil
+}
+

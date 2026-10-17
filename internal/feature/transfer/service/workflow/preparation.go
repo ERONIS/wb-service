@@ -45,6 +45,22 @@ func (service *Service) BeginPreparation(
 	return nil
 }
 
+// ListPendingPreparationGroups возвращает порцию целевых групп переноса, ожидающих подготовки.
+func (service *Service) ListPendingPreparationGroups(
+	ctx context.Context,
+	transferID TransferID,
+	limit int,
+	after PreparationPendingGroup,
+) ([]PreparationPendingGroup, error) {
+	if ctx == nil {
+		return nil, errors.New("list pending preparation groups: context is nil")
+	}
+	if transferID <= 0 || limit <= 0 || limit > MaxPreparingPageSize || after.SourceGroupID < 0 || after.TargetID < 0 {
+		return nil, core_errors.ErrInvalidArgument
+	}
+	return service.repository.ListPendingPreparationGroups(ctx, transferID, limit, after)
+}
+
 func (service *Service) LoadPreparationSource(
 	ctx context.Context,
 	transferID TransferID,

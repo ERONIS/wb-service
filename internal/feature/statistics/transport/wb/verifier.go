@@ -3,60 +3,38 @@ package statistics_wb_transport
 import (
 	"context"
 	"fmt"
-
-	core_wb "github.com/ERONIS/wb-service/internal/core/transport/wb"
-	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
-	core_wb_config "github.com/ERONIS/wb-service/internal/core/transport/wb/config"
-	statistics_telegram_transport "github.com/ERONIS/wb-service/internal/feature/statistics/transport/telegram"
+	"github.com/ERONIS/wb-service/internal/core/domain"
+	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
+	wb_catalog "github.com/ERONIS/wb-service/internal/core/transport/wb/catalog"
+	statistics_service "github.com/ERONIS/wb-service/internal/feature/statistics/service"
+	"time"
 )
 
-type Verifier struct {
-	executors core_wb.ExecutorRegistry
-}
+type Verifier struct{ cards wb_catalog.CardsLister }
 
-func NewVerifier(executors core_wb.ExecutorRegistry) *Verifier {
-	if executors == nil {
-		panic("statistics WB executors dependency is nil")
+func NewVerifier(cards wb_catalog.CardsLister) *Verifier {
+	if cards == nil {
+		panic("statistics WB cards dependency is nil")
 	}
-	return &Verifier{executors: executors}
+	return &Verifier{cards: cards}
 }
-
-func (verifier *Verifier) FindCardByVendorCode(
-	ctx context.Context,
-	cabinetID string,
-	vendorCode string,
-) (*statistics_telegram_transport.CardVerificationInfo, error) {
-	req := contentapi.CardsListRequest{
-		Settings: contentapi.CardsListSettings{
-			Filter: &contentapi.CardsListFilter{
-				TextSearch: vendorCode,
-			},
-			Cursor: contentapi.CardsListCursor{
-				Limit: 10,
-			},
-		},
-	}
-	resp, err := core_wb.ExecuteForCabinet[contentapi.CardsListResponse](
-		ctx,
-		verifier.executors,
-		core_wb_config.CabinetID(cabinetID),
-		contentapi.CardsListOperation(),
-		nil,
-		req,
-	)
+func (verifier *Verifier) FindCardByVendorCode(ctx context.Context, cabinetID string, vendorCode string) (*statistics_service.CardVerificationInfo, error) {
+	cards, _, err := wb_catalog.FindByVendorCode(ctx, verifier.cards, domain.CabinetID(cabinetID), vendorCode, 100)
 	if err != nil {
-		return nil, fmt.Errorf("query WB cards list for %q in cabinet %q: %w", vendorCode, cabinetID, err)
+		return nil, fmt.Errorf("query WB cards list: %w", err)
 	}
-	for _, card := range resp.Cards {
-		if card.VendorCode == vendorCode {
-			return &statistics_telegram_transport.CardVerificationInfo{
-				NMID:      card.NMID,
-				IMTID:     card.IMTID,
-				SubjectID: card.SubjectID,
-				Title:     card.Title,
-				Brand:     card.Brand,
-			}, nil
-		}
+	if len(cards) == 0 {
+		return nil, nil
 	}
-	return nil, nil
+	if len(cards) > 1 {
+		return nil, core_errors.Conflict("WB vendor code matches multiple cards")
+	}
+	card := cards[0]
+	return &statistics_service.CardVerificationInfo{
+		Card: card, ObservedAt: time.Now().UTC(),
+		NMID: card.NMID, IMTID: card.IMTID, SubjectID: card.SubjectID,
+		Title: card.Title, Brand: card.Brand,
+	}, nil
 }
+
+var _ statistics_service.CardVerifier = (*Verifier)(nil)

@@ -15,12 +15,14 @@ Orchestrates the actual submission of product cards to Wildberries Content API, 
 3. **Media Pipeline (`service/execution/media_*`)**:
    - **Visibility Check (`media_visibility.go`)**: Queries WB to verify newly created cards are visible in the catalog before sending media (`wb.publication_media_visibility`).
    - `media_dispatcher.go`: Dispatches photos and videos to `/content/v2/cards/upload/add`.
-   - Daemon `RunMediaPolling`: Continuously polls visibility and triggers media uploads.
+   - Daemon `RunMediaPolling`: Continuously polls visibility and triggers media uploads. Each link/file mutation is sent once per business attempt; only external file downloads retry automatically through a helper accepting DownloadedMediaFile (not arbitrary mutation responses). Partial uploads and unknown delivery remain visible to business reconciliation.
 4. **Error Monitoring & Feed (`service/monitoring/`)**:
    - `error_feed.go`: Periodically polls WB `/content/v2/cards/error/list`.
    - Correlates asynchronous errors reported by WB to specific transfer items in `wb.publication_error_correlations`.
 5. **Resolution (`service/resolution/`)**:
+   - `VerifiedCardResolver` applies positive WB catalog evidence through one UoW: locks the terminal publication subject using transfer/action/member/revision/attempt identity, stores a time-specific post-submission observation, validates it against the original upload request, updates member/identity/attribution/action/plan, and invokes the transfer corrector in the same transaction. Statistics remains a read/presentation feature and calls this resolver; failed or stale evidence leaves the item in attention.
    - `manual.go`: Provides `ManualResolver` for cards rejected by WB or flagged with schema discrepancies, enabling user override/re-dispatch.
+   - Manual and verified-card resolution share `ResolutionSubjectKey` and `LockResolutionSubject`: lock the master transfer row before publication action/plan/member/item/identity rows, then validate expected action revision and optional attempt ID. The verified path reuses member/identity/attribution/action/plan reducers but records `VERIFIED_IN_WB` codes rather than a manual-resolution audit fact.
 
 ## Database Tables (`wb` namespace)
 - `wb.publication_plans`: High-level upload plans per transfer.
@@ -31,6 +33,9 @@ Orchestrates the actual submission of product cards to Wildberries Content API, 
 - `wb.publication_media_visibility`: Per-card catalog presence verification state.
 - `wb.publication_error_correlations`: Normalized mapping of WB error feed records to transfer items.
 - `wb.publication_manual_resolutions`: User intervention logs and resolution decisions.
+
+## Shared Catalog Integration
+- Active/trash pagination is delegated to core `wb/catalog`. Publication retains observation capture, bulk-probe budgets, attribution, and reconciliation decisions. An incomplete probe falls back to targeted searches; incomplete targeted searches return errors.
 
 ## Invariants & Database Triggers
 - `reject_publication_fact_delete`: `DELETE` statements on attempts, correlations, and identities are rejected at database level.

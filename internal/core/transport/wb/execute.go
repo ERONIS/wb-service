@@ -4,24 +4,24 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/ERONIS/wb-service/internal/core/domain"
 	client "github.com/ERONIS/wb-service/internal/core/transport/wb/client"
-	config "github.com/ERONIS/wb-service/internal/core/transport/wb/config"
 	policy "github.com/ERONIS/wb-service/internal/core/transport/wb/policy"
 )
 
 type ExecutorRegistry interface {
-	ExecutorForCabinet(config.CabinetID) (client.Executor, error)
+	ExecutorForCabinet(domain.CabinetID) (client.Executor, error)
 }
 
 type PinnedExecutorRegistry interface {
 	ExecutorRegistry
-	PinnedExecutor(config.CabinetID, ClientGeneration) (client.Executor, error)
+	PinnedExecutor(domain.CabinetID, ClientGeneration) (client.Executor, error)
 }
 
 func ExecuteForCabinet[Response any](
 	ctx context.Context,
 	executors ExecutorRegistry,
-	cabinetID config.CabinetID,
+	cabinetID domain.CabinetID,
 	operation policy.Operation,
 	query any,
 	body any,
@@ -41,7 +41,7 @@ func ExecuteForCabinet[Response any](
 func ExecutePinnedForCabinet[Response any](
 	ctx context.Context,
 	executors PinnedExecutorRegistry,
-	cabinetID config.CabinetID,
+	cabinetID domain.CabinetID,
 	generation ClientGeneration,
 	operation policy.Operation,
 	query any,

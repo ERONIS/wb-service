@@ -67,14 +67,25 @@ func (repository *Repository) LoadManualResolutionReplay(
 	return resolution, true, nil
 }
 
-func (repository *Repository) LockManualResolutionSubject(
+func (repository *Repository) LockResolutionSubject(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	command cardpublication_service.ManualResolutionCommand,
+	command cardpublication_service.ResolutionSubjectKey,
 ) (cardpublication_service.ManualResolutionSubject, error) {
 	if tx == nil {
 		return cardpublication_service.ManualResolutionSubject{},
 			errors.New("lock manual resolution subject: DBTX is nil")
+	}
+	var lockedTransferID int64
+	if err := tx.QueryRow(ctx, `
+		SELECT id FROM wb.transfers WHERE id = $1 FOR UPDATE;
+	`, command.TransferID).Scan(&lockedTransferID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return cardpublication_service.ManualResolutionSubject{},
+				cardpublication_service.ErrManualResolutionConflict
+		}
+		return cardpublication_service.ManualResolutionSubject{},
+			fmt.Errorf("lock transfer for publication resolution: %w", err)
 	}
 	const query = `
 		SELECT
@@ -151,6 +162,7 @@ func (repository *Repository) LockManualResolutionSubject(
 			AND item_target.outcome_code = member.outcome_code
 			AND COALESCE(item_target.nm_id, 0) = COALESCE(member.nm_id, 0)
 			AND attempt.finished_at IS NOT NULL
+			AND ($5::bigint = 0 OR attempt.id = $5)
 			AND transfer.phase = 'finished'
 			AND transfer.outcome = 'unresolved'
 		FOR UPDATE OF action, plan, member, item_target, identity;
@@ -174,6 +186,7 @@ func (repository *Repository) LockManualResolutionSubject(
 		command.ActionID,
 		command.ActionMemberID,
 		command.ExpectedActionRevision,
+		command.AttemptID,
 	).Scan(
 		&transferID,
 		&subject.ActionID,
@@ -578,7 +591,7 @@ func applyManualEvidence(
 			)
 			VALUES (
 				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-				'observed_after_attempt', 'MANUAL_REMOTE_PRESENT'
+				'observed_after_attempt', $11
 			)
 			ON CONFLICT (transfer_id, action_member_id) DO NOTHING;
 		`
@@ -595,6 +608,7 @@ func applyManualEvidence(
 			command.Subject.AttemptID,
 			command.Subject.PreflightObservationID,
 			command.Decision.EvidenceObservationID,
+			command.Decision.OutcomeCode,
 		); err != nil {
 			return fmt.Errorf("insert manual publication attribution: %w", err)
 		}
@@ -675,12 +689,12 @@ func reduceManualPublicationAction(
 			END,
 		    outcome_code = CASE
 				WHEN member_counts.unresolved > 0 OR member_counts.internal_error > 0
-					THEN 'MANUAL_RESOLUTION_REMAINS_UNRESOLVED'
+					THEN $4
 				WHEN member_counts.rejected = member_counts.total
-					THEN 'MANUAL_RESOLUTION_REJECTED'
+					THEN $5
 				WHEN member_counts.rejected > 0 AND member_counts.accepted > 0
-					THEN 'MANUAL_RESOLUTION_PARTIAL'
-				ELSE 'MANUAL_RESOLUTION_SUCCEEDED'
+					THEN $6
+				ELSE $7
 			END,
 		    revision = action.revision + 1,
 		    updated_at = CURRENT_TIMESTAMP
@@ -693,12 +707,17 @@ func reduceManualPublicationAction(
 		RETURNING action.revision;
 	`
 	var revision int64
+	codes := resolutionActionCodes(command)
 	if err := tx.QueryRow(
 		ctx,
 		reduce,
 		command.Subject.TransferID,
 		command.Subject.ActionID,
 		command.Subject.ActionRevision,
+		codes[0],
+		codes[1],
+		codes[2],
+		codes[3],
 	).Scan(&revision); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, cardpublication_service.ErrManualResolutionConflict

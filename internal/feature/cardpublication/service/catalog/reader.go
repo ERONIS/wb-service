@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
+	wb_catalog "github.com/ERONIS/wb-service/internal/core/transport/wb/catalog"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
@@ -23,7 +23,7 @@ const (
 	recentObservationTTL        = 30 * time.Second
 )
 
-var ErrCatalogChangedDuringScan = core_errors.ErrConflict
+var ErrCatalogChangedDuringScan = wb_catalog.ErrCursorStalled
 
 type CatalogObservation struct {
 	TargetID   int64
@@ -321,90 +321,40 @@ func (reader *CatalogReader) searchTrashVendorCodes(
 	return sortedTrashCards(result), requests, nil
 }
 
-func (reader *CatalogReader) scanNormalVendorCodes(
-	ctx context.Context,
-	cabinetID CabinetID,
-	vendorCodes []string,
-) ([]contentapi.Card, int, bool, error) {
+func (reader *CatalogReader) scanNormalVendorCodes(ctx context.Context, cabinetID CabinetID, vendorCodes []string) ([]contentapi.Card, int, bool, error) {
 	wanted := stringSet(vendorCodes)
 	result := make(map[int64]contentapi.Card)
-	cursor := contentapi.CardsListCursor{Limit: contentapi.MaxCardsListPageSize}
-	for page := 0; page < normalCatalogProbePages; page++ {
-		response, err := reader.transport.CardsList(
-			ctx,
-			cabinetID,
-			contentapi.CardsListQuery{},
-			contentapi.CardsListRequest{Settings: contentapi.CardsListSettings{
-				Sort:   contentapi.CardsSort{Ascending: true},
-				Cursor: cursor,
-			}},
-		)
-		requests := page + 1
-		if err != nil {
-			return nil, requests, false, fmt.Errorf("scan WB normal cards: %w", err)
+	pages, err := wb_catalog.WalkCards(ctx, reader.transport, cabinetID, contentapi.CardsListQuery{}, contentapi.CardsListRequest{Settings: contentapi.CardsListSettings{Sort: contentapi.CardsSort{Ascending: true}}}, normalCatalogProbePages, func(card contentapi.Card) bool {
+		if _, ok := wanted[card.VendorCode]; ok {
+			result[card.NMID] = card
 		}
-		for _, card := range response.Cards {
-			if _, ok := wanted[card.VendorCode]; ok {
-				result[card.NMID] = card
-			}
-		}
-		if len(response.Cards) < cursor.Limit {
-			return sortedNormalCards(result), requests, true, nil
-		}
-		next := contentapi.CardsListCursor{
-			UpdatedAt: response.Cursor.UpdatedAt,
-			NMID:      response.Cursor.NMID,
-			Limit:     cursor.Limit,
-		}
-		if next.UpdatedAt == cursor.UpdatedAt && next.NMID == cursor.NMID {
-			return nil, requests, false, ErrCatalogChangedDuringScan
-		}
-		cursor = next
+		return true
+	})
+	if errors.Is(err, wb_catalog.ErrPageLimit) {
+		return nil, pages, false, nil
 	}
-	return nil, normalCatalogProbePages, false, nil
+	if err != nil {
+		return nil, pages, false, err
+	}
+	return sortedNormalCards(result), pages, true, nil
 }
 
-func (reader *CatalogReader) scanTrashVendorCodes(
-	ctx context.Context,
-	cabinetID CabinetID,
-	vendorCodes []string,
-) ([]contentapi.TrashCard, int, bool, error) {
+func (reader *CatalogReader) scanTrashVendorCodes(ctx context.Context, cabinetID CabinetID, vendorCodes []string) ([]contentapi.TrashCard, int, bool, error) {
 	wanted := stringSet(vendorCodes)
 	result := make(map[int64]contentapi.TrashCard)
-	cursor := contentapi.TrashCardsListCursor{Limit: contentapi.MaxTrashCardsListPageSize}
-	for page := 0; page < len(vendorCodes) && page < maxVendorSearchPages; page++ {
-		response, err := reader.transport.TrashCardsList(
-			ctx,
-			cabinetID,
-			contentapi.TrashCardsListQuery{},
-			contentapi.TrashCardsListRequest{Settings: contentapi.TrashCardsListSettings{
-				Sort:   contentapi.CardsSort{Ascending: true},
-				Cursor: cursor,
-			}},
-		)
-		requests := page + 1
-		if err != nil {
-			return nil, requests, false, fmt.Errorf("scan WB trash cards: %w", err)
+	pages, err := wb_catalog.WalkTrashCards(ctx, reader.transport, cabinetID, contentapi.TrashCardsListQuery{}, contentapi.TrashCardsListRequest{Settings: contentapi.TrashCardsListSettings{Sort: contentapi.CardsSort{Ascending: true}}}, min(len(vendorCodes), maxVendorSearchPages), func(card contentapi.TrashCard) bool {
+		if _, ok := wanted[card.VendorCode]; ok {
+			result[card.NMID] = card
 		}
-		for _, card := range response.Cards {
-			if _, ok := wanted[card.VendorCode]; ok {
-				result[card.NMID] = card
-			}
-		}
-		if len(response.Cards) < cursor.Limit {
-			return sortedTrashCards(result), requests, true, nil
-		}
-		next := contentapi.TrashCardsListCursor{
-			TrashedAt: response.Cursor.TrashedAt,
-			NMID:      response.Cursor.NMID,
-			Limit:     cursor.Limit,
-		}
-		if next.TrashedAt == cursor.TrashedAt && next.NMID == cursor.NMID {
-			return nil, requests, false, ErrCatalogChangedDuringScan
-		}
-		cursor = next
+		return true
+	})
+	if errors.Is(err, wb_catalog.ErrPageLimit) {
+		return nil, pages, false, nil
 	}
-	return nil, min(len(vendorCodes), maxVendorSearchPages), false, nil
+	if err != nil {
+		return nil, pages, false, err
+	}
+	return sortedTrashCards(result), pages, true, nil
 }
 
 func stringSet(values []string) map[string]struct{} {
@@ -424,46 +374,13 @@ func (reader *CatalogReader) readNormalVendorCode(
 	return cards, err
 }
 
-func (reader *CatalogReader) readNormalVendorCodeCount(
-	ctx context.Context,
-	cabinetID CabinetID,
-	vendorCode string,
-) ([]contentapi.Card, int, error) {
-	cursor := contentapi.CardsListCursor{Limit: contentapi.MaxCardsListPageSize}
-	cardsByID := make(map[int64]contentapi.Card)
-	for page := 0; page < maxVendorSearchPages; page++ {
-		response, err := reader.transport.CardsList(
-			ctx,
-			cabinetID,
-			contentapi.CardsListQuery{},
-			contentapi.CardsListRequest{Settings: contentapi.CardsListSettings{
-				Sort:   contentapi.CardsSort{Ascending: true},
-				Filter: &contentapi.CardsListFilter{TextSearch: vendorCode},
-				Cursor: cursor,
-			}},
-		)
-		if err != nil {
-			return nil, page + 1, fmt.Errorf("search WB normal card by vendorCode: %w", err)
-		}
-		for _, card := range response.Cards {
-			if card.VendorCode == vendorCode {
-				cardsByID[card.NMID] = card
-			}
-		}
-		if len(response.Cards) < contentapi.MaxCardsListPageSize {
-			return sortedNormalCards(cardsByID), page + 1, nil
-		}
-		next := contentapi.CardsListCursor{
-			UpdatedAt: response.Cursor.UpdatedAt,
-			NMID:      response.Cursor.NMID,
-			Limit:     contentapi.MaxCardsListPageSize,
-		}
-		if next.UpdatedAt == cursor.UpdatedAt && next.NMID == cursor.NMID {
-			return nil, page + 1, ErrCatalogChangedDuringScan
-		}
-		cursor = next
+func (reader *CatalogReader) readNormalVendorCodeCount(ctx context.Context, cabinetID CabinetID, vendorCode string) ([]contentapi.Card, int, error) {
+	cards, pages, err := wb_catalog.FindByVendorCode(ctx, reader.transport, cabinetID, vendorCode, maxVendorSearchPages)
+	if err != nil {
+		return nil, pages, err
 	}
-	return nil, maxVendorSearchPages, errors.New("WB normal vendor-code search pagination limit exceeded")
+	sort.Slice(cards, func(i, j int) bool { return cards[i].NMID < cards[j].NMID })
+	return cards, pages, nil
 }
 
 func (reader *CatalogReader) readTrashVendorCode(
@@ -475,46 +392,20 @@ func (reader *CatalogReader) readTrashVendorCode(
 	return cards, err
 }
 
-func (reader *CatalogReader) readTrashVendorCodeCount(
-	ctx context.Context,
-	cabinetID CabinetID,
-	vendorCode string,
-) ([]contentapi.TrashCard, int, error) {
-	cursor := contentapi.TrashCardsListCursor{Limit: contentapi.MaxTrashCardsListPageSize}
-	cardsByID := make(map[int64]contentapi.TrashCard)
-	for page := 0; page < maxVendorSearchPages; page++ {
-		response, err := reader.transport.TrashCardsList(
-			ctx,
-			cabinetID,
-			contentapi.TrashCardsListQuery{},
-			contentapi.TrashCardsListRequest{Settings: contentapi.TrashCardsListSettings{
-				Sort:   contentapi.CardsSort{Ascending: true},
-				Filter: &contentapi.TrashCardsListFilter{TextSearch: vendorCode},
-				Cursor: cursor,
-			}},
-		)
-		if err != nil {
-			return nil, page + 1, fmt.Errorf("search WB trash card by vendorCode: %w", err)
+func (reader *CatalogReader) readTrashVendorCodeCount(ctx context.Context, cabinetID CabinetID, vendorCode string) ([]contentapi.TrashCard, int, error) {
+	result := make(map[int64]contentapi.TrashCard)
+	pages, err := wb_catalog.WalkTrashCards(ctx, reader.transport, cabinetID, contentapi.TrashCardsListQuery{}, contentapi.TrashCardsListRequest{Settings: contentapi.TrashCardsListSettings{
+		Sort: contentapi.CardsSort{Ascending: true}, Filter: &contentapi.TrashCardsListFilter{TextSearch: vendorCode},
+	}}, maxVendorSearchPages, func(card contentapi.TrashCard) bool {
+		if card.VendorCode == vendorCode {
+			result[card.NMID] = card
 		}
-		for _, card := range response.Cards {
-			if card.VendorCode == vendorCode {
-				cardsByID[card.NMID] = card
-			}
-		}
-		if len(response.Cards) < contentapi.MaxTrashCardsListPageSize {
-			return sortedTrashCards(cardsByID), page + 1, nil
-		}
-		next := contentapi.TrashCardsListCursor{
-			TrashedAt: response.Cursor.TrashedAt,
-			NMID:      response.Cursor.NMID,
-			Limit:     contentapi.MaxTrashCardsListPageSize,
-		}
-		if next.TrashedAt == cursor.TrashedAt && next.NMID == cursor.NMID {
-			return nil, page + 1, ErrCatalogChangedDuringScan
-		}
-		cursor = next
+		return true
+	})
+	if err != nil {
+		return nil, pages, err
 	}
-	return nil, maxVendorSearchPages, errors.New("WB trash vendor-code search pagination limit exceeded")
+	return sortedTrashCards(result), pages, nil
 }
 
 func sortedNormalCards(cardsByID map[int64]contentapi.Card) []contentapi.Card {

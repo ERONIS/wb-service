@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	core_postgres_sequence "github.com/ERONIS/wb-service/internal/core/repository/postgres/sequence"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
@@ -165,27 +166,11 @@ func reservePublicationActionIDs(
 	if count == 0 {
 		return nil, nil
 	}
-	const query = `
-		SELECT nextval(pg_get_serial_sequence('wb.publication_actions', 'id'))
-		FROM generate_series(1, $1);
-	`
-	rows, err := tx.Query(ctx, query, count)
+	ids, err := core_postgres_sequence.ReserveIDs(
+		ctx, tx, "wb.publication_actions_id_seq", count,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("reserve publication action IDs: %w", err)
-	}
-	ids := make([]int64, 0, count)
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("scan reserved publication action ID: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return nil, fmt.Errorf("iterate reserved publication action IDs: %w", err)
 	}
 	if len(ids) != count {
 		return nil, fmt.Errorf("reserved %d of %d publication action IDs", len(ids), count)

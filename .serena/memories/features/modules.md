@@ -4,7 +4,7 @@
 Every feature module is encapsulated in `internal/feature/<name>` and follows a strict 3-tier internal layout:
 - `transport/`: External adapters — either Telegram menus/handlers (`transport/telegram/`) or WB client adapters (`transport/wb/`).
 - `service/`: Core business logic, domain models, validations, and state machines.
-- `repository/`: PostgreSQL data access implementing feature-scoped queries, always executing within the Unit of Work (`uow`) transaction context.
+- `repository/`: PostgreSQL queries. Target convention is explicit DBTX with service-owned UoW for multi-write scenarios; actual exceptions remain: cardimport parsing/continue use repository-owned Begin, while wbcabinet opens UoW inside its repository. Statistics repository is read-only; positive verification goes through publication-owned UoW. Standalone reads and some single-statement writes use the pool.
 Features expose public facades via `feature.go` and interact solely through Go interfaces defined in the composition root (`cmd/wb-service/main.go`).
 
 ---
@@ -12,14 +12,16 @@ Features expose public facades via `feature.go` and interact solely through Go i
 ## 1. `wbcabinet` (WB Cabinet & Credential Management)
 - **Role**: Full lifecycle of Wildberries seller accounts and API tokens.
 - **Key Subsystems**:
-  - `service/service.go`: CRUD operations (`Add`, `Delete`, `List`, `Initialize`).
-  - `transport/wb/verifier.go`: Verifies candidate credentials via JWT inspection, Content `/ping`, and General `/api/v1/seller-info`.
-  - `repository/postgres/repository.go`: Persists cabinet entities with AES-GCM encrypted tokens in `wb.api_cabinets`.
-  - `transport/telegram/`: Menus for adding, listing, and deleting seller cabinets.
+  - `service/service.go`: CRUD operations (`Add`, `Delete`, `List`, `Restore`).
+  - Core `wb/credentials.ParseToken` decodes token claims and permissions; `transport/wb/verifier.go` checks Content `/ping` and prepares runtime activation. Invalid-token and expired-token errors remain distinguishable for status transitions.
+  - `repository/postgres/repository.go`: Persists cabinet entities in `wb.api_cabinets`.
+  - `transport/telegram/`: Menus for adding, listing, and deleting seller cabinets dynamically.
 - **Invariants**:
-  - Tokens are never logged or stored in plain text.
+  - Tokens are never logged in plain text.
   - Verified cabinets are dynamically registered into `wbClientset` without restarting the process.
-  - Background loop `RunRestoreRetry` runs every 30s to re-verify temporarily unreachable cabinets.
+  - Background loop `RunRestoreRetry` retries only cabinets whose startup restoration failed transiently, tracked by cabinet ID and generation. Active clients are not pinged/replaced every tick. Expiry still removes runtime access and marks the stored cabinet expired. Restoration rechecks the current persisted generation/name under the same mutation lock as Add/Delete, avoiding stale-token resurrection; successful Add and Delete clear pending restoration. Permanently failed cabinets require explicit onboarding. Regression tests cover pending-only retries, expiry, token rotation and deletion between listing and restoration; verification tests reject incomplete/ambiguous catalog matches.
+  - Startup `Initialize(ctx)` performs `Restore(ctx)` from `wb.api_cabinets`. Static env cabinet parsing is removed.
+  - Initial administrator cabinets are seeded using `scripts/bootstrap_cabinets.sql` via `make cabinet-bootstrap`.
 
 ## 2. `cardimport` (Excel Ingestion & Batch Staging)
 - **Role**: Parses product spreadsheets uploaded via Telegram documents into immutable staging batches.
@@ -35,19 +37,22 @@ Features expose public facades via `feature.go` and interact solely through Go i
 - **Role**: Telegram-based inspection and modification of card parameters before transfer.
 - **Key Subsystems**:
   - `service/service.go`: Stateful edit sessions managing field updates (prices, vendor codes, barcodes, descriptions).
-  - `transport/wb/gateway.go`: Queries live WB catalog metadata to validate edited values.
+  - `transport/wb/gateway.go`: Composes the shared core ContentClient with cabinet ownership selection. Preparation uses ContentClient directly; publication composes it with its own unauthenticated MediaDownloader.
   - `transport/telegram/`: Interactive UI (`workflow.go`, `view.go`) embedded directly into the card import review flow.
 - **Invariants**:
   - Edits do not mutate original Excel files; they update staging records prior to transfer pipeline initialization.
 
 ## 4. `cardprepare` (WB Schema Adaptation & Validation)
-- **Role**: Validates cards against target category rules and generates WB-compliant upload proposals.
+- **Role**: Stateless calculation & validation engine that checks cards against target category rules and generates WB-compliant upload proposals.
 - **Key Subsystems**:
   - `service/preparation/catalog.go` & `catalog_cache.go`: Queries WB category rules, required characteristics, and constraint dictionaries, caching responses in memory.
-  - `service/preparation/upload_validation.go`: Validates product characteristics, dimensions, and barcodes against target cabinet category constraints.
-  - `service/workflow/processor.go`: Implements `Processor()` called by transfer poller during `PhasePreparing`.
-  - `repository/postgres/`: Tables `wb.card_preparations` and `wb.card_preparation_items`.
+  - `service/preparation/upload_validation.go`: Validates product characteristics, dimensions, and barcodes against target cabinet category constraints. Rejected preparation is logged with bounded product context (vendor code, source rows, category, group size); long titles include normalized actual/max rune counts, unsupported `18+` includes parsed input, and invalid directory values include characteristic identity, offending value, directory count and a bounded sample. The log remains diagnostic only; no source or outcome is changed. Diagnostic strings and directory samples are rune-bounded to keep log entries manageable; a focused unit test covers the invalid-directory diagnostic payload. Formatting is Go-standard.
+  - `service/workflow/processor.go`: Implements `Processor()` invoked by transfer poller; processes `PreparationPendingGroup` directly with `fairPendingGroupOrder`, eliminating `PreparationWork`, `WorkStatus`, `PreparationID`, and `PreparationGroupID`.
+  - `repository/postgres/`: Pure read repository (`proposal.go`) loading proposals for planning; zero write queries (result persistence and artifact storage are managed atomically by `transfer`).
+  - `repository/postgres/`: Manages immutable proposal artifacts in `wb.card_preparation_artifacts (group_target_id)` and reads proposals directly from `wb.transfer_items` without intermediate tables.
 - **Invariants**:
+  - `transfer` is the sole owner of state; separate `wb.card_preparations`, `wb.card_preparation_groups`, and `wb.card_preparation_items` are eliminated.
+  - Preparation results and artifacts are committed atomically with transfer group projection via `ApplyTx` in a single UoW transaction.
   - Items failing validation are marked `rejected` or `unresolved` with detailed error codes, preventing malformed payloads from reaching WB Content API.
 
 ## 5. `cardpublication` (Batch Dispatch, Media & Error Feed)
@@ -58,7 +63,7 @@ Features expose public facades via `feature.go` and interact solely through Go i
 ## 6. `cabinetcopy` (Cross-Cabinet Catalog Replication)
 - **Role**: Clones existing product catalogs from one WB cabinet to others.
 - **Key Subsystems**:
-  - `transport/wb/reader.go`: Paginates through source cabinet's active catalog via `/content/v2/get/cards/list`.
+  - `transport/wb/reader.go`: Uses core typed Content/Prices clients and shared catalog pagination, then maps source cards into import data. Cabinet ownership lookup is mandatory; no fallback to all runtime cabinets.
   - `service/service.go`: Sanitizes catalog data — strips cabinet-specific identifiers (NMID, internal barcodes, seller IDs) while retaining characteristics, descriptions, and media links.
   - `repository/postgres/`: Tables `wb.cabinet_copy_sessions` and `wb.cabinet_copy_items`.
   - `transport/telegram/`: UI for selecting source cabinet, filtering products, and targeting destination cabinets.
@@ -75,8 +80,8 @@ Features expose public facades via `feature.go` and interact solely through Go i
 - **Key Subsystems**:
   - `service/service.go`: Computes aggregate progress, success/failure counts, and terminal outcome projections.
   - `transport/telegram/`: Generates and sends completion alerts with attached `.xlsx` summary reports.
-  - `RunAutoAttentionResolver`: Background worker polling every 10s to auto-resolve stale attention items.
-  - `repository/postgres/`: Queries aggregations across `transfers`, `transfer_item_targets`, and `publication_error_correlations`.
+  - `RunAutoAttentionResolver`: Background worker polling every 10s to resolve positively verified cards. Missing cards remain in attention; neither background nor Telegram verification automatically requeues creation on absence. The unused RequeueCardForCreation service/repository path was removed, including its direct resets of publication state. Verification contracts belong to statistics/service and use complete, exact core catalog search; ambiguous matches fail.
+  - `repository/postgres/`: Queries aggregations across `transfers`, `transfer_item_targets`, and `publication_error_correlations`. Cabinet progress `Errors` counts item targets with terminal non-success overall outcome or non-success item outcome, including media outcome; it is not the number of ERROR log lines or failed HTTP requests. A rejected preparation group terminates all its member item targets, so one group rejection can add multiple task errors. Statistics owns read-only attention/report queries. Positive WB verification delegates to `cardpublication.VerifiedCardResolver`, passing a complete catalog card and observation time. The resolver rechecks the action/member/revision under UoW, records a post-submission observation and attribution, updates publication member/identity/action/plan, then invokes transfer's `CorrectWithin` in the same transaction. Media outcome remains an independent contributor to group/transfer outcome.
 
 ## 9. `users` (RBAC & Cabinet Access Control)
 - **Role**: Manages Telegram user identities, permissions, and cabinet ownership.

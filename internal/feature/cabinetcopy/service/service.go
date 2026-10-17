@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
@@ -54,11 +55,6 @@ func New(
 
 func (service *Service) MaxCards() int { return service.maxCards }
 
-func (service *Service) Cabinets() []Cabinet {
-	cabinets := service.reader.Cabinets()
-	return sortedCabinets(cabinets)
-}
-
 func (service *Service) CabinetsForOwner(
 	ctx context.Context,
 	ownerTelegramID int64,
@@ -66,11 +62,7 @@ func (service *Service) CabinetsForOwner(
 	if ctx == nil || ownerTelegramID <= 0 {
 		return nil, core_errors.ErrInvalidArgument
 	}
-	ownerReader, ok := service.reader.(OwnerCabinetReader)
-	if !ok {
-		return service.Cabinets(), nil
-	}
-	cabinets, err := ownerReader.CabinetsForOwner(ctx, ownerTelegramID)
+	cabinets, err := service.reader.CabinetsForOwner(ctx, ownerTelegramID)
 	if err != nil {
 		return nil, err
 	}
@@ -272,11 +264,11 @@ func (service *Service) Prepare(
 
 func (service *Service) Submit(
 	ctx context.Context,
-	actor cardimport_service.TrustedActor,
+	user domain.User,
 	sessionID SessionID,
 	expectedRevision int64,
 ) (submission Submission, err error) {
-	session, err := service.repository.Get(ctx, actor.TelegramUserID, sessionID)
+	session, err := service.repository.Get(ctx, user.TelegramID, sessionID)
 	if err != nil {
 		return Submission{}, err
 	}
@@ -290,7 +282,7 @@ func (service *Service) Submit(
 	if session.Step != StepReview || session.Revision != expectedRevision {
 		return Submission{}, core_errors.ErrConflict
 	}
-	items, err := service.repository.ListPrepared(ctx, actor.TelegramUserID, sessionID)
+	items, err := service.repository.ListPrepared(ctx, user.TelegramID, sessionID)
 	if err != nil {
 		return Submission{}, err
 	}
@@ -301,7 +293,7 @@ func (service *Service) Submit(
 	for index := range items {
 		cards[index] = items[index].Card
 	}
-	batch, err := service.batches.CreateExternalBatch(ctx, actor, cardimport_service.CreateExternalBatchCommand{
+	batch, err := service.batches.CreateExternalBatch(ctx, user, cardimport_service.CreateExternalBatchCommand{
 		SourceKind:        cardimport_service.BatchSourceWBCabinet,
 		SourceReferenceID: int64(session.ID),
 		Cards:             cards,
@@ -311,7 +303,7 @@ func (service *Service) Submit(
 	}
 	if session.BatchID == 0 {
 		session, err = service.repository.AttachBatch(
-			ctx, actor.TelegramUserID, sessionID, expectedRevision, batch.ID,
+			ctx, user.TelegramID, sessionID, expectedRevision, batch.ID,
 		)
 		if err != nil {
 			return Submission{}, err
@@ -328,7 +320,7 @@ func (service *Service) Submit(
 		return Submission{}, fmt.Errorf("start cabinet copy transfer: %w", err)
 	}
 	session, err = service.repository.MarkSubmitted(
-		ctx, actor.TelegramUserID, sessionID, batch.ID, transferID,
+		ctx, user.TelegramID, sessionID, batch.ID, transferID,
 	)
 	if err != nil {
 		return Submission{}, err

@@ -24,9 +24,9 @@ PhaseFinished ◄──────── PhaseReconciling ◄──────
 - **Projections**: Seeds `wb.transfers`, `wb.transfer_targets`, and initial `pending` projections in `wb.transfer_group_targets` and `wb.transfer_item_targets`.
 
 ### 3. Card Preparation (`PhasePreparing`)
-- **Validator**: `cardprepare.Processor()` evaluates items against live WB category requirements, characteristics, and dimension constraints.
-- **Artifacts**: Saves proposal DTOs and preparation artifacts into `wb.card_preparations` and `wb.card_preparation_items`.
-- **Transitions**: Cards failing validation transition to `rejected` or `unresolved`; valid cards become `succeeded` and ready for publication planning.
+- **Validator**: `cardprepare.Processor()` evaluates pending group targets against live WB category requirements, characteristics, and constraints.
+- **Single-Transaction Persistence**: Atomically persists proposal artifacts into `wb.card_preparation_artifacts` (keyed directly by `group_target_id`) and updates `wb.transfer_group_targets` projections via `ApplyTx` within a single Unit of Work commit.
+- **Transitions**: Groups failing validation transition to `rejected` or `unresolved`; valid groups become `succeeded` and immediately wake downstream publication planning without waiting for batch completion.
 
 ### 4. Live Authorization (`PhaseAwaitingAuthorization`)
 - **Locking**: Verifies active API tokens and capabilities for all target cabinets before submitting data.
@@ -56,7 +56,7 @@ PhaseFinished ◄──────── PhaseReconciling ◄──────
   - `unresolved`: Awaiting manual user intervention or indeterminate state.
   - `internal_error` / `failed`: System or fatal transport error.
 - **Master Transfer Outcome**: Overall transfer marked as `succeeded`, `partial`, `rejected`, `failed`, or `unresolved`.
-- **Notifications**: `statistics` module generates an Excel execution report and alerts the user in Telegram.
+- **Notifications**: `statistics` module generates an Excel execution report and alerts the user in Telegram. Its WB verification can confirm a uniquely identified active card. Publication persists the observed card as post-submission evidence, revalidates the original request under lock, applies publication projections and transfer correction in one UoW. Missing, ambiguous, incomplete, or stale evidence leaves the item in attention; a positive card observation does not overwrite a separate failed media outcome. Publication owns retry/reconciliation decisions.
 
 ---
 

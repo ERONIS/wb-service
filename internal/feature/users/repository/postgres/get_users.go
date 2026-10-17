@@ -5,8 +5,11 @@ import (
 	"fmt"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
+
+	"github.com/jackc/pgx/v5"
 )
 
+// GetUsers возвращает срез пользователей с пагинацией по имени и идентификатору.
 func (r *UsersRepository) GetUsers(
 	ctx context.Context,
 	limit int,
@@ -42,29 +45,14 @@ func (r *UsersRepository) GetUsers(
 			err,
 		)
 	}
-	defer rows.Close()
 
-	var models []UserModel
-
-	for rows.Next() {
-		var model UserModel
-
-		if err := model.Scan(rows); err != nil {
-			return nil, fmt.Errorf(
-				"scan user: %w",
-				err,
-			)
-		}
-
-		models = append(models, model)
-	}
-
-	if err := rows.Err(); err != nil {
+	dtos, err := pgx.CollectRows(rows, pgx.RowToStructByName[userRowDTO])
+	if err != nil {
 		return nil, fmt.Errorf(
-			"iterate users: %w",
+			"collect users: %w",
 			err,
 		)
 	}
 
-	return modelsToDomains(models), nil
+	return dtosToDomains(dtos), nil
 }

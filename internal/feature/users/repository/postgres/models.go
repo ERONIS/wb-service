@@ -10,20 +10,19 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-// UserModel представляет строку таблицы wb.users.
-type UserModel struct {
-	ID int64
-
-	TelegramID       int64
-	TelegramNickname *string
-	FullName         string
-	Role             domain.UserRole
-
-	CreatedAt time.Time
-	UpdatedAt time.Time
+// userRowDTO представляет приватную структуру строки таблицы wb.users для сканирования через pgx.
+type userRowDTO struct {
+	ID               int64           `db:"id"`
+	TelegramID       int64           `db:"tg_id"`
+	TelegramNickname *string         `db:"tg_nickname"`
+	FullName         string          `db:"full_name"`
+	Role             domain.UserRole `db:"role"`
+	CreatedAt        time.Time       `db:"created_at"`
+	UpdatedAt        time.Time       `db:"updated_at"`
 }
 
-func (m *UserModel) Scan(row rowScanner) error {
+// Scan заполняет поля userRowDTO из переданного rowScanner.
+func (m *userRowDTO) Scan(row rowScanner) error {
 	return row.Scan(
 		&m.ID,
 		&m.TelegramID,
@@ -35,26 +34,24 @@ func (m *UserModel) Scan(row rowScanner) error {
 	)
 }
 
-func modelToDomain(model UserModel) domain.User {
+// dtoToDomain преобразует DTO строки в доменную модель пользователя.
+func dtoToDomain(dto userRowDTO) domain.User {
 	return domain.NewUser(
-		model.ID,
-		model.TelegramID,
-		model.TelegramNickname,
-		model.FullName,
-		model.Role,
-		model.CreatedAt,
-		model.UpdatedAt,
+		dto.ID,
+		dto.TelegramID,
+		dto.TelegramNickname,
+		dto.FullName,
+		dto.Role,
+		dto.CreatedAt,
+		dto.UpdatedAt,
 	)
 }
 
-func modelsToDomains(
-	models []UserModel,
-) []domain.User {
-	users := make([]domain.User, len(models))
-
-	for index, model := range models {
-		users[index] = modelToDomain(model)
+// dtosToDomains преобразует срез DTO строк в срез доменных моделей.
+func dtosToDomains(dtos []userRowDTO) []domain.User {
+	users := make([]domain.User, len(dtos))
+	for index, dto := range dtos {
+		users[index] = dtoToDomain(dto)
 	}
-
 	return users
 }

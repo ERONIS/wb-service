@@ -13,22 +13,12 @@ import (
 
 type ClientGeneration = domain.ClientGeneration
 
-type TargetCredential struct {
-	CabinetID           CabinetID
-	SellerKey           SellerKey
-	BindingRevision     int64
-	CapabilityRevision  int64
-	ContentRead         bool
-	ContentWrite        bool
-	CredentialExpiresAt time.Time
-	ClientGeneration    ClientGeneration
-}
+type TargetCredential = domain.CabinetAccess
 
 type MutationTargetRegistry struct {
 	transport  TargetTransport
 	cohortName string
 	now        func() time.Time
-	snapshot   *MutationTargetSnapshot
 }
 
 func NewMutationTargetRegistry(
@@ -59,9 +49,6 @@ func (registry *MutationTargetRegistry) MutationSnapshot(
 	if ownerTelegramID <= 0 {
 		return MutationTargetSnapshot{}, errors.New("get mutation target snapshot: owner is invalid")
 	}
-	if registry.snapshot != nil {
-		return cloneMutationTargetSnapshot(*registry.snapshot), nil
-	}
 	credentials, err := registry.transport.Credentials(ctx, ownerTelegramID)
 	if err != nil {
 		return MutationTargetSnapshot{}, fmt.Errorf("read WB target credentials: %w", err)
@@ -75,12 +62,13 @@ func (registry *MutationTargetRegistry) FanoutMutationSnapshot(
 	if ctx == nil {
 		return MutationTargetSnapshot{}, errors.New("get fan-out mutation target snapshot: context is nil")
 	}
-	if registry.snapshot != nil {
-		return cloneMutationTargetSnapshot(*registry.snapshot), nil
-	}
-	credentials, err := registry.transport.FanoutCredentials(ctx)
-	if err != nil {
-		return MutationTargetSnapshot{}, fmt.Errorf("read fan-out WB target credentials: %w", err)
+	credentials := make([]TargetCredential, 0)
+	for _, role := range []domain.UserRole{domain.RolePartner, domain.RoleAdmin} {
+		targets, err := registry.transport.CredentialsByOwnerRole(ctx, role)
+		if err != nil {
+			return MutationTargetSnapshot{}, fmt.Errorf("read %s WB targets: %w", role, err)
+		}
+		credentials = append(credentials, targets...)
 	}
 	return registry.snapshotForCredentials(credentials)
 }
@@ -104,13 +92,6 @@ func (registry *MutationTargetRegistry) MutationSnapshotFor(
 	if ctx == nil {
 		return MutationTargetSnapshot{}, errors.New("select mutation targets: context is nil")
 	}
-	if registry.snapshot != nil {
-		return selectMutationTargets(
-			cloneMutationTargetSnapshot(*registry.snapshot),
-			cabinetIDs,
-			registry.now().UTC(),
-		)
-	}
 	credentials, err := registry.transport.AllCredentials(ctx)
 	if err != nil {
 		return MutationTargetSnapshot{}, fmt.Errorf("read all WB target credentials: %w", err)
@@ -127,9 +108,6 @@ func (registry *MutationTargetRegistry) AllTargets(
 ) ([]MutationTarget, error) {
 	if ctx == nil {
 		return nil, errors.New("get all mutation targets: context is nil")
-	}
-	if registry.snapshot != nil {
-		return append([]MutationTarget(nil), registry.snapshot.Targets...), nil
 	}
 	credentials, err := registry.transport.AllCredentials(ctx)
 	if err != nil {
@@ -176,12 +154,6 @@ func (registry *MutationTargetRegistry) snapshotForCredentials(
 	return snapshot, nil
 }
 
-func cloneMutationTargetSnapshot(snapshot MutationTargetSnapshot) MutationTargetSnapshot {
-	result := snapshot
-	result.Targets = append([]MutationTarget(nil), snapshot.Targets...)
-	return result
-}
-
 func selectMutationTargets(
 	base MutationTargetSnapshot,
 	cabinetIDs []CabinetID,
@@ -197,7 +169,7 @@ func selectMutationTargets(
 	selectedCredentials := make([]TargetCredential, 0, len(cabinetIDs))
 	seen := make(map[CabinetID]struct{}, len(cabinetIDs))
 	for _, cabinetID := range cabinetIDs {
-		if cabinetID == "" || strings.TrimSpace(string(cabinetID)) != string(cabinetID) {
+		if cabinetID.Validate() != nil {
 			return MutationTargetSnapshot{}, errors.New("select mutation targets: cabinet ID is invalid")
 		}
 		if _, duplicate := seen[cabinetID]; duplicate {

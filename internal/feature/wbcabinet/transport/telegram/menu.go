@@ -9,8 +9,8 @@ import (
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
+	credentials "github.com/ERONIS/wb-service/internal/core/transport/wb/credentials"
 	wbcabinet_service "github.com/ERONIS/wb-service/internal/feature/wbcabinet/service"
-
 	tele "gopkg.in/telebot.v3"
 )
 
@@ -22,19 +22,19 @@ type permissionLabel struct {
 }
 
 var permissionLabels = []permissionLabel{
-	{wbcabinet_service.PermissionContent, "Контент"},
-	{wbcabinet_service.PermissionAnalytics, "Аналитика"},
-	{wbcabinet_service.PermissionPrices, "Цены и скидки"},
-	{wbcabinet_service.PermissionMarketplace, "Маркетплейс"},
-	{wbcabinet_service.PermissionStatistics, "Статистика"},
-	{wbcabinet_service.PermissionPromotion, "Продвижение"},
-	{wbcabinet_service.PermissionFeedbacks, "Вопросы и отзывы"},
-	{wbcabinet_service.PermissionBuyersChat, "Чат с покупателями"},
-	{wbcabinet_service.PermissionSupplies, "Поставки"},
-	{wbcabinet_service.PermissionBuyersReturns, "Возвраты покупателей"},
-	{wbcabinet_service.PermissionDocuments, "Документы"},
-	{wbcabinet_service.PermissionFinance, "Финансы"},
-	{wbcabinet_service.PermissionUsers, "Пользователи"},
+	{credentials.PermissionContent, "Контент"},
+	{credentials.PermissionAnalytics, "Аналитика"},
+	{credentials.PermissionPrices, "Цены и скидки"},
+	{credentials.PermissionMarketplace, "Маркетплейс"},
+	{credentials.PermissionStatistics, "Статистика"},
+	{credentials.PermissionPromotion, "Продвижение"},
+	{credentials.PermissionFeedbacks, "Вопросы и отзывы"},
+	{credentials.PermissionBuyersChat, "Чат с покупателями"},
+	{credentials.PermissionSupplies, "Поставки"},
+	{credentials.PermissionBuyersReturns, "Возвраты покупателей"},
+	{credentials.PermissionDocuments, "Документы"},
+	{credentials.PermissionFinance, "Финансы"},
+	{credentials.PermissionUsers, "Пользователи"},
 }
 
 func (handler *Handler) list(ctx tele.Context) error {
@@ -126,7 +126,7 @@ func profileText(
 			statusText(status),
 			permissionsText(cabinet.TokenProperties),
 			accessModeText(cabinet.TokenProperties),
-			cabinet.CredentialExpiresAt.Local().Format("02.01.2006 15:04"),
+			core_transport_telegram.FormatDateTime(cabinet.CredentialExpiresAt),
 		)
 	}
 	if len(cabinets) > shown {
@@ -177,7 +177,7 @@ func accessModeText(properties wbcabinet_service.TokenProperties) string {
 	if properties == 0 {
 		return "не определён"
 	}
-	if properties.Has(wbcabinet_service.PermissionReadOnly) {
+	if properties.Has(credentials.PermissionReadOnly) {
 		return "только чтение"
 	}
 	return "чтение и запись"

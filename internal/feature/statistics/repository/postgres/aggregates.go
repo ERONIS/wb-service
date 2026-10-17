@@ -45,26 +45,18 @@ func (repository *Repository) AggregateTransfers(
 
 func transferAggregateWhere(filter statistics_service.AggregateFilter) whereBuilder {
 	var builder whereBuilder
-	if filter.TransferID > 0 {
-		builder.add("transfer.transfer_id = $%d", filter.TransferID)
-	}
-	if filter.CabinetID != "" {
-		builder.add(`EXISTS (
+	builder.addIf(filter.TransferID > 0, "transfer.transfer_id = $%d", filter.TransferID)
+	builder.addIf(filter.CabinetID != "", `EXISTS (
 			SELECT 1 FROM wb.transfer_targets AS target
 			WHERE target.transfer_id = transfer.transfer_id
 			  AND target.cabinet_id = $%d
 		)`, filter.CabinetID)
-	}
-	if filter.ActionKind != "" {
-		builder.add(`EXISTS (
+	builder.addIf(filter.ActionKind != "", `EXISTS (
 			SELECT 1 FROM wb.statistics_action_facts AS action_filter
 			WHERE action_filter.transfer_id = transfer.transfer_id
 			  AND action_filter.kind = $%d
 		)`, filter.ActionKind)
-	}
-	if filter.Phase != "" {
-		builder.add("transfer.phase = $%d", filter.Phase)
-	}
+	builder.addIf(filter.Phase != "", "transfer.phase = $%d", filter.Phase)
 	if filter.OutcomeClass != "" {
 		outcome := filter.OutcomeClass
 		switch outcome {
@@ -75,8 +67,7 @@ func transferAggregateWhere(filter statistics_service.AggregateFilter) whereBuil
 		}
 		builder.add("transfer.outcome = $%d", outcome)
 	}
-	if filter.OutcomeCode != "" {
-		builder.add(`EXISTS (
+	builder.addIf(filter.OutcomeCode != "", `EXISTS (
 			SELECT 1 FROM wb.statistics_item_facts AS item_filter
 			WHERE item_filter.transfer_id = transfer.transfer_id
 			  AND item_filter.outcome_code = $%[1]d
@@ -85,21 +76,16 @@ func transferAggregateWhere(filter statistics_service.AggregateFilter) whereBuil
 			WHERE action_filter.transfer_id = transfer.transfer_id
 			  AND action_filter.outcome_code = $%[1]d
 		)`, filter.OutcomeCode)
-	}
-	if filter.DeliveryState != "" {
-		builder.add(`EXISTS (
+	builder.addIf(filter.DeliveryState != "", `EXISTS (
 			SELECT 1 FROM wb.statistics_attempt_facts AS attempt_filter
 			WHERE attempt_filter.transfer_id = transfer.transfer_id
 			  AND attempt_filter.delivery_state = $%d
 		)`, filter.DeliveryState)
-	}
-	if filter.ResponseDisposition != "" {
-		builder.add(`EXISTS (
+	builder.addIf(filter.ResponseDisposition != "", `EXISTS (
 			SELECT 1 FROM wb.statistics_attempt_facts AS attempt_filter
 			WHERE attempt_filter.transfer_id = transfer.transfer_id
 			  AND attempt_filter.response_disposition = $%d
 		)`, filter.ResponseDisposition)
-	}
 	if filter.RequiresAttention != nil {
 		if *filter.RequiresAttention {
 			builder.addRaw("transfer.attention_code IS NOT NULL")
@@ -107,12 +93,7 @@ func transferAggregateWhere(filter statistics_service.AggregateFilter) whereBuil
 			builder.addRaw("transfer.attention_code IS NULL")
 		}
 	}
-	if filter.CreatedFrom != nil {
-		builder.add("transfer.created_at >= $%d", *filter.CreatedFrom)
-	}
-	if filter.CreatedTo != nil {
-		builder.add("transfer.created_at < $%d", *filter.CreatedTo)
-	}
+	builder.addCreatedRange("transfer.created_at", filter.CreatedFrom, filter.CreatedTo)
 	return builder
 }
 
@@ -156,49 +137,33 @@ func (repository *Repository) AggregateItems(
 
 func itemAggregateWhere(filter statistics_service.AggregateFilter) whereBuilder {
 	var builder whereBuilder
-	if filter.TransferID > 0 {
-		builder.add("item.transfer_id = $%d", filter.TransferID)
-	}
-	if filter.CabinetID != "" {
-		builder.add("item.cabinet_id = $%d", filter.CabinetID)
-	}
-	if filter.ActionKind != "" {
-		builder.add(`EXISTS (
+	builder.addIf(filter.TransferID > 0, "item.transfer_id = $%d", filter.TransferID)
+	builder.addIf(filter.CabinetID != "", "item.cabinet_id = $%d", filter.CabinetID)
+	builder.addIf(filter.ActionKind != "", `EXISTS (
 			SELECT 1 FROM wb.statistics_action_facts AS action_filter
 			WHERE action_filter.transfer_id = item.transfer_id
 			  AND action_filter.action_id = item.source_action_id
 			  AND action_filter.kind = $%d
 		)`, filter.ActionKind)
-	}
-	if filter.Phase != "" {
-		builder.add(`EXISTS (
+	builder.addIf(filter.Phase != "", `EXISTS (
 			SELECT 1 FROM wb.statistics_transfer_facts AS transfer_filter
 			WHERE transfer_filter.transfer_id = item.transfer_id
 			  AND transfer_filter.phase = $%d
 		)`, filter.Phase)
-	}
-	if filter.OutcomeClass != "" {
-		builder.add("item.outcome_class = $%d", filter.OutcomeClass)
-	}
-	if filter.OutcomeCode != "" {
-		builder.add("item.outcome_code = $%d", filter.OutcomeCode)
-	}
-	if filter.DeliveryState != "" {
-		builder.add(`EXISTS (
+	builder.addIf(filter.OutcomeClass != "", "item.outcome_class = $%d", filter.OutcomeClass)
+	builder.addIf(filter.OutcomeCode != "", "item.outcome_code = $%d", filter.OutcomeCode)
+	builder.addIf(filter.DeliveryState != "", `EXISTS (
 			SELECT 1 FROM wb.statistics_attempt_facts AS attempt_filter
 			WHERE attempt_filter.transfer_id = item.transfer_id
 			  AND attempt_filter.action_id = item.source_action_id
 			  AND attempt_filter.delivery_state = $%d
 		)`, filter.DeliveryState)
-	}
-	if filter.ResponseDisposition != "" {
-		builder.add(`EXISTS (
+	builder.addIf(filter.ResponseDisposition != "", `EXISTS (
 			SELECT 1 FROM wb.statistics_attempt_facts AS attempt_filter
 			WHERE attempt_filter.transfer_id = item.transfer_id
 			  AND attempt_filter.action_id = item.source_action_id
 			  AND attempt_filter.response_disposition = $%d
 		)`, filter.ResponseDisposition)
-	}
 	if filter.RequiresAttention != nil {
 		expression := `COALESCE((item.outcome_class IN ('unresolved', 'internal_error')
 			AND item.attention_closed_at IS NULL), false)`
@@ -208,12 +173,7 @@ func itemAggregateWhere(filter statistics_service.AggregateFilter) whereBuilder 
 			builder.addRaw("NOT " + expression)
 		}
 	}
-	if filter.CreatedFrom != nil {
-		builder.add("item.created_at >= $%d", *filter.CreatedFrom)
-	}
-	if filter.CreatedTo != nil {
-		builder.add("item.created_at < $%d", *filter.CreatedTo)
-	}
+	builder.addCreatedRange("item.created_at", filter.CreatedFrom, filter.CreatedTo)
 	return builder
 }
 
@@ -264,34 +224,18 @@ func (repository *Repository) AggregateActions(
 
 func actionAggregateWhere(filter statistics_service.AggregateFilter) whereBuilder {
 	var builder whereBuilder
-	if filter.TransferID > 0 {
-		builder.add("action.transfer_id = $%d", filter.TransferID)
-	}
-	if filter.CabinetID != "" {
-		builder.add("action.cabinet_id = $%d", filter.CabinetID)
-	}
-	if filter.ActionKind != "" {
-		builder.add("action.kind = $%d", filter.ActionKind)
-	}
-	if filter.Phase != "" {
-		builder.add(`EXISTS (
+	builder.addIf(filter.TransferID > 0, "action.transfer_id = $%d", filter.TransferID)
+	builder.addIf(filter.CabinetID != "", "action.cabinet_id = $%d", filter.CabinetID)
+	builder.addIf(filter.ActionKind != "", "action.kind = $%d", filter.ActionKind)
+	builder.addIf(filter.Phase != "", `EXISTS (
 			SELECT 1 FROM wb.statistics_transfer_facts AS transfer_filter
 			WHERE transfer_filter.transfer_id = action.transfer_id
 			  AND transfer_filter.phase = $%d
 		)`, filter.Phase)
-	}
-	if filter.OutcomeClass != "" {
-		builder.add("action.outcome_class = $%d", filter.OutcomeClass)
-	}
-	if filter.OutcomeCode != "" {
-		builder.add("action.outcome_code = $%d", filter.OutcomeCode)
-	}
-	if filter.DeliveryState != "" {
-		builder.add("attempt.delivery_state = $%d", filter.DeliveryState)
-	}
-	if filter.ResponseDisposition != "" {
-		builder.add("attempt.response_disposition = $%d", filter.ResponseDisposition)
-	}
+	builder.addIf(filter.OutcomeClass != "", "action.outcome_class = $%d", filter.OutcomeClass)
+	builder.addIf(filter.OutcomeCode != "", "action.outcome_code = $%d", filter.OutcomeCode)
+	builder.addIf(filter.DeliveryState != "", "attempt.delivery_state = $%d", filter.DeliveryState)
+	builder.addIf(filter.ResponseDisposition != "", "attempt.response_disposition = $%d", filter.ResponseDisposition)
 	if filter.RequiresAttention != nil {
 		expression := "COALESCE(action.outcome_class IN ('unresolved', 'internal_error'), false)"
 		if *filter.RequiresAttention {
@@ -300,12 +244,7 @@ func actionAggregateWhere(filter statistics_service.AggregateFilter) whereBuilde
 			builder.addRaw("NOT (" + expression + ")")
 		}
 	}
-	if filter.CreatedFrom != nil {
-		builder.add("action.created_at >= $%d", *filter.CreatedFrom)
-	}
-	if filter.CreatedTo != nil {
-		builder.add("action.created_at < $%d", *filter.CreatedTo)
-	}
+	builder.addCreatedRange("action.created_at", filter.CreatedFrom, filter.CreatedTo)
 	return builder
 }
 
@@ -316,39 +255,18 @@ func (repository *Repository) AggregateErrors(
 	ctx, cancel := repository.queryContext(ctx)
 	defer cancel()
 	var builder whereBuilder
-	if filter.TransferID > 0 {
-		builder.add("fact.transfer_id = $%d", filter.TransferID)
-	}
-	if filter.CabinetID != "" {
-		builder.add("fact.cabinet_id = $%d", filter.CabinetID)
-	}
-	if filter.ActionKind != "" {
-		builder.add("fact.action_kind = $%d", filter.ActionKind)
-	}
-	if filter.Phase != "" {
-		builder.add("fact.phase = $%d", filter.Phase)
-	}
-	if filter.OutcomeClass != "" {
-		builder.add("fact.outcome_class = $%d", filter.OutcomeClass)
-	}
-	if filter.OutcomeCode != "" {
-		builder.add("fact.outcome_code = $%d", filter.OutcomeCode)
-	}
-	if filter.DeliveryState != "" {
-		builder.add("fact.delivery_state = $%d", filter.DeliveryState)
-	}
-	if filter.ResponseDisposition != "" {
-		builder.add("fact.response_disposition = $%d", filter.ResponseDisposition)
-	}
+	builder.addIf(filter.TransferID > 0, "fact.transfer_id = $%d", filter.TransferID)
+	builder.addIf(filter.CabinetID != "", "fact.cabinet_id = $%d", filter.CabinetID)
+	builder.addIf(filter.ActionKind != "", "fact.action_kind = $%d", filter.ActionKind)
+	builder.addIf(filter.Phase != "", "fact.phase = $%d", filter.Phase)
+	builder.addIf(filter.OutcomeClass != "", "fact.outcome_class = $%d", filter.OutcomeClass)
+	builder.addIf(filter.OutcomeCode != "", "fact.outcome_code = $%d", filter.OutcomeCode)
+	builder.addIf(filter.DeliveryState != "", "fact.delivery_state = $%d", filter.DeliveryState)
+	builder.addIf(filter.ResponseDisposition != "", "fact.response_disposition = $%d", filter.ResponseDisposition)
 	if filter.RequiresAttention != nil {
 		builder.add("fact.requires_attention = $%d", *filter.RequiresAttention)
 	}
-	if filter.CreatedFrom != nil {
-		builder.add("fact.created_at >= $%d", *filter.CreatedFrom)
-	}
-	if filter.CreatedTo != nil {
-		builder.add("fact.created_at < $%d", *filter.CreatedTo)
-	}
+	builder.addCreatedRange("fact.created_at", filter.CreatedFrom, filter.CreatedTo)
 	query := `
 		WITH facts AS (
 			SELECT

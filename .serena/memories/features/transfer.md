@@ -27,15 +27,18 @@ The central State Machine and pipeline coordinator of `wb-service`. It tracks th
   - Cryptographic canonical SHA-256 (`"transfer-target-set:v2"`) over sorted target cabinet IDs, seller keys, revisions, credential expiration timestamps, and content capabilities.
   - Invariant: Prevents silent target mutation or permission drift mid-transfer.
 
+## Shared Identity Contract
+- TargetCredential aliases core `domain.CabinetAccess`; cabinet and transfer adapters share it without field-by-field mapping. Transfer registry owns cohort selection (partner/admin fan-out), snapshot hashing and MutationTarget position. Its transport only reads credentials by owner, role or all cabinets; it contains no role-selection policy. The unused in-memory snapshot override was removed; snapshots always use current credentials. Hash encoding is unchanged and does not include display names.
+
 ## Subsystems, Functions & Contracts
 1. **Workflow Service (`service/workflow/service.go`)**:
    - `Start(ctx, batchID) (TransferID, error)`: Initiates fanout transfer across default cohort.
    - `StartToCabinet(ctx, batchID, cabinetID) (TransferID, error)`: Initiates directed transfer to single target cabinet.
    - `Initialize(ctx, transferID) error`: Transitions transfer from `PhaseInitializing` -> `PhasePreparing`. Seeds `transfer_items`, `transfer_group_targets`, and `transfer_item_targets`.
-   - **High-Performance Seeding**: Repository pre-allocates PostgreSQL sequences in bulk (`reserveIDs` on sequence objects) and streams thousands of rows via `pgx.CopyFrom`.
+   - **High-Performance Seeding**: Repository pre-allocates PostgreSQL sequences in bulk through `core/repository/postgres/sequence.ReserveIDs` and its transfer-specific `reserveIDs` wrapper and streams thousands of rows via `pgx.CopyFrom`.
 2. **Polling Engine (`server/polling.go`)**:
    - `Run(ctx, onError, processors...)`: Runs independent concurrent goroutines per stage under `sync.WaitGroup`.
-   - Supports `wake <-chan struct{}` for immediate reaction to new uploads without waiting for ticker intervals.
+   - `ProgressAwareProcessor`: Optional interface (`ProcessPendingWithProgress(ctx) (bool, error)`). Polling engine triggers downstream wakes (`stageWakes` / `wakeDownstream`) strictly when real forward progress occurs (`progress == true`); empty or non-advancing passes do not wake downstream stages, preventing wake storms.
    - Per-processor mutexes (`processMu sync.Mutex`) prevent concurrent overlap on the same stage.
    - Polling loop sequence:
      1. `cardprepare.Processor()`: Evaluates pending items, outputs preparation proposals.
@@ -43,13 +46,19 @@ The central State Machine and pipeline coordinator of `wb-service`. It tracks th
      3. `cardpublication.Processor()`: Plans incremental batches into `wb.publication_plans`.
      4. `cardpublication.ProductDispatcher()`: Submits cards to `/content/v2/cards/upload`.
      5. `cardpublication.ErrorFeed()`: Pulls `/cards/error/list` and correlates errors.
-3. **Cross-Feature Appliers**:
-   - `PreparationResultApplier.Apply(...)`: Called by `cardprepare` to mark group targets `succeeded`/`rejected`/`unresolved`.
-   - `PublicationPlanResultApplier.Apply(...)`: Binds group targets to `publication_plan_id`.
+3. **Preparation Coordination & Appliers**:
+   - `ListPendingPreparationGroups(ctx, transferID, limit)`: Exposes pending preparation work directly from `wb.transfer_group_targets` using fair window partitioning (`ROW_NUMBER() OVER (PARTITION BY group_target.target_id ORDER BY group_target.id) AS cabinet_rank`). Interleaves target cabinets in round-robin fashion, preventing starvation and advancing past transient errors without busy loops.
+   - `PreparationResultApplier`:
+     - `Apply(ctx, command)`: Standalone transactional applier.
+     - `ApplyTx(ctx, tx, command)`: Called by `cardprepare` inside the outer Unit of Work transaction to atomically save preparation artifacts into `card_preparation_artifacts (transfer_id, group_target_id)` and update `transfer_group_targets` projections (status, outcome_code, item_position, field, started_at, finished_at) in a single commit.
+     - **Concurrency & Idempotency**: Secures row locks via `SELECT ... FOR UPDATE`. Replays with identical payload and diagnostics return `nil` (idempotent no-op). Conflicting replays reject with `ErrPreparationResultConflict`.
+   - `Outcome Aggregation & Transitions (`repository/postgres/outcome.go`)`:
+     - Centralizes SQL outcome expressions (`groupOutcomeCountsCTE`, `groupToTransferOutcomeExpression`) and lifecycle transitions (`advanceTransferAfterPreparation`, `finishPublicationTransfer`, `reduceTransferAfterPlanning`).
+   - `PublicationPlanResultApplier.Apply(...)`: Binds group targets to `publication_plan_id`. `PublicationPlanningGroup` references groups directly via `GroupTargetID` (legacy `PreparationGroupID` removed).
    - `PublicationExecutionResultApplier`:
      - `ApplyActionResult(...)`: Commits upload outcome, sets item targets to `terminal` with NMID.
      - `ApplyMediaResult(...)`: Marks group media status.
-     - `CorrectPublicationItemResult(...)`: Updates item target from error feed or manual resolution.
+     - `CorrectPublicationItemResult(...)`: Applies evidence-based correction for terminal publication items from manual or verified-WB resolution; recalculates group and finished transfer outcome in the same transaction. Group correction preserves unresolved/rejected media status as unresolved/partial instead of promoting the group to success solely because the card exists.
 
 ## Database Schema (`wb` namespace)
 - `wb.transfers`: Master transfer record (source batch ID, current phase, outcome, owner).
@@ -61,7 +70,7 @@ The central State Machine and pipeline coordinator of `wb-service`. It tracks th
 
 ## Invariants & Guardrails
 - **Atomicity**: All transitions run inside Unit of Work (`uow.WithinTransaction`).
-- **Terminal Immutability**: Once an item projection reaches `terminal`, its outcome cannot be altered except via formal manual resolution.
+- **Terminal Immutability**: Once an item projection reaches `terminal`, its outcome changes only through formal evidence-based correction (manual decision or verified WB catalog evidence), with expected revision/outcome checks and UoW.
 
 ## Related Memories
 - Target transfer simplification & state consolidation plan: `mem:architecture/transfer_simplification_plan`

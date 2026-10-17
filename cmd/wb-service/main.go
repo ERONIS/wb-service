@@ -16,13 +16,11 @@ import (
 	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
 	telegram_server "github.com/ERONIS/wb-service/internal/core/transport/telegram/server"
 	core_wb "github.com/ERONIS/wb-service/internal/core/transport/wb"
-	core_wb_config "github.com/ERONIS/wb-service/internal/core/transport/wb/config"
 	cabinetcopy "github.com/ERONIS/wb-service/internal/feature/cabinetcopy"
 	cabinetcopy_wb_transport "github.com/ERONIS/wb-service/internal/feature/cabinetcopy/transport/wb"
 	cardedit "github.com/ERONIS/wb-service/internal/feature/cardedit"
 	cardimport "github.com/ERONIS/wb-service/internal/feature/cardimport"
 	cardprepare "github.com/ERONIS/wb-service/internal/feature/cardprepare"
-	cardprepare_wb_transport "github.com/ERONIS/wb-service/internal/feature/cardprepare/transport/wb"
 	cardpublication "github.com/ERONIS/wb-service/internal/feature/cardpublication"
 	cardpublication_wb_transport "github.com/ERONIS/wb-service/internal/feature/cardpublication/transport/wb"
 	statistics "github.com/ERONIS/wb-service/internal/feature/statistics"
@@ -55,6 +53,7 @@ func main() {
 	postgresPool, err := core_postgres_pool.NewConnectionPool(
 		core_postgres_pool.NewConfigMust(),
 		ctx,
+		logger.Logger,
 	)
 	if err != nil {
 		panic(fmt.Errorf("create PostgreSQL pool: %w", err))
@@ -63,17 +62,16 @@ func main() {
 
 	uow := core_postgres_transaction.New(postgresPool, pgx.TxOptions{})
 
-	wbConfig := core_wb_config.NewConfigMust()
-	wbClientset, err := core_wb.NewForConfig(
+	wbClientset, err := core_wb.NewClientset(
 		ctx,
-		&wbConfig,
 		logger.Logger,
 	)
 	if err != nil {
 		panic(fmt.Errorf("create WB clientset: %w", err))
 	}
 	defer wbClientset.CloseIdleConnections()
-	wbCabinetConfig := wbcabinet.NewConfigMust()
+	wbContent := core_wb.NewContentClient(wbClientset)
+	wbPrices := core_wb.NewPricesClient(wbClientset)
 	wbCabinetFeature, err := wbcabinet.New(
 		ctx,
 		postgresPool,
@@ -83,13 +81,9 @@ func main() {
 	if err != nil {
 		panic(fmt.Errorf("create WB cabinet feature: %w", err))
 	}
-	if err := wbCabinetFeature.Initialize(
-		ctx,
-		wbCabinetConfig.BootstrapOwnerID,
-		wbConfig.Cabinets,
-	); err != nil {
+	if err := wbCabinetFeature.Initialize(ctx); err != nil {
 		logger.Logger.Warn(
-			"some WB cabinets were not restored or bootstrapped",
+			"some WB cabinets were not restored",
 			zap.Error(err),
 		)
 	}
@@ -140,7 +134,7 @@ func main() {
 		postgresPool,
 		uow,
 		bot,
-		cabinetcopy_wb_transport.NewReader(wbClientset, wbCabinetFeature.Service()),
+		cabinetcopy_wb_transport.NewReader(wbContent, wbPrices, wbCabinetFeature.Service()),
 		cardimportFeature.Service(),
 		transferFeature.Service(),
 		cabinetcopy.NewConfigMust(),
@@ -151,7 +145,7 @@ func main() {
 	cardprepareFeature := cardprepare.New(
 		postgresPool,
 		uow,
-		cardprepare_wb_transport.NewCatalogTransport(wbClientset),
+		wbContent,
 		transferFeature.Service(),
 		transferFeature.PreparationResultApplier(),
 		logger.Logger,
@@ -179,9 +173,10 @@ func main() {
 		postgresPool,
 		bot,
 		cardpublicationFeature.ManualResolver(),
+		cardpublicationFeature.VerifiedCardResolver(),
 		cardimportFeature.Service(),
 		cabinetNames,
-		statistics_wb_transport.NewVerifier(wbClientset),
+		statistics_wb_transport.NewVerifier(wbContent),
 	)
 	cardimportFeature.SetCompletionNavigator(statisticsFeature.CompletionNavigator())
 	cardimportFeature.SetProcessingNotifier(transferFeature)

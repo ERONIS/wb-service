@@ -2,10 +2,13 @@ package preparation
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 )
@@ -20,31 +23,63 @@ const (
 	PreparationResultUnresolved PreparationResultStatus = "unresolved"
 )
 
-type ApplyPreparationResultCommand struct {
-	TransferID         TransferID
-	GroupTargetID      int64
-	PreparationID      int64
-	PreparationGroupID int64
-	Status             PreparationResultStatus
-	OutcomeCode        string
-	ProposalRoot       Digest
-	Revision           int64
+type PreparationArtifact struct {
+	SubjectID        int64
+	SemanticDigest   Digest
+	MetadataDigest   Digest
+	ProposalRoot     Digest
+	RequestPayload   []byte
+	MetadataSnapshot []byte
+	LimitsFree       int64
+	LimitsPaid       int64
+	LimitsObservedAt time.Time
 }
 
+// ApplyPreparationResultCommand содержит параметры применения результата подготовки целевой группы.
+type ApplyPreparationResultCommand struct {
+	TransferID    TransferID
+	GroupTargetID int64
+	Status        PreparationResultStatus
+	OutcomeCode   string
+	ItemPosition  int
+	Field         string
+	StartedAt     time.Time
+	FinishedAt    time.Time
+	ProposalRoot  Digest
+	Artifact      *PreparationArtifact
+	Revision      int64
+}
+
+// Validate проверяет согласованность команды применения результата подготовки и её диагностических данных.
 func (command ApplyPreparationResultCommand) Validate() error {
 	if command.TransferID <= 0 || command.GroupTargetID <= 0 ||
-		command.PreparationID <= 0 || command.PreparationGroupID <= 0 ||
 		command.Revision != 1 || strings.TrimSpace(command.OutcomeCode) != command.OutcomeCode ||
-		command.OutcomeCode == "" || len(command.OutcomeCode) > 128 {
+		command.OutcomeCode == "" || len(command.OutcomeCode) > 128 ||
+		command.StartedAt.IsZero() || command.FinishedAt.IsZero() ||
+		command.FinishedAt.Before(command.StartedAt) {
 		return errors.New("apply transfer preparation result command is invalid")
+	}
+	if command.ItemPosition < 0 || len(command.Field) > 128 ||
+		strings.TrimSpace(command.Field) != command.Field {
+		return errors.New("apply transfer preparation result diagnostics are invalid")
 	}
 	switch command.Status {
 	case PreparationResultSucceeded:
-		if command.OutcomeCode != "prepared" || command.ProposalRoot == (Digest{}) {
+		if command.OutcomeCode != "prepared" || command.ProposalRoot == (Digest{}) ||
+			command.Artifact == nil || command.ItemPosition != 0 || command.Field != "" {
 			return errors.New("successful transfer preparation result is invalid")
 		}
+		artifact := command.Artifact
+		metadataDigest, err := cardpipeline.DigestJSON("cardprepare-metadata:v1", json.RawMessage(artifact.MetadataSnapshot))
+		if err != nil || artifact.SubjectID <= 0 || artifact.SemanticDigest == (Digest{}) ||
+			artifact.MetadataDigest != metadataDigest || artifact.ProposalRoot != command.ProposalRoot ||
+			!json.Valid(artifact.RequestPayload) || artifact.LimitsObservedAt.IsZero() ||
+			artifact.LimitsFree < 0 || artifact.LimitsPaid < 0 ||
+			cardpipeline.DigestProposal(artifact.SemanticDigest, artifact.MetadataDigest, artifact.RequestPayload) != command.ProposalRoot {
+			return errors.New("transfer preparation artifact integrity is invalid")
+		}
 	case PreparationResultRejected, PreparationResultUnresolved:
-		if command.ProposalRoot != (Digest{}) {
+		if command.ProposalRoot != (Digest{}) || command.Artifact != nil {
 			return errors.New("unsuccessful transfer preparation result has proposal root")
 		}
 	default:
@@ -93,4 +128,22 @@ func (applier *PreparationResultApplier) Apply(
 		return fmt.Errorf("apply transfer preparation result: %w", err)
 	}
 	return nil
+}
+
+// ApplyTx применяет результат подготовки transfer внутри внешней транзакции.
+func (applier *PreparationResultApplier) ApplyTx(
+	ctx context.Context,
+	tx core_postgres_transaction.DBTX,
+	command ApplyPreparationResultCommand,
+) error {
+	if ctx == nil {
+		return errors.New("apply transfer preparation result in tx: context is nil")
+	}
+	if tx == nil {
+		return errors.New("apply transfer preparation result in tx: DBTX is nil")
+	}
+	if err := command.Validate(); err != nil {
+		return err
+	}
+	return applier.repository.ApplyPreparationResult(ctx, tx, command)
 }

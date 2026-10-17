@@ -109,10 +109,9 @@ func (processor *Processor) processTransfer(
 	queries := make([]cardprepare_service.ProposalQuery, len(source.Groups))
 	for index, sourceGroup := range source.Groups {
 		queries[index] = cardprepare_service.ProposalQuery{
-			TransferID:         transfer.ID,
-			GroupTargetID:      sourceGroup.GroupTargetID,
-			PreparationGroupID: cardprepare_service.PreparationGroupID(sourceGroup.PreparationGroupID),
-			ProposalRoot:       cardprepare_service.Digest(sourceGroup.ProposalRoot),
+			TransferID:    transfer.ID,
+			GroupTargetID: sourceGroup.GroupTargetID,
+			ProposalRoot:  cardprepare_service.Digest(sourceGroup.ProposalRoot),
 		}
 	}
 	proposals, err := processor.proposalReader.LoadProposals(ctx, queries)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
@@ -40,6 +41,63 @@ func ParseInt64Argument(
 	return value, nil
 }
 
+// EncodeID кодирует целое число в компактную Base-36 строку для экономии байт в callback_data (лимит 64 байта).
+func EncodeID(id int64) string {
+	return strconv.FormatInt(id, 36)
+}
+
+// ParseID декодирует целое число из Base-36 строки.
+func ParseID(value string) (int64, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, fmt.Errorf("empty Base-36 ID")
+	}
+	val, err := strconv.ParseInt(value, 36, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid Base-36 ID %q: %w", value, err)
+	}
+	return val, nil
+}
+
+// ParseBase36Argument парсит Base-36 аргумент из списка callback-аргументов.
+func ParseBase36Argument(
+	arguments []string,
+	index int,
+	expected int,
+	minimum int64,
+) (int64, error) {
+	return ParseInt64Argument(arguments, index, expected, 36, minimum)
+}
+
+// ParseIDAndRevision извлекает ID сущности и номер ревизии из первых двух аргументов callback.
+func ParseIDAndRevision(arguments []string) (int64, int64, error) {
+	if len(arguments) < 2 {
+		return 0, 0, fmt.Errorf("insufficient callback arguments: expected at least 2, got %d", len(arguments))
+	}
+	id, err := ParseInt64Argument(arguments, 0, len(arguments), 10, 1)
+	if err != nil {
+		return 0, 0, err
+	}
+	revision, err := ParseInt64Argument(arguments, 1, len(arguments), 10, 0)
+	if err != nil {
+		return 0, 0, err
+	}
+	return id, revision, nil
+}
+
+// ParsePageNumber разбирает номер страницы (по умолчанию 1).
+func ParsePageNumber(value string) (int, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 1, nil
+	}
+	page, err := strconv.Atoi(value)
+	if err != nil || page < 1 {
+		return 0, fmt.Errorf("invalid page %q", value)
+	}
+	return page, nil
+}
+
 func SenderID(ctx tele.Context) (int64, error) {
 	if ctx == nil || ctx.Sender() == nil || ctx.Sender().ID <= 0 {
 		return 0, core_errors.InvalidArgument("Telegram sender is unavailable")
@@ -47,32 +105,22 @@ func SenderID(ctx tele.Context) (int64, error) {
 	return ctx.Sender().ID, nil
 }
 
-func ActorFromContext(ctx tele.Context) (domain.Actor, error) {
+// UserFromContext извлекает профиль пользователя из контекста Telegram.
+func UserFromContext(ctx tele.Context) (domain.User, error) {
 	telegramID, err := SenderID(ctx)
 	if err != nil {
-		return domain.Actor{}, err
+		return domain.User{}, err
 	}
 	sender := ctx.Sender()
-	displayName := strings.TrimSpace(strings.Join(
-		[]string{sender.FirstName, sender.LastName},
-		" ",
-	))
-	if displayName == "" {
-		displayName = strings.TrimSpace(sender.Username)
+	name := strings.TrimSpace(sender.FirstName + " " + sender.LastName)
+	if name == "" {
+		name = strings.TrimSpace(sender.Username)
 	}
-	if displayName == "" {
-		displayName = fmt.Sprintf("Telegram %d", telegramID)
+	if utf8.RuneCountInString(name) < 3 {
+		name = fmt.Sprintf("Telegram %d", telegramID)
 	}
-	displayName = TruncateRunes(displayName, domain.MaxActorDisplayNameLength)
 
-	actor := domain.Actor{
-		TelegramUserID: telegramID,
-		DisplayName:    displayName,
-	}.Normalized()
-	if err := actor.Validate(); err != nil {
-		return domain.Actor{}, err
-	}
-	return actor, nil
+	return domain.CreateUser(telegramID, TruncateRunes(name, 100)), nil
 }
 
 func TruncateRunes(value string, maximum int) string {

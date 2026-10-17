@@ -2,7 +2,6 @@ package statistics_telegram_transport
 
 import (
 	"fmt"
-	"strconv"
 
 	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
 	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
@@ -253,17 +252,11 @@ func operationStatus(row statistics_service.OperationRow) string {
 }
 
 func parsePositiveInt64(arguments []string, index, expected int) (int64, error) {
-	return core_transport_telegram.ParseInt64Argument(
-		arguments,
-		index,
-		expected,
-		36,
-		1,
-	)
+	return core_transport_telegram.ParseBase36Argument(arguments, index, expected, 1)
 }
 
 func callbackInt(value int64) string {
-	return strconv.FormatInt(value, 36)
+	return core_transport_telegram.EncodeID(value)
 }
 
 func parseTwoIDs(arguments []string) (int64, int64, error) {
@@ -277,4 +270,8 @@ func parseTwoIDs(arguments []string) (int64, int64, error) {
 
 func staleCallback(ctx tele.Context) error {
 	return core_transport_telegram.Notify(ctx, "statistics.stale_callback", "Кнопка устарела. Откройте статистику заново.")
+}
+
+func presentError(ctx tele.Context, err error) error {
+	return core_transport_telegram.NotifyServiceError(ctx, err)
 }

@@ -132,6 +132,9 @@ func (handler *Handler) NotifyEditResult(
 		markup.Row(buttonEdit),
 		markup.Row(core_transport_telegram.MainMenuButton()),
 	)
+	if handler.menu != nil {
+		return handler.menu.RenderChat(telegramID, builder.String(), markup)
+	}
 	_, err := handler.bot.Send(
 		&tele.User{ID: telegramID},
 		builder.String(),

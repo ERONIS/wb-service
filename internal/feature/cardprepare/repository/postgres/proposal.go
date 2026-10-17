@@ -19,7 +19,6 @@ const (
 
 type storedProposalRow struct {
 	position                       int64
-	preparationID                  int64
 	stored                         cardprepare_service.StoredProposal
 	semanticDigest, metadataDigest []byte
 	proposalRoot, requestPayload   []byte
@@ -50,7 +49,6 @@ func (repository *Repository) LoadProposals(
 		return nil, errors.New("card preparation proposal batch size is invalid")
 	}
 	transferID := queries[0].TransferID
-	preparationGroupIDs := make([]int64, len(queries))
 	groupTargetIDs := make([]int64, len(queries))
 	proposalRoots := make([][]byte, len(queries))
 	for index, query := range queries {
@@ -60,7 +58,6 @@ func (repository *Repository) LoadProposals(
 		if query.TransferID != transferID {
 			return nil, errors.New("card preparation proposal batch spans transfers")
 		}
-		preparationGroupIDs[index] = int64(query.PreparationGroupID)
 		groupTargetIDs[index] = query.GroupTargetID
 		proposalRoots[index] = append([]byte(nil), query.ProposalRoot[:]...)
 	}
@@ -70,13 +67,11 @@ func (repository *Repository) LoadProposals(
 	const load = `
 		WITH requested AS (
 			SELECT
-				request.preparation_group_id,
 				request.group_target_id,
 				request.proposal_root,
 				request.position
-			FROM UNNEST($2::bigint[], $3::bigint[], $4::bytea[])
+			FROM UNNEST($2::bigint[], $3::bytea[])
 				WITH ORDINALITY AS request(
-					preparation_group_id,
 					group_target_id,
 					proposal_root,
 					position
@@ -84,10 +79,9 @@ func (repository *Repository) LoadProposals(
 		)
 		SELECT
 			request.position,
-			work.preparation_id,
-			work.source_group_id,
-			work.target_id,
-			work.cabinet_id,
+			group_target.source_group_id,
+			group_target.target_id,
+			target.cabinet_id,
 			artifact.subject_id,
 			artifact.semantic_digest,
 			artifact.metadata_digest,
@@ -101,26 +95,26 @@ func (repository *Repository) LoadProposals(
 			members.item_positions,
 			members.vendor_codes
 		FROM requested AS request
-		JOIN wb.card_preparation_groups AS work
-		  ON work.id = request.preparation_group_id
-		 AND work.transfer_id = $1
-		 AND work.group_target_id = request.group_target_id
-		 AND work.status = 'prepared'
-		 AND work.proposal_root = request.proposal_root
+		JOIN wb.transfer_group_targets AS group_target
+		  ON group_target.transfer_id = $1
+		 AND group_target.id = request.group_target_id
+		 AND group_target.preparation_status = 'succeeded'
+		 AND group_target.preparation_proposal_root = request.proposal_root
+		JOIN wb.transfer_targets AS target
+		  ON target.transfer_id = group_target.transfer_id
+		 AND target.id = group_target.target_id
 		JOIN wb.card_preparation_artifacts AS artifact
-		  ON artifact.transfer_id = work.transfer_id
-		 AND artifact.preparation_group_id = work.id
+		  ON artifact.transfer_id = group_target.transfer_id
+		 AND artifact.group_target_id = group_target.id
 		 AND artifact.proposal_root = request.proposal_root
 		JOIN LATERAL (
 			SELECT
-				ARRAY_AGG(item.transfer_item_id ORDER BY item.item_position) AS transfer_item_ids,
-				ARRAY_AGG(item.item_position::bigint ORDER BY item.item_position) AS item_positions,
-				ARRAY_AGG(item.vendor_code ORDER BY item.item_position) AS vendor_codes
-			FROM wb.card_preparation_items AS item
-			WHERE item.transfer_id = work.transfer_id
-			  AND item.preparation_group_id = work.id
-			  AND item.source_group_id = work.source_group_id
-			  AND item.group_target_id = work.group_target_id
+				ARRAY_AGG(item.id ORDER BY item.position) AS transfer_item_ids,
+				ARRAY_AGG(item.position::bigint ORDER BY item.position) AS item_positions,
+				ARRAY_AGG(item.vendor_code ORDER BY item.position) AS vendor_codes
+			FROM wb.transfer_items AS item
+			WHERE item.transfer_id = group_target.transfer_id
+			  AND item.source_group_id = group_target.source_group_id
 		) AS members ON TRUE
 		ORDER BY request.position;
 	`
@@ -128,7 +122,6 @@ func (repository *Repository) LoadProposals(
 		ctx,
 		load,
 		transferID,
-		preparationGroupIDs,
 		groupTargetIDs,
 		proposalRoots,
 	)
@@ -143,7 +136,6 @@ func (repository *Repository) LoadProposals(
 		var loaded storedProposalRow
 		if err := rows.Scan(
 			&loaded.position,
-			&loaded.preparationID,
 			&loaded.stored.SourceGroupID,
 			&loaded.stored.TargetID,
 			&loaded.stored.CabinetID,
@@ -188,8 +180,6 @@ func (repository *Repository) LoadProposals(
 			index := int(loaded.position - 1)
 			query := queries[index]
 			stored := loaded.stored
-			stored.PreparationID = cardprepare_service.PreparationID(loaded.preparationID)
-			stored.PreparationGroupID = query.PreparationGroupID
 			stored.TransferID = query.TransferID
 			stored.GroupTargetID = query.GroupTargetID
 			if err := decodeStoredProposal(
@@ -286,7 +276,7 @@ func decodeStoredProposal(
 }
 
 func validateStoredProposal(stored cardprepare_service.StoredProposal) error {
-	if stored.PreparationID <= 0 || stored.SourceGroupID <= 0 ||
+	if stored.SourceGroupID <= 0 ||
 		stored.TargetID <= 0 ||
 		strings.TrimSpace(string(stored.CabinetID)) != string(stored.CabinetID) ||
 		stored.CabinetID == "" || stored.Proposal.ValidateIntegrity() != nil {

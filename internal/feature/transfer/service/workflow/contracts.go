@@ -108,6 +108,13 @@ type Repository interface {
 		transferID TransferID,
 	) error
 
+	ListPendingPreparationGroups(
+		ctx context.Context,
+		transferID TransferID,
+		limit int,
+		after PreparationPendingGroup,
+	) ([]PreparationPendingGroup, error)
+
 	LoadPreparationSource(
 		ctx context.Context,
 		transferID TransferID,

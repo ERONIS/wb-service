@@ -13,16 +13,12 @@ import (
 )
 
 func sessionArgs(args []string, exact int) (cabinetcopy_service.SessionID, int64, error) {
-	if exact < 2 {
+	if len(args) != exact || exact < 2 {
 		return 0, 0, errors.New("invalid cabinet copy callback")
 	}
-	id, err := core_transport_telegram.ParseInt64Argument(args, 0, exact, 10, 1)
+	id, revision, err := core_transport_telegram.ParseIDAndRevision(args)
 	if err != nil {
-		return 0, 0, errors.New("invalid cabinet copy session ID")
-	}
-	revision, err := core_transport_telegram.ParseInt64Argument(args, 1, exact, 10, 0)
-	if err != nil {
-		return 0, 0, errors.New("invalid cabinet copy revision")
+		return 0, 0, err
 	}
 	return cabinetcopy_service.SessionID(id), revision, nil
 }

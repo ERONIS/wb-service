@@ -1,84 +1,68 @@
 package users_transport_tg
 
 import (
+	"context"
 	"fmt"
 	"html"
 
+	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
 
 	tele "gopkg.in/telebot.v3"
 )
 
-func (h *UsersTgHandler) setAdmin(
+func (h *UsersTgHandler) mutateUserRole(
 	ctx tele.Context,
 	targetTelegramID int64,
 	page int,
+	prefix string,
+	action func(context.Context, int64, int64) (domain.User, error),
 ) error {
 	adminTelegramID, err := core_transport_telegram.SenderID(ctx)
 	if err != nil {
 		return sendServiceError(ctx, err)
 	}
-	user, err := h.usersService.SetAdmin(
-		h.ctx,
-		adminTelegramID,
-		targetTelegramID,
-	)
+	user, err := action(h.ctx, adminTelegramID, targetTelegramID)
 	if err != nil {
 		return sendServiceError(ctx, err)
 	}
-
 	return ctx.EditOrSend(
-		"✅ Пользователь назначен администратором.\n\n"+
-			userCardText(user),
+		prefix+"\n\n"+userCardText(user),
 		userCardMarkup(user, page),
 	)
 }
 
-func (h *UsersTgHandler) setPartner(
-	ctx tele.Context,
-	targetTelegramID int64,
-	page int,
-) error {
-	adminTelegramID, err := core_transport_telegram.SenderID(ctx)
-	if err != nil {
-		return sendServiceError(ctx, err)
-	}
-	user, err := h.usersService.SetPartner(
-		h.ctx,
-		adminTelegramID,
-		targetTelegramID,
-	)
-	if err != nil {
-		return sendServiceError(ctx, err)
-	}
-	return ctx.EditOrSend(
-		"✅ Пользователю выдана роль партнёра.\n\n"+
-			userCardText(user),
-		userCardMarkup(user, page),
-	)
+func (h *UsersTgHandler) setAdmin(ctx tele.Context, targetTelegramID int64, page int) error {
+	return h.mutateUserRole(ctx, targetTelegramID, page, "✅ Пользователь назначен администратором.", h.usersService.SetAdmin)
 }
 
-func (h *UsersTgHandler) revokePartner(
+func (h *UsersTgHandler) setPartner(ctx tele.Context, targetTelegramID int64, page int) error {
+	return h.mutateUserRole(ctx, targetTelegramID, page, "✅ Пользователю выдана роль партнёра.", h.usersService.SetPartner)
+}
+
+func (h *UsersTgHandler) revokePartner(ctx tele.Context, targetTelegramID int64, page int) error {
+	return h.mutateUserRole(ctx, targetTelegramID, page, "✅ Роль партнёра отозвана.", h.usersService.RevokePartner)
+}
+
+func (h *UsersTgHandler) deleteUser(
 	ctx tele.Context,
 	targetTelegramID int64,
-	page int,
+	opts ...interface{},
 ) error {
 	adminTelegramID, err := core_transport_telegram.SenderID(ctx)
 	if err != nil {
 		return sendServiceError(ctx, err)
 	}
-	user, err := h.usersService.RevokePartner(
+	if err := h.usersService.DeleteUser(
 		h.ctx,
 		adminTelegramID,
 		targetTelegramID,
-	)
-	if err != nil {
+	); err != nil {
 		return sendServiceError(ctx, err)
 	}
 	return ctx.EditOrSend(
-		"✅ Роль партнёра отозвана.\n\n"+
-			userCardText(user),
-		userCardMarkup(user, page),
+		fmt.Sprintf("✅ Пользователь %d удалён.", targetTelegramID),
+		opts...,
 	)
 }
 

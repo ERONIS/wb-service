@@ -12,15 +12,16 @@ import (
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
-	core_wb_config "github.com/ERONIS/wb-service/internal/core/transport/wb/config"
+	credentials "github.com/ERONIS/wb-service/internal/core/transport/wb/credentials"
 	"go.uber.org/zap"
 )
 
 type Service struct {
-	repository Repository
-	verifier   Verifier
-	now        func() time.Time
-	mutationMu sync.Mutex
+	repository     Repository
+	verifier       Verifier
+	now            func() time.Time
+	mutationMu     sync.Mutex
+	restorePending map[CabinetID]ClientGeneration
 }
 
 func New(
@@ -31,16 +32,21 @@ func New(
 		panic("wbcabinet service dependency is nil")
 	}
 	return &Service{
-		repository: repository,
-		verifier:   verifier,
-		now:        time.Now,
+		repository:     repository,
+		verifier:       verifier,
+		now:            time.Now,
+		restorePending: make(map[CabinetID]ClientGeneration),
 	}
 }
 
-func (service *Service) Add(
-	ctx context.Context,
-	command AddCommand,
-) (Cabinet, error) {
+func (service *Service) Add(ctx context.Context, command AddCommand) (Cabinet, error) {
+	service.mutationMu.Lock()
+	defer service.mutationMu.Unlock()
+	return service.add(ctx, command)
+}
+
+// add выполняется под mutationMu, чтобы восстановление не перезаписало новый токен.
+func (service *Service) add(ctx context.Context, command AddCommand) (Cabinet, error) {
 	if err := core_errors.RequireContext(ctx); err != nil {
 		return Cabinet{}, err
 	}
@@ -49,8 +55,6 @@ func (service *Service) Add(
 	if err := validateAddCommand(command); err != nil {
 		return Cabinet{}, err
 	}
-	service.mutationMu.Lock()
-	defer service.mutationMu.Unlock()
 
 	existing, found, err := service.repository.FindByOwnerAndName(
 		ctx,
@@ -72,12 +76,12 @@ func (service *Service) Add(
 	}
 
 	now := service.now().UTC()
-	claims, err := decodeCredentialToken(command.Token, now)
+	claims, err := credentials.ParseToken(command.Token, now)
 	if err != nil {
 		return Cabinet{}, err
 	}
-	contentRead := claims.Properties.Has(PermissionContent)
-	contentWrite := !claims.Properties.Has(PermissionReadOnly)
+	contentRead := claims.Properties.Has(credentials.PermissionContent)
+	contentWrite := !claims.Properties.Has(credentials.PermissionReadOnly)
 	if !contentRead || !contentWrite {
 		return Cabinet{}, ErrContentAccess
 	}
@@ -89,11 +93,11 @@ func (service *Service) Add(
 			errors.Join(ErrVerification, err),
 		)
 	}
-	generation := credentialGeneration(command.Token)
+	generation := domain.NewClientGeneration(command.Token)
 	if generation != prepared.Generation() {
 		return Cabinet{}, fmt.Errorf("WB credential generation differs from prepared client: %w", ErrIdentityMismatch)
 	}
-	if found && existing.SellerKey != sellerKey(claims.SellerID) {
+	if found && existing.SellerKey != domain.NewSellerKey(claims.SellerID) {
 		return Cabinet{}, ErrIdentityMismatch
 	}
 
@@ -101,7 +105,7 @@ func (service *Service) Add(
 		CabinetID:           cabinetID,
 		OwnerTelegramID:     command.OwnerTelegramID,
 		Name:                command.Name,
-		SellerKey:           sellerKey(claims.SellerID),
+		SellerKey:           domain.NewSellerKey(claims.SellerID),
 		ContentRead:         contentRead,
 		ContentWrite:        contentWrite,
 		TokenProperties:     claims.Properties,
@@ -120,6 +124,7 @@ func (service *Service) Add(
 	if err := prepared.Activate(); err != nil {
 		return Cabinet{}, fmt.Errorf("activate verified WB cabinet: %w", err)
 	}
+	delete(service.restorePending, cabinet.ID)
 	return cabinet, nil
 }
 
@@ -159,6 +164,7 @@ func (service *Service) Delete(
 		return fmt.Errorf("delete owned WB cabinet: %w", err)
 	}
 	service.verifier.Remove(cabinetID)
+	delete(service.restorePending, cabinetID)
 	return nil
 }
 
@@ -193,66 +199,65 @@ func (service *Service) Restore(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list stored WB cabinets: %w", err)
 	}
-	var restoreErrors []error
+	var failures []error
 	for _, cabinet := range stored {
-		_, addErr := service.Add(ctx, AddCommand{
-			OwnerTelegramID: cabinet.OwnerTelegramID,
-			Name:            cabinet.Name,
-			Token:           cabinet.Token,
-			CabinetID:       cabinet.ID,
-		})
-		if addErr == nil {
-			continue
+		if err := ctx.Err(); err != nil {
+			return errors.Join(append(failures, err)...)
 		}
-		service.verifier.Remove(cabinet.ID)
-		if IsTransientVerificationError(addErr) {
-			restoreErrors = append(restoreErrors, fmt.Errorf(
-				"restore WB cabinet %q: transient verification failure: %w",
-				cabinet.ID,
-				addErr,
-			))
-			continue
+		if err := service.restoreCabinet(ctx, cabinet, false); err != nil {
+			failures = append(failures, err)
 		}
-		status := StatusVerificationFailed
-		if errors.Is(addErr, ErrCredentialExpired) {
-			status = StatusExpired
-		} else if errors.Is(addErr, ErrIdentityMismatch) {
-			status = StatusIdentityMismatch
-		}
-		statusErr := service.repository.MarkStatus(ctx, cabinet.ID, status)
-		restoreErrors = append(restoreErrors, fmt.Errorf(
-			"restore WB cabinet %q: %w",
-			cabinet.ID,
-			errors.Join(addErr, statusErr),
-		))
 	}
-	return errors.Join(restoreErrors...)
+	return errors.Join(failures...)
 }
 
-func (service *Service) Bootstrap(
-	ctx context.Context,
-	ownerTelegramID int64,
-	cabinets []core_wb_config.CabinetConfig,
-) error {
-	if len(cabinets) == 0 {
+// restoreCabinet сверяет снимок с актуальной записью под блокировкой изменений.
+func (service *Service) restoreCabinet(ctx context.Context, stored StoredCabinet, pendingOnly bool) error {
+	service.mutationMu.Lock()
+	defer service.mutationMu.Unlock()
+	current, err := service.repository.GetByOwner(ctx, stored.OwnerTelegramID, stored.ID)
+	if errors.Is(err, core_errors.ErrNotFound) {
+		delete(service.restorePending, stored.ID)
 		return nil
 	}
-	if ownerTelegramID <= 0 {
-		return core_errors.InvalidArgument("bootstrap WB cabinet owner is required")
+	if err != nil {
+		return err
 	}
-	var bootstrapErrors []error
-	for _, cabinet := range cabinets {
-		_, err := service.Add(ctx, AddCommand{
-			OwnerTelegramID: ownerTelegramID,
-			Name:            cabinet.Name,
-			Token:           cabinet.Token,
-			CabinetID:       CabinetID(cabinet.ID),
-		})
-		if err != nil {
-			bootstrapErrors = append(bootstrapErrors, fmt.Errorf("bootstrap WB cabinet %q: %w", cabinet.ID, err))
+	if current.ClientGeneration != stored.ClientGeneration || current.Name != stored.Name {
+		return nil
+	}
+	if current.Status != StatusActive {
+		delete(service.restorePending, current.ID)
+		return nil
+	}
+	if !current.CredentialExpiresAt.After(service.now().UTC()) {
+		service.verifier.Remove(current.ID)
+		delete(service.restorePending, current.ID)
+		return service.repository.MarkStatus(ctx, current.ID, StatusExpired)
+	}
+	if pendingOnly {
+		generation, pending := service.restorePending[current.ID]
+		if !pending || generation != current.ClientGeneration {
+			return nil
 		}
 	}
-	return errors.Join(bootstrapErrors...)
+	_, err = service.add(ctx, AddCommand{OwnerTelegramID: current.OwnerTelegramID, Name: current.Name, Token: stored.Token, CabinetID: current.ID})
+	if err == nil {
+		return nil
+	}
+	service.verifier.Remove(current.ID)
+	if IsTransientVerificationError(err) {
+		service.restorePending[current.ID] = current.ClientGeneration
+		return fmt.Errorf("restore WB cabinet %q: %w", current.ID, err)
+	}
+	delete(service.restorePending, current.ID)
+	status := StatusVerificationFailed
+	if errors.Is(err, ErrCredentialExpired) {
+		status = StatusExpired
+	} else if errors.Is(err, ErrIdentityMismatch) {
+		status = StatusIdentityMismatch
+	}
+	return errors.Join(err, service.repository.MarkStatus(ctx, current.ID, status))
 }
 
 func validateAddCommand(command AddCommand) error {
@@ -262,8 +267,7 @@ func validateAddCommand(command AddCommand) error {
 		command.Token == "" {
 		return core_errors.InvalidArgument("invalid add WB cabinet command")
 	}
-	if command.CabinetID != "" && (strings.TrimSpace(string(command.CabinetID)) != string(command.CabinetID) ||
-		len(command.CabinetID) > 128) {
+	if command.CabinetID != "" && command.CabinetID.Validate() != nil {
 		return core_errors.InvalidArgument("invalid bootstrap WB cabinet ID")
 	}
 	return nil
@@ -316,41 +320,15 @@ func (service *Service) retryTransientCabinets(ctx context.Context, logger *zap.
 	if err != nil {
 		return fmt.Errorf("list stored WB cabinets for retry: %w", err)
 	}
+	var failures []error
 	for _, cabinet := range stored {
-		_, addErr := service.Add(ctx, AddCommand{
-			OwnerTelegramID: cabinet.OwnerTelegramID,
-			Name:            cabinet.Name,
-			Token:           cabinet.Token,
-			CabinetID:       cabinet.ID,
-		})
-		if addErr == nil {
-			logger.Info(
-				"WB cabinet restored after transient failure",
-				zap.String("cabinet_id", string(cabinet.ID)),
-				zap.String("cabinet_name", cabinet.Name),
-			)
-			continue
+		if err := ctx.Err(); err != nil {
+			return errors.Join(append(failures, err)...)
 		}
-		if IsTransientVerificationError(addErr) {
-			service.verifier.Remove(cabinet.ID)
-			continue
+		if err := service.restoreCabinet(ctx, cabinet, true); err != nil {
+			failures = append(failures, err)
+			logger.Warn("WB cabinet restore retry failed", zap.String("cabinet_id", string(cabinet.ID)), zap.Error(err))
 		}
-		service.verifier.Remove(cabinet.ID)
-		status := StatusVerificationFailed
-		if errors.Is(addErr, ErrCredentialExpired) {
-			status = StatusExpired
-		} else if errors.Is(addErr, ErrIdentityMismatch) {
-			status = StatusIdentityMismatch
-		}
-		statusErr := service.repository.MarkStatus(ctx, cabinet.ID, status)
-		logger.Warn(
-			"WB cabinet permanently failed during restore retry",
-			zap.String("cabinet_id", string(cabinet.ID)),
-			zap.String("cabinet_name", cabinet.Name),
-			zap.String("status", string(status)),
-			zap.NamedError("add_error", addErr),
-			zap.NamedError("status_error", statusErr),
-		)
 	}
-	return nil
+	return errors.Join(failures...)
 }

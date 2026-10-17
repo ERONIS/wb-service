@@ -2,7 +2,6 @@ package transfer_wb_transport
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
@@ -34,22 +33,11 @@ func (transport *TargetTransport) Credentials(
 	if err != nil {
 		return nil, err
 	}
-	return mapCredentials(credentials), nil
+	return credentials, nil
 }
 
-func (transport *TargetTransport) FanoutCredentials(
-	ctx context.Context,
-) ([]transfer_service.TargetCredential, error) {
-	roles := [...]domain.UserRole{domain.RolePartner, domain.RoleAdmin}
-	credentials := make([]wbcabinet_service.TargetCredential, 0)
-	for _, role := range roles {
-		roleCredentials, err := transport.cabinets.TargetsByOwnerRole(ctx, role)
-		if err != nil {
-			return nil, fmt.Errorf("read %s WB cabinet targets: %w", role, err)
-		}
-		credentials = append(credentials, roleCredentials...)
-	}
-	return mapCredentials(credentials), nil
+func (transport *TargetTransport) CredentialsByOwnerRole(ctx context.Context, role domain.UserRole) ([]transfer_service.TargetCredential, error) {
+	return transport.cabinets.TargetsByOwnerRole(ctx, role)
 }
 
 func (transport *TargetTransport) AllCredentials(
@@ -59,26 +47,7 @@ func (transport *TargetTransport) AllCredentials(
 	if err != nil {
 		return nil, err
 	}
-	return mapCredentials(credentials), nil
-}
-
-func mapCredentials(
-	credentials []wbcabinet_service.TargetCredential,
-) []transfer_service.TargetCredential {
-	result := make([]transfer_service.TargetCredential, len(credentials))
-	for index, credential := range credentials {
-		result[index] = transfer_service.TargetCredential{
-			CabinetID:           transfer_service.CabinetID(credential.CabinetID),
-			SellerKey:           credential.SellerKey,
-			BindingRevision:     credential.BindingRevision,
-			CapabilityRevision:  credential.CapabilityRevision,
-			ContentRead:         credential.ContentRead,
-			ContentWrite:        credential.ContentWrite,
-			CredentialExpiresAt: credential.CredentialExpiresAt,
-			ClientGeneration:    credential.ClientGeneration,
-		}
-	}
-	return result
+	return credentials, nil
 }
 
 var _ transfer_service.TargetTransport = (*TargetTransport)(nil)
