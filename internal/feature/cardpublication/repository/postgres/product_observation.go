@@ -26,7 +26,7 @@ func (repository *Repository) InsertActionObservation(
 	}
 	const insert = `
 		INSERT INTO wb.publication_observations (
-			transfer_id, target_id, cabinet_id, kind, observation_digest,
+			transfer_id, target_id, seller_id, kind, observation_digest,
 			normal_count, trash_count, snapshot, observed_at
 		)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -41,7 +41,7 @@ func (repository *Repository) InsertActionObservation(
 		insert,
 		transferID,
 		observation.TargetID,
-		observation.CabinetID,
+		observation.SellerID,
 		kind,
 		observation.Digest[:],
 		observation.NormalCount,

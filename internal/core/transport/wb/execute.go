@@ -10,18 +10,18 @@ import (
 )
 
 type ExecutorRegistry interface {
-	ExecutorForCabinet(domain.CabinetID) (client.Executor, error)
+	ExecutorForCabinet(domain.SellerID) (client.Executor, error)
 }
 
 type PinnedExecutorRegistry interface {
 	ExecutorRegistry
-	PinnedExecutor(domain.CabinetID, ClientGeneration) (client.Executor, error)
+	PinnedExecutor(domain.SellerID, ClientGeneration) (client.Executor, error)
 }
 
 func ExecuteForCabinet[Response any](
 	ctx context.Context,
 	executors ExecutorRegistry,
-	cabinetID domain.CabinetID,
+	sellerID domain.SellerID,
 	operation policy.Operation,
 	query any,
 	body any,
@@ -30,7 +30,7 @@ func ExecuteForCabinet[Response any](
 		var response Response
 		return response, fmt.Errorf("get WB cabinet executor: registry is nil")
 	}
-	executor, err := executors.ExecutorForCabinet(cabinetID)
+	executor, err := executors.ExecutorForCabinet(sellerID)
 	if err != nil {
 		var response Response
 		return response, fmt.Errorf("get WB cabinet executor: %w", err)
@@ -41,7 +41,7 @@ func ExecuteForCabinet[Response any](
 func ExecutePinnedForCabinet[Response any](
 	ctx context.Context,
 	executors PinnedExecutorRegistry,
-	cabinetID domain.CabinetID,
+	sellerID domain.SellerID,
 	generation ClientGeneration,
 	operation policy.Operation,
 	query any,
@@ -51,7 +51,7 @@ func ExecutePinnedForCabinet[Response any](
 		var response Response
 		return response, fmt.Errorf("get pinned WB cabinet executor: registry is nil")
 	}
-	executor, err := executors.PinnedExecutor(cabinetID, generation)
+	executor, err := executors.PinnedExecutor(sellerID, generation)
 	if err != nil {
 		var response Response
 		return response, fmt.Errorf("get pinned WB cabinet executor: %w", err)

@@ -1,6 +1,3 @@
-ALTER TABLE wb.cabinet_copy_sessions
-    DROP CONSTRAINT IF EXISTS cabinet_copy_sessions_transfer_fk;
-
 DROP TRIGGER IF EXISTS transfer_targets_reject_activated_insert ON wb.transfer_targets;
 DROP TRIGGER IF EXISTS transfer_item_targets_reject_activated_membership
     ON wb.transfer_item_targets;

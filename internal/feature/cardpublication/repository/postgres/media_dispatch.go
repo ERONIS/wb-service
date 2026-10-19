@@ -24,14 +24,14 @@ func (repository *Repository) ListDispatchableMediaActions(
 				action.transfer_id,
 				action.id AS action_id,
 				action.target_id,
-				target.cabinet_id,
+				target.seller_id,
 				live_auth.id AS authorization_id,
 				live_auth.revision AS authorization_revision,
 				plan.plan_digest,
 				plan.target_set_root,
 				target.position AS target_position,
 				ROW_NUMBER() OVER (
-					PARTITION BY target.cabinet_id
+					PARTITION BY target.seller_id
 					ORDER BY transfer.id, action.id
 				) AS cabinet_rank
 			FROM wb.publication_actions AS action
@@ -63,10 +63,10 @@ func (repository *Repository) ListDispatchableMediaActions(
 			 AND attribution.action_member_id = product_member.id
 			 AND attribution.level IN ('direct', 'observed_after_attempt')
 			 AND attribution.plan_digest = plan.plan_digest
-			 AND attribution.cabinet_id = target.cabinet_id
+			 AND attribution.seller_id = target.seller_id
 			 AND attribution.group_target_id = media_member.group_target_id
 			JOIN wb.product_identities AS identity
-			  ON identity.cabinet_id = target.cabinet_id
+			  ON identity.seller_id = target.seller_id
 			 AND identity.vendor_code_key = media_member.vendor_code
 			 AND identity.state = 'remote_present'
 			 AND identity.nm_id IS NOT NULL
@@ -97,10 +97,10 @@ func (repository *Repository) ListDispatchableMediaActions(
 				)
 		)
 		SELECT
-			transfer_id, action_id, target_id, cabinet_id,
+			transfer_id, action_id, target_id, seller_id,
 			authorization_id, authorization_revision, plan_digest, target_set_root
 		FROM dispatchable
-		ORDER BY cabinet_rank, target_position, cabinet_id, action_id
+		ORDER BY cabinet_rank, target_position, seller_id, action_id
 		LIMIT $1;
 	`
 	rows, err := repository.pool.Query(ctx, query, limit)
@@ -137,7 +137,7 @@ func (repository *Repository) ListInterruptedMediaActions(
 			action.transfer_id,
 			action.id,
 			action.target_id,
-			target.cabinet_id,
+			target.seller_id,
 			live_auth.id,
 			live_auth.revision,
 			plan.plan_digest,
@@ -197,7 +197,7 @@ func (repository *Repository) ListPendingMediaActions(
 				action.transfer_id,
 				action.id AS action_id,
 				action.target_id,
-				target.cabinet_id,
+				target.seller_id,
 				live_auth.id AS authorization_id,
 				live_auth.revision AS authorization_revision,
 				plan.plan_digest,
@@ -229,7 +229,7 @@ func (repository *Repository) ListPendingMediaActions(
 			  ON media_member.transfer_id = action.transfer_id
 			 AND media_member.action_id = action.id
 			JOIN wb.product_identities AS identity
-			  ON identity.cabinet_id = target.cabinet_id
+			  ON identity.seller_id = target.seller_id
 			 AND identity.vendor_code_key = media_member.vendor_code
 			WHERE action.kind = 'upload_media'
 				AND action.state = 'planned'
@@ -257,7 +257,7 @@ func (repository *Repository) ListPendingMediaActions(
 						      = media_member.transfer_item_target_id
 						  AND product_action.plan_id = action.plan_id
 						  AND attribution.plan_digest = plan.plan_digest
-						  AND attribution.cabinet_id = target.cabinet_id
+						  AND attribution.seller_id = target.seller_id
 						  AND attribution.group_target_id = media_member.group_target_id
 						  AND (attribution.nm_id IS NULL OR identity.nm_id = attribution.nm_id)
 						  AND product_action.kind IN ('create_group', 'add_to_group')
@@ -273,7 +273,7 @@ func (repository *Repository) ListPendingMediaActions(
 				)
 		)
 		SELECT
-			transfer_id, action_id, target_id, cabinet_id,
+			transfer_id, action_id, target_id, seller_id,
 			authorization_id, authorization_revision, plan_digest, target_set_root
 		FROM pending
 		WHERE lane_position = 1

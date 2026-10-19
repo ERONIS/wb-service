@@ -3,7 +3,7 @@ package statistics_telegram_transport
 import (
 	"fmt"
 
-	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
+	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
 	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
 	statistics_service "github.com/ERONIS/wb-service/internal/feature/statistics/service"
 
@@ -65,7 +65,7 @@ func (handler *Handler) renderFinalizedSession(
 			buttonStatistics.Unique,
 			callbackInt(int64(batch.ID)),
 		)),
-		markup.Row(core_transport_telegram.MainMenuButton()),
+		markup.Row(core_tg_menu.MainMenuButton()),
 	)
 	return ctx.EditOrSend(text, markup)
 }

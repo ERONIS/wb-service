@@ -16,10 +16,9 @@ import (
 )
 
 const cabinetColumns = `
-	cabinet_id,
+	seller_id,
 	owner_tg_id,
 	display_name,
-	seller_key,
 	binding_revision,
 	capability_revision,
 	content_read,
@@ -62,20 +61,20 @@ func (repository *Repository) FindByOwnerAndName(
 func (repository *Repository) GetByOwner(
 	ctx context.Context,
 	ownerTelegramID int64,
-	cabinetID wbcabinet_service.CabinetID,
+	sellerID wbcabinet_service.SellerID,
 ) (wbcabinet_service.Cabinet, error) {
 	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 	const query = `
 		SELECT ` + cabinetColumns + `
 		FROM wb.api_cabinets
-		WHERE owner_tg_id = $1 AND cabinet_id = $2;
+		WHERE owner_tg_id = $1 AND seller_id = $2;
 	`
 	cabinet, err := scanCabinet(repository.pool.QueryRow(
 		ctx,
 		query,
 		ownerTelegramID,
-		cabinetID,
+		sellerID,
 	))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return wbcabinet_service.Cabinet{}, core_errors.ErrNotFound
@@ -106,10 +105,7 @@ func (repository *Repository) UpsertVerified(
 				return err
 			}
 			if found {
-				if existing.ID != credential.CabinetID {
-					return fmt.Errorf("WB cabinet ID changed during verification: %w", core_errors.ErrConflict)
-				}
-				if existing.SellerKey != credential.SellerKey {
+				if existing.ID != credential.SellerID {
 					return wbcabinet_service.ErrIdentityMismatch
 				}
 				result, err = updateVerified(ctx, tx, existing, credential)
@@ -154,12 +150,11 @@ func insertVerified(
 ) (wbcabinet_service.Cabinet, error) {
 	const query = `
 		INSERT INTO wb.api_cabinets (
-			cabinet_id,
+			seller_id,
 			owner_tg_id,
 			display_name,
 			normalized_name,
 			token,
-			seller_key,
 			content_read,
 			content_write,
 			token_properties,
@@ -168,17 +163,16 @@ func insertVerified(
 			verified_at,
 			status
 		)
-		VALUES ($1, $2, btrim($3), lower(btrim($3)), $4, $5, $6, $7, $8, $9, $10, $11, 'active')
+		VALUES ($1, $2, btrim($3), lower(btrim($3)), $4, $5, $6, $7, $8, $9, $10, 'active')
 		RETURNING ` + cabinetColumns + `;
 	`
 	cabinet, err := scanCabinet(tx.QueryRow(
 		ctx,
 		query,
-		credential.CabinetID,
+		credential.SellerID,
 		credential.OwnerTelegramID,
 		credential.Name,
 		credential.Token,
-		credential.SellerKey[:],
 		credential.ContentRead,
 		credential.ContentWrite,
 		int64(credential.TokenProperties),
@@ -219,7 +213,7 @@ func updateVerified(
 			verified_at = $10,
 			status = 'active',
 			updated_at = CURRENT_TIMESTAMP
-		WHERE cabinet_id = $1
+		WHERE seller_id = $1
 		RETURNING ` + cabinetColumns + `;
 	`
 	cabinet, err := scanCabinet(tx.QueryRow(
@@ -252,7 +246,7 @@ func (repository *Repository) ListByOwner(
 		SELECT ` + cabinetColumns + `
 		FROM wb.api_cabinets
 		WHERE owner_tg_id = $1
-		ORDER BY lower(display_name), cabinet_id;
+		ORDER BY lower(display_name), seller_id;
 	`
 	rows, err := repository.pool.Query(ctx, query, ownerTelegramID)
 	if err != nil {
@@ -278,7 +272,7 @@ func (repository *Repository) ListStored(
 	const query = `
 		SELECT ` + cabinetColumns + `, token
 		FROM wb.api_cabinets
-		ORDER BY owner_tg_id, lower(display_name), cabinet_id;
+		ORDER BY owner_tg_id, lower(display_name), seller_id;
 	`
 	rows, err := repository.pool.Query(ctx, query)
 	if err != nil {
@@ -348,7 +342,7 @@ func (repository *Repository) listTargets(
 		)`, len(arguments)+1)
 		arguments = append(arguments, *ownerRole)
 	}
-	query += " ORDER BY owner_tg_id, lower(display_name), cabinet_id;"
+	query += " ORDER BY owner_tg_id, lower(display_name), seller_id;"
 	rows, err := repository.pool.Query(ctx, query, arguments...)
 	if err != nil {
 		return nil, fmt.Errorf("list active WB cabinet targets: %w", err)
@@ -361,9 +355,7 @@ func (repository *Repository) listTargets(
 			return nil, fmt.Errorf("scan active WB cabinet target: %w", err)
 		}
 		result = append(result, wbcabinet_service.TargetCredential{
-			CabinetID:           cabinet.ID,
-			Name:                cabinet.Name,
-			SellerKey:           cabinet.SellerKey,
+			SellerID:            cabinet.ID,
 			BindingRevision:     cabinet.BindingRevision,
 			CapabilityRevision:  cabinet.CapabilityRevision,
 			ContentRead:         cabinet.ContentRead,
@@ -377,7 +369,7 @@ func (repository *Repository) listTargets(
 
 func (repository *Repository) MarkStatus(
 	ctx context.Context,
-	cabinetID wbcabinet_service.CabinetID,
+	sellerID wbcabinet_service.SellerID,
 	status wbcabinet_service.Status,
 ) error {
 	if !status.IsValid() {
@@ -388,9 +380,9 @@ func (repository *Repository) MarkStatus(
 	const query = `
 		UPDATE wb.api_cabinets
 		SET status = $2, updated_at = CURRENT_TIMESTAMP
-		WHERE cabinet_id = $1;
+		WHERE seller_id = $1;
 	`
-	tag, err := repository.pool.Exec(ctx, query, cabinetID, status)
+	tag, err := repository.pool.Exec(ctx, query, sellerID, status)
 	if err != nil {
 		return fmt.Errorf("mark WB cabinet status: %w", err)
 	}
@@ -403,15 +395,15 @@ func (repository *Repository) MarkStatus(
 func (repository *Repository) DeleteByOwner(
 	ctx context.Context,
 	ownerTelegramID int64,
-	cabinetID wbcabinet_service.CabinetID,
+	sellerID wbcabinet_service.SellerID,
 ) error {
 	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 	const query = `
 		DELETE FROM wb.api_cabinets
-		WHERE owner_tg_id = $1 AND cabinet_id = $2;
+		WHERE owner_tg_id = $1 AND seller_id = $2;
 	`
-	tag, err := repository.pool.Exec(ctx, query, ownerTelegramID, cabinetID)
+	tag, err := repository.pool.Exec(ctx, query, ownerTelegramID, sellerID)
 	if err != nil {
 		return fmt.Errorf("delete owned WB cabinet: %w", err)
 	}
@@ -433,7 +425,6 @@ func scanCabinet(row rowScanner) (wbcabinet_service.Cabinet, error) {
 func scanCabinetRow(row rowScanner, withToken bool) (wbcabinet_service.Cabinet, string, error) {
 	var (
 		cabinet          wbcabinet_service.Cabinet
-		sellerKey        []byte
 		clientGeneration []byte
 		token            string
 		tokenProperties  int64
@@ -442,7 +433,6 @@ func scanCabinetRow(row rowScanner, withToken bool) (wbcabinet_service.Cabinet, 
 		&cabinet.ID,
 		&cabinet.OwnerTelegramID,
 		&cabinet.Name,
-		&sellerKey,
 		&cabinet.BindingRevision,
 		&cabinet.CapabilityRevision,
 		&cabinet.ContentRead,
@@ -465,22 +455,19 @@ func scanCabinetRow(row rowScanner, withToken bool) (wbcabinet_service.Cabinet, 
 		return wbcabinet_service.Cabinet{}, "", errors.New("stored WB token properties are negative")
 	}
 	cabinet.TokenProperties = wbcabinet_service.TokenProperties(tokenProperties)
-	if err := setDigests(&cabinet, sellerKey, clientGeneration); err != nil {
+	if err := setClientGeneration(&cabinet, clientGeneration); err != nil {
 		return wbcabinet_service.Cabinet{}, "", err
 	}
 	return cabinet, token, nil
 }
 
-func setDigests(
+func setClientGeneration(
 	cabinet *wbcabinet_service.Cabinet,
-	sellerKey []byte,
 	clientGeneration []byte,
 ) error {
-	if len(sellerKey) != len(cabinet.SellerKey) ||
-		len(clientGeneration) != len(cabinet.ClientGeneration) {
+	if cabinet.ID.Validate() != nil || len(clientGeneration) != len(cabinet.ClientGeneration) {
 		return errors.New("stored WB cabinet digest has invalid length")
 	}
-	copy(cabinet.SellerKey[:], sellerKey)
 	copy(cabinet.ClientGeneration[:], clientGeneration)
 	return nil
 }
@@ -491,7 +478,7 @@ func classifyConstraint(err error) error {
 		return err
 	}
 	switch strings.TrimSpace(postgresError.ConstraintName) {
-	case "api_cabinets_seller_key_key":
+	case "api_cabinets_pkey":
 		return wbcabinet_service.ErrDuplicateSeller
 	case "api_cabinets_owner_name_key":
 		return wbcabinet_service.ErrCabinetNameTaken

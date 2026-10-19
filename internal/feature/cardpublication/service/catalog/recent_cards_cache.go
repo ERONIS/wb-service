@@ -10,13 +10,13 @@ import (
 )
 
 type recentVendorKey struct {
-	cabinetID CabinetID
-	vendor    string
+	sellerID SellerID
+	vendor   string
 }
 
 type recentNMIDKey struct {
-	cabinetID CabinetID
-	nmID      int64
+	sellerID SellerID
+	nmID     int64
 }
 
 type recentCardEntry struct {
@@ -82,13 +82,13 @@ func normalizeCatalogVendorCode(value string) string {
 }
 
 func (cache *RecentCardsCache) LookupVendorCode(
-	cabinetID CabinetID,
+	sellerID SellerID,
 	vendorCode string,
 ) (contentapi.Card, bool) {
-	if cache == nil || cabinetID == "" {
+	if cache == nil || sellerID == "" {
 		return contentapi.Card{}, false
 	}
-	key := recentVendorKey{cabinetID: cabinetID, vendor: normalizeCatalogVendorCode(vendorCode)}
+	key := recentVendorKey{sellerID: sellerID, vendor: normalizeCatalogVendorCode(vendorCode)}
 	if key.vendor == "" {
 		return contentapi.Card{}, false
 	}
@@ -104,14 +104,14 @@ func (cache *RecentCardsCache) LookupVendorCode(
 }
 
 func (cache *RecentCardsCache) LookupMedia(
-	cabinetID CabinetID,
+	sellerID SellerID,
 	nmID int64,
 ) (photos int, video bool, ok bool) {
-	if cache == nil || cabinetID == "" || nmID <= 0 {
+	if cache == nil || sellerID == "" || nmID <= 0 {
 		return 0, false, false
 	}
 	cache.mu.RLock()
-	entry, found := cache.byNMID[recentNMIDKey{cabinetID: cabinetID, nmID: nmID}]
+	entry, found := cache.byNMID[recentNMIDKey{sellerID: sellerID, nmID: nmID}]
 	cache.mu.RUnlock()
 	if !found || entry.observedAt.Before(cache.now().UTC().Add(-cache.ttl)) {
 		cache.mediaMisses.Add(1)
@@ -133,37 +133,37 @@ func loadedPhotoCount(photos []contentapi.CardPhoto) int {
 	return count
 }
 
-func (cache *RecentCardsCache) StoreIfRecent(cabinetID CabinetID, card contentapi.Card) bool {
-	if cache == nil || cabinetID == "" || card.NMID <= 0 ||
+func (cache *RecentCardsCache) StoreIfRecent(sellerID SellerID, card contentapi.Card) bool {
+	if cache == nil || sellerID == "" || card.NMID <= 0 ||
 		normalizeCatalogVendorCode(card.VendorCode) == "" {
 		return false
 	}
-	cache.store(cabinetID, card, cache.now().UTC())
+	cache.store(sellerID, card, cache.now().UTC())
 	return true
 }
 
 func (cache *RecentCardsCache) store(
-	cabinetID CabinetID,
+	sellerID SellerID,
 	card contentapi.Card,
 	observedAt time.Time,
 ) {
 	vendorKey := recentVendorKey{
-		cabinetID: cabinetID,
-		vendor:    normalizeCatalogVendorCode(card.VendorCode),
+		sellerID: sellerID,
+		vendor:   normalizeCatalogVendorCode(card.VendorCode),
 	}
-	nmIDKey := recentNMIDKey{cabinetID: cabinetID, nmID: card.NMID}
+	nmIDKey := recentNMIDKey{sellerID: sellerID, nmID: card.NMID}
 	entry := recentCardEntry{card: card, observedAt: observedAt.UTC()}
 
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 	if previous, ok := cache.byVendor[vendorKey]; ok && previous.card.NMID != card.NMID {
-		delete(cache.byNMID, recentNMIDKey{cabinetID: cabinetID, nmID: previous.card.NMID})
+		delete(cache.byNMID, recentNMIDKey{sellerID: sellerID, nmID: previous.card.NMID})
 	}
 	if previous, ok := cache.byNMID[nmIDKey]; ok &&
 		normalizeCatalogVendorCode(previous.card.VendorCode) != vendorKey.vendor {
 		delete(cache.byVendor, recentVendorKey{
-			cabinetID: cabinetID,
-			vendor:    normalizeCatalogVendorCode(previous.card.VendorCode),
+			sellerID: sellerID,
+			vendor:   normalizeCatalogVendorCode(previous.card.VendorCode),
 		})
 	}
 	cache.byVendor[vendorKey] = entry

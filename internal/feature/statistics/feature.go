@@ -5,7 +5,7 @@ import (
 	"time"
 
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
-	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
+	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
 	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
 	statistics_postgres_repository "github.com/ERONIS/wb-service/internal/feature/statistics/repository/postgres"
 	statistics_service "github.com/ERONIS/wb-service/internal/feature/statistics/service"
@@ -60,7 +60,7 @@ func (feature *Feature) Service() *statistics_service.Service {
 	return feature.service
 }
 
-func (feature *Feature) RegisterTelegram(menu *core_transport_telegram.Handler) {
+func (feature *Feature) RegisterTelegram(menu *core_tg_menu.Handler) {
 	feature.telegram.Register(menu)
 }
 
@@ -102,10 +102,10 @@ func (feature *Feature) processAttentionOnce(ctx context.Context, logger *zap.Lo
 		if ctx.Err() != nil {
 			return
 		}
-		info, err := feature.cardVerifier.FindCardByVendorCode(ctx, item.CabinetID, item.VendorCode)
+		info, err := feature.cardVerifier.FindCardByVendorCode(ctx, item.SellerID, item.VendorCode)
 		if err != nil {
 			logger.Warn("Failed to verify card in WB during auto-resolution",
-				zap.String("cabinet_id", item.CabinetID),
+				zap.String("seller_id", item.SellerID),
 				zap.String("vendor_code", item.VendorCode),
 				zap.Error(err),
 			)
@@ -121,7 +121,7 @@ func (feature *Feature) processAttentionOnce(ctx context.Context, logger *zap.Lo
 				continue
 			}
 			logger.Info("Card automatically verified in WB and resolved",
-				zap.String("cabinet_id", item.CabinetID),
+				zap.String("seller_id", item.SellerID),
 				zap.String("vendor_code", item.VendorCode),
 				zap.Int64("nm_id", info.NMID),
 			)

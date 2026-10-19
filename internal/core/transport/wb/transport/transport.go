@@ -12,7 +12,7 @@ var errUnsupportedDefaultTransport = errors.New(
 
 // SharedTransport владеет общим connection pool всех WB-клиентов.
 type SharedTransport struct {
-	base http.RoundTripper
+	base *http.Transport
 }
 
 // NewSharedTransport создаёт принадлежащую WB Core копию стандартного transport.
@@ -28,24 +28,6 @@ func NewSharedTransport() (*SharedTransport, error) {
 	return &SharedTransport{
 		base: cloned,
 	}, nil
-}
-
-// NewSharedTransportFrom создаёт общий transport из явно внедрённой базы.
-// *http.Transport клонируется; произвольный RoundTripper остаётся test seam.
-func NewSharedTransportFrom(
-	base http.RoundTripper,
-) (*SharedTransport, error) {
-	if base == nil {
-		return nil, errRoundTripperRequired
-	}
-
-	if httpTransport, ok := base.(*http.Transport); ok {
-		cloned := httpTransport.Clone()
-		configureWBTransport(cloned)
-		base = cloned
-	}
-
-	return &SharedTransport{base: base}, nil
 }
 
 func configureWBTransport(transport *http.Transport) {
@@ -68,22 +50,11 @@ func configureWBTransport(transport *http.Transport) {
 	}
 }
 
-// RoundTripper строит отдельную wrapper chain поверх общего transport.
-func (transport *SharedTransport) RoundTripper(
-	wrappers ...WrapperFunc,
-) http.RoundTripper {
-	return Chain(transport.base, wrappers...)
-}
-
 // CloseIdleConnections закрывает простаивающие соединения общего pool.
 func (transport *SharedTransport) CloseIdleConnections() {
 	if transport == nil || transport.base == nil {
 		return
 	}
 
-	if closer, ok := transport.base.(interface {
-		CloseIdleConnections()
-	}); ok {
-		closer.CloseIdleConnections()
-	}
+	transport.base.CloseIdleConnections()
 }

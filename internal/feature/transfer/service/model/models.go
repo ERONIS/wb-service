@@ -13,8 +13,7 @@ var ErrCapacityExceeded = core_errors.CapacityExceeded("transfer capacity exceed
 
 type TransferID = cardpipeline.TransferID
 type Digest = cardpipeline.Digest
-type CabinetID = domain.CabinetID
-type SellerKey = domain.SellerKey
+type SellerID = domain.SellerID
 type ClientGeneration = domain.ClientGeneration
 
 type Phase string
@@ -283,8 +282,7 @@ type MutationTargetSnapshot struct {
 
 type MutationTarget struct {
 	Position            int
-	CabinetID           CabinetID
-	SellerKey           SellerKey
+	SellerID            SellerID
 	ClientGeneration    ClientGeneration
 	BindingRevision     int64
 	CapabilityRevision  int64
@@ -308,17 +306,13 @@ func (snapshot MutationTargetSnapshot) Validate(now time.Time) error {
 		return invalidTargetSnapshot("target list is empty")
 	}
 
-	cabinets := make(map[CabinetID]struct{}, len(snapshot.Targets))
-	sellers := make(map[SellerKey]struct{}, len(snapshot.Targets))
+	sellers := make(map[SellerID]struct{}, len(snapshot.Targets))
 	for index, target := range snapshot.Targets {
 		switch {
 		case target.Position != index+1:
 			return invalidTargetSnapshot("target positions are not contiguous")
-		case strings.TrimSpace(string(target.CabinetID)) != string(target.CabinetID) ||
-			target.CabinetID.Validate() != nil:
-			return invalidTargetSnapshot("cabinet ID is invalid")
-		case target.SellerKey.IsZero():
-			return invalidTargetSnapshot("seller key is empty")
+		case target.SellerID.Validate() != nil:
+			return invalidTargetSnapshot("seller ID is invalid")
 		case target.ClientGeneration.IsZero():
 			return invalidTargetSnapshot("client generation is empty")
 		case target.BindingRevision <= 0:
@@ -331,14 +325,10 @@ func (snapshot MutationTargetSnapshot) Validate(now time.Time) error {
 			!target.CredentialExpiresAt.After(now):
 			return invalidTargetSnapshot("target credential is expired")
 		}
-		if _, exists := cabinets[target.CabinetID]; exists {
-			return invalidTargetSnapshot("cabinet ID is duplicated")
+		if _, exists := sellers[target.SellerID]; exists {
+			return invalidTargetSnapshot("seller ID is duplicated")
 		}
-		cabinets[target.CabinetID] = struct{}{}
-		if _, exists := sellers[target.SellerKey]; exists {
-			return invalidTargetSnapshot("seller key is duplicated")
-		}
-		sellers[target.SellerKey] = struct{}{}
+		sellers[target.SellerID] = struct{}{}
 	}
 
 	return nil

@@ -5,7 +5,7 @@ import (
 
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
+	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
 	cardimport_postgres_repository "github.com/ERONIS/wb-service/internal/feature/cardimport/repository/postgres"
 	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
 	cardimport_telegram_transport "github.com/ERONIS/wb-service/internal/feature/cardimport/transport/telegram"
@@ -47,10 +47,6 @@ func (f *Feature) Service() *cardimport_service.Service {
 	return f.service
 }
 
-func (f *Feature) AddCardsMenuButton(button tele.Btn) {
-	f.telegramHandler.AddCardsMenuButton(button)
-}
-
 func (f *Feature) SetCompletionNavigator(
 	navigator cardimport_telegram_transport.CompletionNavigator,
 ) {
@@ -64,7 +60,7 @@ func (f *Feature) SetProcessingNotifier(
 }
 
 func (f *Feature) RegisterTelegram(
-	menu *core_transport_telegram.Handler,
+	menu *core_tg_menu.Handler,
 ) {
 	f.telegramHandler.Register(menu)
 }

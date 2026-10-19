@@ -126,7 +126,7 @@ func (dispatcher *ProductDispatcher) dispatchCandidates(
 			dispatcher.concurrency,
 			func(candidate ProductActionCandidate) error {
 				observation, exists := observations[productCatalogKey{
-					targetID: candidate.TargetID, cabinetID: candidate.CabinetID,
+					targetID: candidate.TargetID, sellerID: candidate.SellerID,
 				}]
 				if !exists {
 					return nil
@@ -302,8 +302,7 @@ func (dispatcher *ProductDispatcher) dispatch(
 					PlanDigest:                    transfer_service.Digest(action.PlanDigest),
 					TargetSetRoot:                 transfer_service.Digest(action.TargetSetRoot),
 					TargetID:                      action.TargetID,
-					CabinetID:                     transfer_service.CabinetID(action.CabinetID),
-					SellerKey:                     action.SellerKey,
+					SellerID:                      action.SellerID,
 					ClientGeneration:              action.ClientGeneration,
 				},
 			)
@@ -320,7 +319,7 @@ func (dispatcher *ProductDispatcher) dispatch(
 				CaptureErrorBaselineCommand{
 					TransferID: action.TransferID,
 					ActionID:   action.ActionID,
-					CabinetID:  action.CabinetID,
+					SellerID:   action.SellerID,
 				},
 			)
 			if err != nil {
@@ -532,7 +531,7 @@ func (dispatcher *ProductDispatcher) loadLockedAction(
 func sameImmutableProductAction(left, right ProductAction) bool {
 	if left.TransferID != right.TransferID || left.ActionID != right.ActionID ||
 		left.PlanID != right.PlanID || left.TargetID != right.TargetID ||
-		left.CabinetID != right.CabinetID || left.Kind != right.Kind ||
+		left.SellerID != right.SellerID || left.Kind != right.Kind ||
 		left.PlanDigest != right.PlanDigest || left.TargetSetRoot != right.TargetSetRoot ||
 		left.RequestDigest != right.RequestDigest ||
 		left.MemberSetDigest != right.MemberSetDigest ||

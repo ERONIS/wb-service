@@ -3,27 +3,21 @@ package domain
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"strings"
 	"time"
 
 	"github.com/ERONIS/wb-service/internal/core/canonicalhash"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 )
 
-// CabinetID представляет логический строковый идентификатор кабинета WB.
-type CabinetID string
+// SellerID представляет исходный идентификатор продавца WB из поля sid токена.
+type SellerID string
 
-// SellerKey представляет 32-байтный канонический хэш идентификатора селлера WB.
-type SellerKey [sha256.Size]byte
-
-// ClientGeneration представляет 32-байтный канонический хэш API-токена кабинета WB.
+// ClientGeneration представляет отпечаток конкретного API-токена кабинета WB.
 type ClientGeneration [sha256.Size]byte
 
 // CabinetAccess содержит снимок доступа без токена и правил конкретного переноса.
 type CabinetAccess struct {
-	CabinetID           CabinetID  
-	Name                string
-	SellerKey           SellerKey
+	SellerID            SellerID
 	BindingRevision     int64
 	CapabilityRevision  int64
 	ContentRead         bool
@@ -32,34 +26,25 @@ type CabinetAccess struct {
 	ClientGeneration    ClientGeneration
 }
 
-// Validate проверяет общий формат локального идентификатора, включая старые строковые ID.
-func (c CabinetID) Validate() error {
-	if c == "" || len(c) > 128 || strings.TrimSpace(string(c)) != string(c) {
-		return core_errors.InvalidArgument("invalid WB cabinet ID")
+// Validate проверяет нормализованный UUID продавца из токена WB.
+func (id SellerID) Validate() error {
+	if len(id) != 36 {
+		return core_errors.InvalidArgument("invalid WB seller ID")
+	}
+	for position := 0; position < len(id); position++ {
+		character := id[position]
+		switch position {
+		case 8, 13, 18, 23:
+			if character != '-' {
+				return core_errors.InvalidArgument("invalid WB seller ID")
+			}
+		default:
+			if character < '0' || (character > '9' && character < 'a') || character > 'f' {
+				return core_errors.InvalidArgument("invalid WB seller ID")
+			}
+		}
 	}
 	return nil
-}
-
-// IsZero возвращает true, если идентификатор кабинета пустой.
-func (c CabinetID) IsZero() bool {
-	return c == ""
-}
-
-// NewSellerKey вычисляет детерминированный канонический хэш ключа селлера WB.
-func NewSellerKey(sellerID string) SellerKey {
-	builder := canonicalhash.NewSHA256("wb-seller-key:v1")
-	builder.String(sellerID)
-	return SellerKey(builder.Sum())
-}
-
-// IsZero возвращает true, если ключ селлера не инициализирован.
-func (k SellerKey) IsZero() bool {
-	return k == SellerKey{}
-}
-
-// String возвращает шестнадцатеричное представление ключа селлера.
-func (k SellerKey) String() string {
-	return hex.EncodeToString(k[:])
 }
 
 // NewClientGeneration вычисляет детерминированный канонический хэш поколения клиента по токену.

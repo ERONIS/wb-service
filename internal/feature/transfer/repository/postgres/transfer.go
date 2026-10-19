@@ -81,14 +81,14 @@ func (repository *Repository) FindByID(
 	return transfer, nil
 }
 
-func (repository *Repository) ListTargetCabinetIDs(
+func (repository *Repository) ListTargetSellerIDs(
 	ctx context.Context,
 	transferID transfer_service.TransferID,
-) ([]transfer_service.CabinetID, error) {
+) ([]transfer_service.SellerID, error) {
 	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 	const query = `
-		SELECT cabinet_id
+		SELECT seller_id
 		FROM wb.transfer_targets
 		WHERE transfer_id = $1
 		ORDER BY position;
@@ -98,13 +98,13 @@ func (repository *Repository) ListTargetCabinetIDs(
 		return nil, fmt.Errorf("select transfer targets: %w", err)
 	}
 	defer rows.Close()
-	result := make([]transfer_service.CabinetID, 0)
+	result := make([]transfer_service.SellerID, 0)
 	for rows.Next() {
-		var cabinetID string
-		if err := rows.Scan(&cabinetID); err != nil {
+		var sellerID string
+		if err := rows.Scan(&sellerID); err != nil {
 			return nil, fmt.Errorf("scan transfer target: %w", err)
 		}
-		result = append(result, transfer_service.CabinetID(cabinetID))
+		result = append(result, transfer_service.SellerID(sellerID))
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate transfer targets: %w", err)
@@ -236,8 +236,7 @@ func copyTargets(
 		[]string{
 			"transfer_id",
 			"position",
-			"cabinet_id",
-			"seller_key",
+			"seller_id",
 			"client_generation",
 			"credential_expires_at",
 			"binding_revision",
@@ -250,8 +249,7 @@ func copyTargets(
 			return []any{
 				transferID,
 				target.Position,
-				string(target.CabinetID),
-				target.SellerKey[:],
+				string(target.SellerID),
 				target.ClientGeneration[:],
 				target.CredentialExpiresAt.UTC(),
 				target.BindingRevision,

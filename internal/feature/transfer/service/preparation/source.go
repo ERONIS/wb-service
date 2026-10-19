@@ -21,15 +21,15 @@ type PreparationSource struct {
 	GroupTargetID int64
 	SourceGroupID int64
 	TargetID      int64
-	CabinetID     model.CabinetID
+	SellerID      model.SellerID
 	Items         []PreparationSourceItem
 }
 
 func (source PreparationSource) Validate() error {
 	if source.TransferID <= 0 || source.GroupTargetID <= 0 ||
 		source.SourceGroupID <= 0 || source.TargetID <= 0 ||
-		strings.TrimSpace(string(source.CabinetID)) != string(source.CabinetID) ||
-		source.CabinetID == "" || len(source.Items) == 0 {
+		strings.TrimSpace(string(source.SellerID)) != string(source.SellerID) ||
+		source.SellerID == "" || len(source.Items) == 0 {
 		return errors.New("transfer preparation source is invalid")
 	}
 	seenItems := make(map[int64]struct{}, len(source.Items))
@@ -55,16 +55,15 @@ type PreparationPendingGroup struct {
 	GroupTargetID int64
 	SourceGroupID int64
 	TargetID      int64
-	CabinetID     model.CabinetID
+	SellerID      model.SellerID
 }
 
 // Validate проверяет корректность идентификаторов и кабинета целевой группы.
 func (group PreparationPendingGroup) Validate() error {
 	if group.GroupTargetID <= 0 || group.SourceGroupID <= 0 || group.TargetID <= 0 ||
-		strings.TrimSpace(string(group.CabinetID)) != string(group.CabinetID) ||
-		group.CabinetID == "" {
+		strings.TrimSpace(string(group.SellerID)) != string(group.SellerID) ||
+		group.SellerID == "" {
 		return errors.New("transfer preparation pending group is invalid")
 	}
 	return nil
 }
-

@@ -36,7 +36,7 @@ type ProductActionCandidate struct {
 	TransferID            transfer_service.TransferID
 	ActionID              int64
 	TargetID              int64
-	CabinetID             CabinetID
+	SellerID              SellerID
 	AuthorizationID       transfer_service.LiveAuthorizationID
 	AuthorizationRevision int64
 	PlanDigest            Digest
@@ -69,7 +69,7 @@ type ProductAction struct {
 	RequestDigest          Digest
 	RequestPayload         []byte
 	MemberSetDigest        Digest
-	SellerKey              domain.SellerKey
+	SellerID               domain.SellerID
 	ClientGeneration       domain.ClientGeneration
 	CredentialExpiresAt    time.Time
 	PreflightObservationID int64
@@ -86,12 +86,11 @@ type ProductAction struct {
 
 func (action ProductAction) Validate() error {
 	if action.TransferID <= 0 || action.ActionID <= 0 || action.TargetID <= 0 ||
-		action.CabinetID == "" || action.AuthorizationID <= 0 ||
+		action.SellerID.Validate() != nil || action.AuthorizationID <= 0 ||
 		action.AuthorizationRevision < 0 || action.PlanDigest == (Digest{}) ||
 		action.TargetSetRoot == (Digest{}) || action.PlanID <= 0 ||
 		action.Revision < 0 || action.RequestDigest == (Digest{}) ||
 		action.MemberSetDigest == (Digest{}) || len(action.RequestPayload) == 0 ||
-		action.SellerKey.IsZero() ||
 		action.ClientGeneration.IsZero() ||
 		action.CredentialExpiresAt.IsZero() || action.PreflightObservationID <= 0 ||
 		len(action.Members) == 0 {
@@ -207,7 +206,7 @@ func BuildTargetedRecheck(
 	if err := action.Validate(); err != nil {
 		return TargetedRecheck{}, err
 	}
-	if observation.TargetID != action.TargetID || observation.CabinetID != action.CabinetID {
+	if observation.TargetID != action.TargetID || observation.SellerID != action.SellerID {
 		return TargetedRecheck{}, ErrProductActionConflict
 	}
 	relevantNormal := make([]contentapi.Card, 0)
@@ -235,7 +234,7 @@ func BuildTargetedRecheck(
 	}
 	targeted := CatalogObservation{
 		TargetID:   observation.TargetID,
-		CabinetID:  observation.CabinetID,
+		SellerID:   observation.SellerID,
 		Normal:     relevantNormal,
 		Trash:      relevantTrash,
 		ObservedAt: observation.ObservedAt,

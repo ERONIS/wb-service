@@ -7,7 +7,7 @@ import (
 
 var (
 	ErrPreparationMismatch = core_errors.ErrConflict
-	ErrProposalNotFound   = core_errors.ErrNotFound
+	ErrProposalNotFound    = core_errors.ErrNotFound
 )
 
 type ProposalQuery struct {
@@ -35,7 +35,7 @@ type StoredProposal struct {
 	GroupTargetID int64
 	SourceGroupID int64
 	TargetID      int64
-	CabinetID     CabinetID
+	SellerID      SellerID
 	Proposal      Proposal
 	Members       []PreparedMember
 }

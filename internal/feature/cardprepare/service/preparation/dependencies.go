@@ -3,7 +3,7 @@ package preparation
 import "github.com/ERONIS/wb-service/internal/feature/cardprepare/service/model"
 
 type Digest = model.Digest
-type CabinetID = model.CabinetID
+type SellerID = model.SellerID
 type OutcomeCode = model.OutcomeCode
 type Outcome = model.Outcome
 type OutcomeDetails = model.OutcomeDetails

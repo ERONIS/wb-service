@@ -6,7 +6,7 @@ import (
 	"github.com/ERONIS/wb-service/internal/feature/cardpublication/service/monitoring"
 )
 
-type CabinetID = model.CabinetID
+type SellerID = model.SellerID
 type Digest = model.Digest
 type ActionKind = model.ActionKind
 type ObservationDraft = model.ObservationDraft

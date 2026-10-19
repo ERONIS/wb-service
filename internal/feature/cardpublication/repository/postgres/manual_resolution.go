@@ -95,7 +95,7 @@ func (repository *Repository) LockResolutionSubject(
 			action.revision,
 			action.plan_id,
 			action.target_id,
-			target.cabinet_id,
+			target.seller_id,
 			action.kind,
 			action.request_payload,
 			plan.plan_digest,
@@ -145,7 +145,7 @@ func (repository *Repository) LockResolutionSubject(
 		 AND item_target.group_target_id = member.group_target_id
 		 AND item_target.id = member.transfer_item_target_id
 		JOIN wb.product_identities AS identity
-		  ON identity.cabinet_id = target.cabinet_id
+		  ON identity.seller_id = target.seller_id
 		 AND identity.vendor_code_key = member.vendor_code
 		WHERE action.transfer_id = $1
 			AND action.id = $2
@@ -194,7 +194,7 @@ func (repository *Repository) LockResolutionSubject(
 		&subject.ActionRevision,
 		&subject.PlanID,
 		&subject.TargetID,
-		&subject.CabinetID,
+		&subject.SellerID,
 		&subject.ActionKind,
 		&subject.RequestPayload,
 		&planDigest,
@@ -304,7 +304,7 @@ func (repository *Repository) LoadManualObservationEvidence(
 		WHERE observation.transfer_id = $1
 			AND observation.id = $2
 			AND observation.target_id = $3
-			AND observation.cabinet_id = $4
+			AND observation.seller_id = $4
 			AND observation.kind = 'post_submission'
 			AND observation.observed_at >= $5;
 	`
@@ -316,7 +316,7 @@ func (repository *Repository) LoadManualObservationEvidence(
 		subject.TransferID,
 		observationID,
 		subject.TargetID,
-		subject.CabinetID,
+		subject.SellerID,
 		subject.AttemptStartedAt,
 	).Scan(&evidence.ID, &digest, &evidence.Payload, &evidence.ObservedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -350,7 +350,7 @@ func (repository *Repository) LoadManualErrorEvidence(
 		SELECT batch.id, batch.error_codes
 		FROM wb.publication_attempts AS attempt
 		JOIN wb.publication_error_batches AS batch
-		  ON batch.cabinet_id = attempt.baseline_cabinet_id
+		  ON batch.seller_id = attempt.baseline_seller_id
 		WHERE attempt.transfer_id = $1
 			AND attempt.id = $2
 			AND attempt.action_id = $3
@@ -513,7 +513,7 @@ func applyManualMemberResult(
 			    active_action_id = NULL,
 			    revision = revision + 1,
 			    updated_at = CURRENT_TIMESTAMP
-			WHERE cabinet_id = $1
+			WHERE seller_id = $1
 				AND vendor_code_key = $2
 				AND state IN ('blocked_uncertain', 'remote_present')
 				AND (
@@ -524,7 +524,7 @@ func applyManualMemberResult(
 		result, err = tx.Exec(
 			ctx,
 			updateIdentity,
-			command.Subject.CabinetID,
+			command.Subject.SellerID,
 			command.Subject.VendorCode,
 			command.Subject.TransferID,
 			command.Subject.ActionID,
@@ -546,7 +546,7 @@ func applyManualMemberResult(
 			    active_action_id = NULL,
 			    revision = revision + 1,
 			    updated_at = CURRENT_TIMESTAMP
-			WHERE cabinet_id = $1
+			WHERE seller_id = $1
 				AND vendor_code_key = $2
 				AND state IN ('blocked_uncertain', 'remote_present')
 				AND (
@@ -558,7 +558,7 @@ func applyManualMemberResult(
 		result, err = tx.Exec(
 			ctx,
 			updateIdentity,
-			command.Subject.CabinetID,
+			command.Subject.SellerID,
 			command.Subject.VendorCode,
 			command.Subject.TransferID,
 			command.Subject.ActionID,
@@ -585,7 +585,7 @@ func applyManualEvidence(
 		const insertAttribution = `
 			INSERT INTO wb.publication_attributions (
 				transfer_id, group_target_id, action_id, action_member_id,
-				cabinet_id, nm_id, plan_digest, attempt_id,
+				seller_id, nm_id, plan_digest, attempt_id,
 				preflight_observation_id, post_observation_id, level,
 				safe_reason_code
 			)
@@ -602,7 +602,7 @@ func applyManualEvidence(
 			command.Subject.GroupTargetID,
 			command.Subject.ActionID,
 			command.Subject.ActionMemberID,
-			command.Subject.CabinetID,
+			command.Subject.SellerID,
 			command.Decision.NMID,
 			command.Subject.PlanDigest[:],
 			command.Subject.AttemptID,

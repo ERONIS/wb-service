@@ -23,15 +23,43 @@ type Claims struct {
 	ExpiresAt  time.Time
 }
 
-// ParseToken разбирает claims; подлинность токена проверяется отдельно запросом к WB.
-func ParseToken(token string, now time.Time) (Claims, error) {
+type TokenProperties uint64
+
+const (
+	PermissionContent       TokenProperties = 1 << 1
+	PermissionAnalytics     TokenProperties = 1 << 2
+	PermissionPrices        TokenProperties = 1 << 3
+	PermissionMarketplace   TokenProperties = 1 << 4
+	PermissionStatistics    TokenProperties = 1 << 5
+	PermissionPromotion     TokenProperties = 1 << 6
+	PermissionFeedbacks     TokenProperties = 1 << 7
+	PermissionBuyersChat    TokenProperties = 1 << 9
+	PermissionSupplies      TokenProperties = 1 << 10
+	PermissionBuyersReturns TokenProperties = 1 << 11
+	PermissionDocuments     TokenProperties = 1 << 12
+	PermissionFinance       TokenProperties = 1 << 13
+	PermissionUsers         TokenProperties = 1 << 16
+	PermissionReadOnly      TokenProperties = 1 << 30
+)
+
+// ValidateTokenShape проверяет размер, пробелы и непустые части токена WB.
+func ValidateTokenShape(token string) error {
 	if token == "" || strings.TrimSpace(token) != token || len(token) > maxTokenBytes {
-		return Claims{}, ErrInvalidCredential
+		return ErrInvalidCredential
 	}
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
-		return Claims{}, ErrInvalidCredential
+		return ErrInvalidCredential
 	}
+	return nil
+}
+
+// ParseToken разбирает поля токена; подлинность проверяется отдельно запросом к WB.
+func ParseToken(token string, now time.Time) (Claims, error) {
+	if err := ValidateTokenShape(token); err != nil {
+		return Claims{}, err
+	}
+	parts := strings.Split(token, ".")
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil || len(payload) > maxTokenPayloadBytes {
 		return Claims{}, ErrInvalidCredential
@@ -112,25 +140,6 @@ func validCanonicalUUID(value string) bool {
 	}
 	return true
 }
-
-type TokenProperties uint64
-
-const (
-	PermissionContent       TokenProperties = 1 << 1
-	PermissionAnalytics     TokenProperties = 1 << 2
-	PermissionPrices        TokenProperties = 1 << 3
-	PermissionMarketplace   TokenProperties = 1 << 4
-	PermissionStatistics    TokenProperties = 1 << 5
-	PermissionPromotion     TokenProperties = 1 << 6
-	PermissionFeedbacks     TokenProperties = 1 << 7
-	PermissionBuyersChat    TokenProperties = 1 << 9
-	PermissionSupplies      TokenProperties = 1 << 10
-	PermissionBuyersReturns TokenProperties = 1 << 11
-	PermissionDocuments     TokenProperties = 1 << 12
-	PermissionFinance       TokenProperties = 1 << 13
-	PermissionUsers         TokenProperties = 1 << 16
-	PermissionReadOnly      TokenProperties = 1 << 30
-)
 
 func (properties TokenProperties) Has(permission TokenProperties) bool {
 	return permission != 0 && properties&permission != 0

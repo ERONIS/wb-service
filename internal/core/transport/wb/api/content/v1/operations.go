@@ -9,6 +9,8 @@ import (
 )
 
 const (
+	contentAPIHost = "content-api.wildberries.ru"
+
 	operationIDPing                   policy.OperationID = "content.ping"
 	operationIDParentCategories       policy.OperationID = "content.object.parent-all"
 	operationIDSubjects               policy.OperationID = "content.object.all"
@@ -49,6 +51,7 @@ var (
 	pingOperation = mustOperation(policy.OperationSpec{
 		ID:               operationIDPing,
 		Method:           http.MethodGet,
+		Host:             contentAPIHost,
 		Path:             "/ping",
 		BucketID:         bucketIDContentPing,
 		Kind:             policy.OperationKindRead,
@@ -143,6 +146,7 @@ func safeGetJSON(
 	return policy.OperationSpec{
 		ID:               id,
 		Method:           http.MethodGet,
+		Host:             contentAPIHost,
 		Path:             path,
 		BucketID:         bucket,
 		Kind:             policy.OperationKindRead,
@@ -176,6 +180,7 @@ func mutationPostJSON(
 	return policy.OperationSpec{
 		ID:               id,
 		Method:           http.MethodPost,
+		Host:             contentAPIHost,
 		Path:             path,
 		BucketID:         bucket,
 		Kind:             policy.OperationKindMutation,
@@ -289,6 +294,7 @@ func UploadMediaFileOperation(nmID int64, mediaNumber int) (policy.Operation, er
 	return policy.NewOperation(policy.OperationSpec{
 		ID:               operationIDUploadMediaFile,
 		Method:           http.MethodPost,
+		Host:             contentAPIHost,
 		Path:             "/content/v3/media/file",
 		BucketID:         bucketIDMediaFiles,
 		Kind:             policy.OperationKindMutation,

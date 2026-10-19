@@ -29,7 +29,7 @@ const (
 var ErrErrorFeedEnvelope = errors.New("WB Cards Error List returned an error envelope")
 
 type ErrorCursor struct {
-	CabinetID CabinetID
+	SellerID  SellerID
 	UpdatedAt time.Time
 	BatchUUID string
 	Revision  int64
@@ -37,7 +37,7 @@ type ErrorCursor struct {
 }
 
 type ErrorBatchEvidence struct {
-	CabinetID           CabinetID
+	SellerID            SellerID
 	BatchUUID           string
 	UpdatedAt           time.Time
 	SourceDigest        Digest
@@ -47,23 +47,23 @@ type ErrorBatchEvidence struct {
 }
 
 type SaveErrorFeedCommand struct {
-	CabinetID CabinetID
-	Previous  ErrorCursor
-	Next      ErrorCursor
-	Batches   []ErrorBatchEvidence
-	PolledAt  time.Time
+	SellerID SellerID
+	Previous ErrorCursor
+	Next     ErrorCursor
+	Batches  []ErrorBatchEvidence
+	PolledAt time.Time
 }
 
 type CaptureErrorBaselineCommand struct {
 	TransferID transfer_service.TransferID
 	ActionID   int64
-	CabinetID  CabinetID
+	SellerID   SellerID
 }
 
 type ErrorBaseline struct {
 	TransferID      transfer_service.TransferID
 	ActionID        int64
-	CabinetID       CabinetID
+	SellerID        SellerID
 	CursorRevision  int64
 	CursorUpdatedAt time.Time
 	CursorBatchUUID string
@@ -71,7 +71,7 @@ type ErrorBaseline struct {
 }
 
 func (baseline ErrorBaseline) Validate() error {
-	if baseline.TransferID <= 0 || baseline.ActionID <= 0 || baseline.CabinetID == "" ||
+	if baseline.TransferID <= 0 || baseline.ActionID <= 0 || baseline.SellerID == "" ||
 		baseline.CursorRevision < 0 || baseline.CapturedAt.IsZero() ||
 		(baseline.CursorUpdatedAt.IsZero() && baseline.CursorBatchUUID != "") {
 		return errors.New("Cards Error List baseline is invalid")
@@ -129,7 +129,7 @@ func (feed *ErrorFeed) ProcessPending(ctx context.Context) error {
 	for _, target := range targets {
 		target := target
 		group.Go(func() error {
-			_, err := feed.Refresh(refreshCtx, CabinetID(target.CabinetID))
+			_, err := feed.Refresh(refreshCtx, SellerID(target.SellerID))
 			return err
 		})
 	}
@@ -138,13 +138,13 @@ func (feed *ErrorFeed) ProcessPending(ctx context.Context) error {
 
 func (feed *ErrorFeed) Refresh(
 	ctx context.Context,
-	cabinetID CabinetID,
+	sellerID SellerID,
 ) (ErrorCursor, error) {
-	if ctx == nil || strings.TrimSpace(string(cabinetID)) != string(cabinetID) ||
-		cabinetID == "" {
+	if ctx == nil || strings.TrimSpace(string(sellerID)) != string(sellerID) ||
+		sellerID == "" {
 		return ErrorCursor{}, errors.New("Cards Error List cabinet is invalid")
 	}
-	previous, err := feed.repository.LoadErrorCursor(ctx, cabinetID)
+	previous, err := feed.repository.LoadErrorCursor(ctx, sellerID)
 	if err != nil {
 		return ErrorCursor{}, err
 	}
@@ -162,7 +162,7 @@ func (feed *ErrorFeed) Refresh(
 	for page := 0; page < maxErrorFeedPages; page++ {
 		response, err := feed.transport.CardsErrorList(
 			ctx,
-			cabinetID,
+			sellerID,
 			contentapi.CardsErrorListQuery{},
 			contentapi.CardsErrorListRequest{
 				Cursor: requestCursor,
@@ -176,7 +176,7 @@ func (feed *ErrorFeed) Refresh(
 			return ErrorCursor{}, ErrErrorFeedEnvelope
 		}
 		for _, raw := range response.Data.Items {
-			batch, err := normalizeErrorBatch(cabinetID, raw)
+			batch, err := normalizeErrorBatch(sellerID, raw)
 			if err != nil {
 				return ErrorCursor{}, err
 			}
@@ -205,14 +205,14 @@ func (feed *ErrorFeed) Refresh(
 				next.UpdatedAt = polledAt
 				next.BatchUUID = ""
 			}
-			next.CabinetID = cabinetID
+			next.SellerID = sellerID
 			next.PolledAt = polledAt
 			command := SaveErrorFeedCommand{
-				CabinetID: cabinetID,
-				Previous:  previous,
-				Next:      next,
-				Batches:   batches,
-				PolledAt:  polledAt,
+				SellerID: sellerID,
+				Previous: previous,
+				Next:     next,
+				Batches:  batches,
+				PolledAt: polledAt,
 			}
 			var savedCursor ErrorCursor
 			err = feed.uow.WithinTransaction(ctx, func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
@@ -241,14 +241,14 @@ func (feed *ErrorFeed) CaptureBaseline(
 	command CaptureErrorBaselineCommand,
 ) (ErrorBaseline, error) {
 	if ctx == nil || tx == nil || command.TransferID <= 0 || command.ActionID <= 0 ||
-		command.CabinetID == "" {
+		command.SellerID == "" {
 		return ErrorBaseline{}, errors.New("capture Cards Error List baseline command is invalid")
 	}
 	return feed.repository.CaptureErrorBaseline(ctx, tx, command)
 }
 
 func normalizeErrorBatch(
-	cabinetID CabinetID,
+	sellerID SellerID,
 	raw contentapi.CardsErrorBatch,
 ) (ErrorBatchEvidence, error) {
 	if strings.TrimSpace(raw.BatchUUID) == "" {
@@ -286,7 +286,7 @@ func normalizeErrorBatch(
 		errorCodes = []string{"wb_error_unspecified"}
 	}
 	return ErrorBatchEvidence{
-		CabinetID:           cabinetID,
+		SellerID:            sellerID,
 		BatchUUID:           strings.TrimSpace(raw.BatchUUID),
 		UpdatedAt:           updatedAt,
 		SourceDigest:        digestParts("cardpublication-error-batch:v1", encoded),

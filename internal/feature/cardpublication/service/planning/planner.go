@@ -54,7 +54,7 @@ func (planner *Planner) Build(
 	desiredIdentityCounts := make(map[string]int)
 	for _, group := range groups {
 		for _, member := range group.Source.Members {
-			key := string(group.Source.CabinetID) + "\x00" + member.VendorCode
+			key := string(group.Source.SellerID) + "\x00" + member.VendorCode
 			desiredIdentityCounts[key]++
 		}
 	}
@@ -69,7 +69,7 @@ func (planner *Planner) Build(
 		}
 		duplicateDesired := false
 		for _, member := range group.Source.Members {
-			key := string(group.Source.CabinetID) + "\x00" + member.VendorCode
+			key := string(group.Source.SellerID) + "\x00" + member.VendorCode
 			if desiredIdentityCounts[key] > 1 {
 				duplicateDesired = true
 				break
@@ -275,7 +275,7 @@ func appendDecision(
 				OutcomeCode:          decision.code,
 			})
 			draft.Identities = append(draft.Identities, IdentityDraft{
-				CabinetID:         CabinetID(group.Source.CabinetID),
+				SellerID:          SellerID(group.Source.SellerID),
 				VendorCode:        member.VendorCode,
 				State:             IdentityRemoteConflict,
 				NMID:              decision.itemNMIDs[index],
@@ -319,7 +319,7 @@ func appendDecision(
 				NMID:                 decision.itemNMIDs[index],
 			})
 			draft.Identities = append(draft.Identities, IdentityDraft{
-				CabinetID:         CabinetID(group.Source.CabinetID),
+				SellerID:          SellerID(group.Source.SellerID),
 				VendorCode:        member.VendorCode,
 				State:             IdentityRemotePresent,
 				NMID:              decision.itemNMIDs[index],
@@ -349,7 +349,7 @@ func appendDecision(
 				ActionKey:            productAction.Key,
 			})
 			draft.Identities = append(draft.Identities, IdentityDraft{
-				CabinetID:         CabinetID(group.Source.CabinetID),
+				SellerID:          SellerID(group.Source.SellerID),
 				VendorCode:        member.VendorCode,
 				State:             IdentityRemoteMissing,
 				SubjectID:         group.Proposal.Proposal.SubjectID,
@@ -374,7 +374,7 @@ func appendDecision(
 			NMID:                 decision.itemNMIDs[index],
 		})
 		draft.Identities = append(draft.Identities, IdentityDraft{
-			CabinetID:         CabinetID(group.Source.CabinetID),
+			SellerID:          SellerID(group.Source.SellerID),
 			VendorCode:        member.VendorCode,
 			State:             IdentityRemotePresent,
 			NMID:              decision.itemNMIDs[index],
@@ -645,7 +645,7 @@ func validateLoadedGroup(group loadedPlanningGroup) error {
 	if group.Proposal.GroupTargetID != group.Source.GroupTargetID ||
 		group.Proposal.SourceGroupID != group.Source.SourceGroupID ||
 		group.Proposal.TargetID != group.Source.TargetID ||
-		CabinetID(group.Proposal.CabinetID) != CabinetID(group.Source.CabinetID) ||
+		SellerID(group.Proposal.SellerID) != SellerID(group.Source.SellerID) ||
 		Digest(group.Proposal.Proposal.ProposalRoot) != Digest(group.Source.ProposalRoot) ||
 		len(group.Proposal.Members) != len(group.Source.Members) {
 		return errors.New("prepared proposal differs from publication planning source")

@@ -22,8 +22,8 @@ var (
 	errRegistryContextRequired = errors.New(
 		"rate limiter registry context is required",
 	)
-	errRegistryCabinetIDRequired = errors.New(
-		"rate limiter registry cabinet ID is required",
+	errRegistrySellerIDRequired = errors.New(
+		"rate limiter registry seller ID is required",
 	)
 	errRegistryBucketIDRequired = errors.New(
 		"rate limiter registry bucket ID is required",
@@ -36,8 +36,8 @@ var ErrBucketNotRegistered = errors.New(
 )
 
 type limiterKey struct {
-	cabinetID domain.CabinetID
-	bucketID  policy.BucketID
+	sellerID domain.SellerID
+	bucketID policy.BucketID
 }
 
 // Registry хранит политики и limiter для каждой пары cabinet и bucket.
@@ -87,7 +87,7 @@ func NewRegistry(
 // Wait ожидает admission для одной пары cabinet и bucket.
 func (registry *Registry) Wait(
 	ctx context.Context,
-	cabinetID domain.CabinetID,
+	sellerID domain.SellerID,
 	bucketID policy.BucketID,
 ) error {
 	if ctx == nil {
@@ -95,7 +95,7 @@ func (registry *Registry) Wait(
 	}
 
 	limiter, err := registry.limiter(
-		cabinetID,
+		sellerID,
 		bucketID,
 	)
 	if err != nil {
@@ -107,12 +107,12 @@ func (registry *Registry) Wait(
 
 // Observe применяет разрешённые rate-limit headers ответа WB.
 func (registry *Registry) Observe(
-	cabinetID domain.CabinetID,
+	sellerID domain.SellerID,
 	bucketID policy.BucketID,
 	response *http.Response,
 ) (time.Duration, error) {
 	limiter, err := registry.limiter(
-		cabinetID,
+		sellerID,
 		bucketID,
 	)
 	if err != nil {
@@ -144,7 +144,7 @@ func (registry *Registry) Observe(
 }
 
 func (registry *Registry) limiter(
-	cabinetID domain.CabinetID,
+	sellerID domain.SellerID,
 	bucketID policy.BucketID,
 ) (*Limiter, error) {
 	if registry == nil ||
@@ -152,8 +152,8 @@ func (registry *Registry) limiter(
 		registry.limiters == nil {
 		return nil, errRegistryRequired
 	}
-	if cabinetID == "" {
-		return nil, errRegistryCabinetIDRequired
+	if sellerID == "" {
+		return nil, errRegistrySellerIDRequired
 	}
 	if bucketID == "" {
 		return nil, errRegistryBucketIDRequired
@@ -172,8 +172,8 @@ func (registry *Registry) limiter(
 	}
 
 	key := limiterKey{
-		cabinetID: cabinetID,
-		bucketID:  bucketID,
+		sellerID: sellerID,
+		bucketID: bucketID,
 	}
 	if limiter, exists := registry.limiters[key]; exists {
 		return limiter, nil

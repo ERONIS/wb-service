@@ -15,9 +15,9 @@ import (
 )
 
 type Runtime interface {
-	NewCandidate(domain.CabinetID, string, string) (*core_wb.CredentialCandidate, error)
+	NewCandidate(domain.SellerID, string, string) (*core_wb.CredentialCandidate, error)
 	ActivateCandidate(*core_wb.CredentialCandidate) error
-	RemoveCabinet(domain.CabinetID)
+	RemoveCabinet(domain.SellerID)
 }
 
 type Verifier struct {
@@ -33,20 +33,20 @@ func NewVerifier(runtime Runtime) *Verifier {
 
 func (verifier *Verifier) Prepare(
 	ctx context.Context,
-	cabinetID wbcabinet_service.CabinetID,
+	sellerID wbcabinet_service.SellerID,
 	name string,
 	token string,
 ) (wbcabinet_service.PreparedCredential, error) {
 	if ctx == nil {
 		return nil, errors.New("verify WB cabinet: context is nil")
 	}
-	candidate, err := verifier.runtime.NewCandidate(cabinetID, name, token)
+	candidate, err := verifier.runtime.NewCandidate(sellerID, name, token)
 	if err != nil {
 		return nil, fmt.Errorf("build WB credential candidate: %w", err)
 	}
 	ping, err := client.ExecuteResponse[contentapi.PingResponse](
 		ctx,
-		candidate.ContentExecutor(),
+		candidate.Executor(),
 		contentapi.PingOperation(),
 		nil,
 		nil,
@@ -82,11 +82,11 @@ func classifyVerificationError(err error) error {
 	return err
 }
 
-func (verifier *Verifier) Remove(cabinetID wbcabinet_service.CabinetID) {
+func (verifier *Verifier) Remove(sellerID wbcabinet_service.SellerID) {
 	if verifier == nil || verifier.runtime == nil {
 		return
 	}
-	verifier.runtime.RemoveCabinet(cabinetID)
+	verifier.runtime.RemoveCabinet(sellerID)
 }
 
 type preparedCredential struct {

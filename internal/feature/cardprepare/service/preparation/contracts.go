@@ -7,51 +7,51 @@ import (
 )
 
 type CatalogTransport interface {
-	CardsLimits(context.Context, CabinetID) (contentapi.CardsLimitsResponse, error)
+	CardsLimits(context.Context, SellerID) (contentapi.CardsLimitsResponse, error)
 	Subjects(
 		context.Context,
-		CabinetID,
+		SellerID,
 		contentapi.SubjectsQuery,
 	) (contentapi.SubjectsResponse, error)
 	SubjectCharacteristics(
 		context.Context,
-		CabinetID,
+		SellerID,
 		int64,
 		contentapi.SubjectCharacteristicsQuery,
 	) (contentapi.SubjectCharacteristicsResponse, error)
 	Brands(
 		context.Context,
-		CabinetID,
+		SellerID,
 		contentapi.BrandsQuery,
 	) (contentapi.BrandsResponse, error)
 	Colors(
 		context.Context,
-		CabinetID,
+		SellerID,
 		contentapi.DirectoryQuery,
 	) (contentapi.DirectoryColorsResponse, error)
 	Kinds(
 		context.Context,
-		CabinetID,
+		SellerID,
 		contentapi.DirectoryQuery,
 	) (contentapi.DirectoryKindsResponse, error)
 	Countries(
 		context.Context,
-		CabinetID,
+		SellerID,
 		contentapi.DirectoryQuery,
 	) (contentapi.DirectoryCountriesResponse, error)
 	Seasons(
 		context.Context,
-		CabinetID,
+		SellerID,
 		contentapi.DirectoryQuery,
 	) (contentapi.DirectorySeasonsResponse, error)
 	VAT(
 		context.Context,
-		CabinetID,
+		SellerID,
 		contentapi.DirectoryQuery,
 	) (contentapi.DirectoryVATResponse, error)
 	TNVED(
 		context.Context,
-		CabinetID,
+		SellerID,
 		contentapi.DirectoryTNVEDQuery,
 	) (contentapi.DirectoryTNVEDResponse, error)
 }

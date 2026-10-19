@@ -9,7 +9,7 @@ import (
 )
 
 type Digest = cardpipeline.Digest
-type CabinetID = domain.CabinetID
+type SellerID = domain.SellerID
 
 type OutcomeCode string
 

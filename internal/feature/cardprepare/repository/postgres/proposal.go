@@ -81,7 +81,7 @@ func (repository *Repository) LoadProposals(
 			request.position,
 			group_target.source_group_id,
 			group_target.target_id,
-			target.cabinet_id,
+			target.seller_id,
 			artifact.subject_id,
 			artifact.semantic_digest,
 			artifact.metadata_digest,
@@ -138,7 +138,7 @@ func (repository *Repository) LoadProposals(
 			&loaded.position,
 			&loaded.stored.SourceGroupID,
 			&loaded.stored.TargetID,
-			&loaded.stored.CabinetID,
+			&loaded.stored.SellerID,
 			&loaded.stored.Proposal.SubjectID,
 			&loaded.semanticDigest,
 			&loaded.metadataDigest,
@@ -278,8 +278,8 @@ func decodeStoredProposal(
 func validateStoredProposal(stored cardprepare_service.StoredProposal) error {
 	if stored.SourceGroupID <= 0 ||
 		stored.TargetID <= 0 ||
-		strings.TrimSpace(string(stored.CabinetID)) != string(stored.CabinetID) ||
-		stored.CabinetID == "" || stored.Proposal.ValidateIntegrity() != nil {
+		strings.TrimSpace(string(stored.SellerID)) != string(stored.SellerID) ||
+		stored.SellerID == "" || stored.Proposal.ValidateIntegrity() != nil {
 		return cardprepare_service.ErrPreparationMismatch
 	}
 	return nil

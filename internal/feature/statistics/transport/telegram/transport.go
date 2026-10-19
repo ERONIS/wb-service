@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
-	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
+	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
 	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
 	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
 	statistics_service "github.com/ERONIS/wb-service/internal/feature/statistics/service"
@@ -91,7 +91,7 @@ func New(
 	}
 }
 
-func (handler *Handler) Register(menu *core_transport_telegram.Handler) {
+func (handler *Handler) Register(menu *core_tg_menu.Handler) {
 	menu.RegisterMenuItem(buttonStatistics, domain.RoleAdmin, handler.showDashboard)
 	menu.RegisterCallback(buttonOperation, domain.RoleAdmin, handler.openOperation)
 	menu.RegisterCallback(buttonAction, domain.RoleAdmin, handler.openAction)

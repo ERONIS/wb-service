@@ -23,7 +23,7 @@ var (
 type OperationFilter struct {
 	TransferID        int64
 	BatchID           int64
-	CabinetID         string
+	SellerID          string
 	Phase             string
 	Outcome           string
 	RequiresAttention *bool
@@ -34,11 +34,11 @@ type OperationFilter struct {
 }
 
 func (filter OperationFilter) Normalize() (OperationFilter, error) {
-	filter.CabinetID = strings.TrimSpace(filter.CabinetID)
+	filter.SellerID = strings.TrimSpace(filter.SellerID)
 	filter.Phase = strings.TrimSpace(filter.Phase)
 	filter.Outcome = strings.TrimSpace(filter.Outcome)
 	if filter.TransferID < 0 || filter.BatchID < 0 || filter.Offset < 0 || filter.Limit < 0 ||
-		filter.Limit > MaxPageSize || len(filter.CabinetID) > 128 ||
+		filter.Limit > MaxPageSize || len(filter.SellerID) > 128 ||
 		!oneOf(filter.Phase, transferPhases...) ||
 		!oneOf(filter.Outcome, transferOutcomes...) ||
 		invalidRange(filter.CreatedFrom, filter.CreatedTo) {
@@ -54,7 +54,7 @@ func (filter OperationFilter) Normalize() (OperationFilter, error) {
 
 type AggregateFilter struct {
 	TransferID          int64
-	CabinetID           string
+	SellerID            string
 	ActionKind          string
 	Phase               string
 	OutcomeClass        string
@@ -67,14 +67,14 @@ type AggregateFilter struct {
 }
 
 func (filter AggregateFilter) Normalize() (AggregateFilter, error) {
-	filter.CabinetID = strings.TrimSpace(filter.CabinetID)
+	filter.SellerID = strings.TrimSpace(filter.SellerID)
 	filter.ActionKind = strings.TrimSpace(filter.ActionKind)
 	filter.Phase = strings.TrimSpace(filter.Phase)
 	filter.OutcomeClass = strings.TrimSpace(filter.OutcomeClass)
 	filter.OutcomeCode = strings.TrimSpace(filter.OutcomeCode)
 	filter.DeliveryState = strings.TrimSpace(filter.DeliveryState)
 	filter.ResponseDisposition = strings.TrimSpace(filter.ResponseDisposition)
-	if filter.TransferID < 0 || len(filter.CabinetID) > 128 ||
+	if filter.TransferID < 0 || len(filter.SellerID) > 128 ||
 		len(filter.OutcomeCode) > 128 ||
 		!oneOf(filter.ActionKind, actionKinds...) ||
 		!oneOf(filter.Phase, transferPhases...) ||
@@ -200,7 +200,7 @@ type GroupTargetRow struct {
 	GroupName         string
 	TargetID          int64
 	TargetPosition    int
-	CabinetID         string
+	SellerID          string
 	PreparationStatus string
 	PublicationStatus string
 	MediaStatus       string
@@ -220,7 +220,7 @@ type ItemRow struct {
 	TransferItemID    int64
 	TargetID          int64
 	TargetPosition    int
-	CabinetID         string
+	SellerID          string
 	ItemPosition      int
 	VendorCode        string
 	State             string
@@ -237,7 +237,7 @@ type ItemRow struct {
 type CabinetProgressRow struct {
 	TargetID       int64
 	TargetPosition int
-	CabinetID      string
+	SellerID       string
 	Total          int64
 	Pending        int64
 	Running        int64
@@ -251,7 +251,7 @@ type CabinetTaskRow struct {
 	TransferID        int64
 	ItemTargetID      int64
 	TargetID          int64
-	CabinetID         string
+	SellerID          string
 	ItemPosition      int
 	VendorCode        string
 	GroupName         string
@@ -282,7 +282,7 @@ type ActionRow struct {
 	PlanID          int64
 	TargetID        int64
 	TargetPosition  int
-	CabinetID       string
+	SellerID        string
 	Kind            string
 	State           string
 	Revision        int64
@@ -305,7 +305,7 @@ type AttemptRow struct {
 	PlanID                  int64
 	TargetID                int64
 	TargetPosition          int
-	CabinetID               string
+	SellerID                string
 	ActionKind              string
 	DeliveryState           string
 	HTTPStatus              int
@@ -313,7 +313,7 @@ type AttemptRow struct {
 	ClassifierVersion       int
 	SafeErrorCode           string
 	UnmatchedCount          int
-	ErrorBaselineCabinetID  string
+	ErrorBaselineSellerID   string
 	ErrorCursorRevision     int64
 	ErrorCursorUpdatedAt    *time.Time
 	ErrorCursorBatchUUID    string
@@ -408,7 +408,7 @@ type AttentionRow struct {
 	TransferID            int64
 	ItemTargetID          int64
 	GroupTargetID         int64
-	CabinetID             string
+	SellerID              string
 	VendorCode            string
 	OutcomeClass          string
 	OutcomeCode           string

@@ -3,13 +3,12 @@ package cardimport_telegram_transport
 import (
 	"context"
 	"io"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
-	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
+	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
 	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
 
 	"go.uber.org/zap"
@@ -105,10 +104,9 @@ type Handler struct {
 	service                CardImportService
 	completion             CompletionNavigator
 	processing             ProcessingNotifier
-	additionalMenuButtons  []tele.Btn
 	uploadScreenMu         sync.Mutex
 	uploadScreenGeneration map[int64]uint64
-	menu                   *core_transport_telegram.Handler
+	menu                   *core_tg_menu.Handler
 	logger                 *zap.Logger
 	recoveryStartedAt      time.Time
 	recoveryStart          sync.Once
@@ -119,13 +117,6 @@ type Handler struct {
 	refreshWake            chan struct{}
 	refreshMu              sync.Mutex
 	pendingRefreshes       map[int64]cardimportSessionRefresh
-}
-
-func (h *Handler) AddCardsMenuButton(button tele.Btn) {
-	if strings.TrimSpace(button.Text) == "" || strings.TrimSpace(button.Unique) == "" {
-		panic("cardimport additional menu button is invalid")
-	}
-	h.additionalMenuButtons = append(h.additionalMenuButtons, button)
 }
 
 type CompletionNavigator interface {
@@ -190,7 +181,7 @@ func (h *Handler) SetProcessingNotifier(notifier ProcessingNotifier) {
 	h.processing = notifier
 }
 
-func (h *Handler) Register(menu *core_transport_telegram.Handler) {
+func (h *Handler) Register(menu *core_tg_menu.Handler) {
 	if menu == nil {
 		panic("cardimport Telegram menu is nil")
 	}

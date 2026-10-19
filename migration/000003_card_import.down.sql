@@ -1,6 +1,3 @@
-DROP TRIGGER IF EXISTS cabinet_copy_items_reject_mutation ON wb.cabinet_copy_items;
-DROP TABLE IF EXISTS wb.cabinet_copy_items;
-DROP TABLE IF EXISTS wb.cabinet_copy_sessions;
 DROP TRIGGER IF EXISTS card_batch_items_reject_mutation ON wb.card_batch_items;
 DROP TRIGGER IF EXISTS card_batch_items_validate_insert ON wb.card_batch_items;
 DROP TRIGGER IF EXISTS card_batches_reject_mutation ON wb.card_batches;

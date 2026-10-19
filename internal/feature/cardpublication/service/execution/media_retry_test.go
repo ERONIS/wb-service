@@ -26,7 +26,7 @@ type uncertainMediaTransport struct {
 	uploads, downloads int
 }
 
-func (transport *uncertainMediaTransport) SaveMediaByLinks(context.Context, CabinetID, domain.ClientGeneration, contentapi.SaveMediaByLinksRequest) (contentapi.SaveMediaByLinksResponse, error) {
+func (transport *uncertainMediaTransport) SaveMediaByLinks(context.Context, SellerID, domain.ClientGeneration, contentapi.SaveMediaByLinksRequest) (contentapi.SaveMediaByLinksResponse, error) {
 	transport.uploads++
 	return contentapi.SaveMediaByLinksResponse{}, uncertainMediaError{}
 }
@@ -37,7 +37,7 @@ func (transport *uncertainMediaTransport) DownloadMediaFile(context.Context, str
 	}
 	return contentapi.DownloadedMediaFile{FileName: "image.jpg", MediaType: "image/jpeg", Data: []byte{1}}, nil
 }
-func (transport *uncertainMediaTransport) UploadMediaFile(context.Context, CabinetID, domain.ClientGeneration, contentapi.UploadMediaFileRequest) (contentapi.UploadMediaFileResponse, error) {
+func (transport *uncertainMediaTransport) UploadMediaFile(context.Context, SellerID, domain.ClientGeneration, contentapi.UploadMediaFileRequest) (contentapi.UploadMediaFileResponse, error) {
 	transport.uploads++
 	return contentapi.UploadMediaFileResponse{}, uncertainMediaError{}
 }

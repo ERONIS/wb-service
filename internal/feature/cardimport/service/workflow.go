@@ -17,14 +17,10 @@ type ReserveFileCommand = workflow.ReserveFileCommand
 type StoreFileCommand = workflow.StoreFileCommand
 type ParseFileCommand = workflow.ParseFileCommand
 type FinalizeCommand = workflow.FinalizeCommand
-type BatchSourceKind = workflow.BatchSourceKind
-type CreateExternalBatchCommand = workflow.CreateExternalBatchCommand
-type ExternalBatchDraft = workflow.ExternalBatchDraft
 type Service = workflow.Service
 
 const (
 	MaxFinalizeIdempotencyKeyLength = workflow.MaxFinalizeIdempotencyKeyLength
-	BatchSourceWBCabinet            = workflow.BatchSourceWBCabinet
 )
 
 func New(

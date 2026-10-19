@@ -163,7 +163,7 @@ func (service *Service) ResolveVerifiedCard(
 		ExpectedActionRevision: item.ActionRevision,
 		TransferItemTargetID:   item.ItemTargetID,
 		AttemptID:              item.AttemptID,
-		CabinetID:              item.CabinetID,
+		SellerID:               item.SellerID,
 		VendorCode:             item.VendorCode,
 	}, cardpublication_service.VerifiedCardEvidence{
 		Card:       info.Card,

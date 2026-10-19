@@ -132,13 +132,13 @@ func (processor *Processor) processTransfer(
 	}
 
 	vendorCodesByTarget := make(map[int64][]string)
-	cabinetByTarget := make(map[int64]CabinetID)
+	cabinetByTarget := make(map[int64]SellerID)
 	for _, group := range source.Groups {
-		cabinetID := CabinetID(group.CabinetID)
-		if existing, ok := cabinetByTarget[group.TargetID]; ok && existing != cabinetID {
+		sellerID := SellerID(group.SellerID)
+		if existing, ok := cabinetByTarget[group.TargetID]; ok && existing != sellerID {
 			return errors.New("publication target has multiple cabinets")
 		}
-		cabinetByTarget[group.TargetID] = cabinetID
+		cabinetByTarget[group.TargetID] = sellerID
 		for _, member := range group.Members {
 			vendorCodesByTarget[group.TargetID] = append(
 				vendorCodesByTarget[group.TargetID],

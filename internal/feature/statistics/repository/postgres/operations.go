@@ -15,7 +15,7 @@ import (
 const operationColumns = `
 	transfer.transfer_id,
 	transfer.batch_id,
-	COALESCE(batch.source_session_id, batch.source_reference_id),
+	batch.source_session_id,
 	transfer.phase,
 	transfer.outcome,
 	COALESCE(transfer.attention_code, ''),
@@ -32,7 +32,7 @@ const operationColumns = `
 const actionDetailsSelect = `
 		SELECT
 			fact.transfer_id, fact.action_id, fact.plan_id, fact.target_id,
-			fact.target_position, fact.cabinet_id, fact.kind, fact.state,
+			fact.target_position, fact.seller_id, fact.kind, fact.state,
 			action.revision, COALESCE(fact.outcome_class, ''),
 			COALESCE(fact.outcome_code, ''), COALESCE(fact.authorization_id, 0),
 			COUNT(member.id), fact.created_at, fact.started_at, fact.finished_at
@@ -44,7 +44,7 @@ const actionDetailsSelect = `
 
 const actionDetailsGroupBy = `
 		GROUP BY fact.transfer_id, fact.action_id, fact.plan_id, fact.target_id,
-			fact.target_position, fact.cabinet_id, fact.kind, fact.state,
+			fact.target_position, fact.seller_id, fact.kind, fact.state,
 			action.revision, fact.outcome_class, fact.outcome_code,
 			fact.authorization_id, fact.created_at, fact.started_at, fact.finished_at`
 
@@ -53,12 +53,12 @@ const attemptDetailsSelect = `
 			attempt.transfer_id, attempt.attempt_id, attempt.action_id,
 			attempt.authorization_id, attempt.recheck_observation_id,
 			COALESCE(attempt.attribution_id, 0), attempt.plan_id, attempt.target_id,
-			attempt.target_position, attempt.cabinet_id, attempt.action_kind,
+			attempt.target_position, attempt.seller_id, attempt.action_kind,
 			attempt.delivery_state, COALESCE(attempt.http_status, 0),
 			COALESCE(attempt.response_disposition, ''),
 			COALESCE(attempt.classifier_version, 0),
 			COALESCE(attempt.safe_error_code, ''), attempt.unmatched_count,
-			attempt.error_baseline_cabinet_id, attempt.error_cursor_revision,
+			attempt.error_baseline_seller_id, attempt.error_cursor_revision,
 			attempt.error_cursor_updated_at, attempt.error_cursor_batch_uuid,
 			attempt.error_baseline_captured_at, attempt.started_at, attempt.finished_at
 		FROM wb.statistics_attempt_facts AS attempt`
@@ -102,11 +102,11 @@ func operationWhere(filter statistics_service.OperationFilter) whereBuilder {
 	var builder whereBuilder
 	builder.addIf(filter.TransferID > 0, "transfer.transfer_id = $%d", filter.TransferID)
 	builder.addIf(filter.BatchID > 0, "transfer.batch_id = $%d", filter.BatchID)
-	builder.addIf(filter.CabinetID != "", `EXISTS (
+	builder.addIf(filter.SellerID != "", `EXISTS (
 			SELECT 1 FROM wb.transfer_targets AS target
 			WHERE target.transfer_id = transfer.transfer_id
-			  AND target.cabinet_id = $%d
-		)`, filter.CabinetID)
+			  AND target.seller_id = $%d
+		)`, filter.SellerID)
 	builder.addIf(filter.Phase != "", "transfer.phase = $%d", filter.Phase)
 	builder.addIf(filter.Outcome != "", "transfer.outcome = $%d", filter.Outcome)
 	if filter.RequiresAttention != nil {
@@ -224,7 +224,7 @@ func (repository *Repository) listGroups(
 			source_group.source_group_name,
 			target.id,
 			target.position,
-			target.cabinet_id,
+			target.seller_id,
 			group_target.preparation_status,
 			group_target.publication_status,
 			group_target.media_status,
@@ -261,7 +261,7 @@ func scanGroupTarget(row rowScanner) (statistics_service.GroupTargetRow, error) 
 	var startedAt, finishedAt pgtype.Timestamptz
 	err := row.Scan(
 		&item.GroupTargetID, &item.SourceGroupID, &item.GroupName,
-		&item.TargetID, &item.TargetPosition, &item.CabinetID,
+		&item.TargetID, &item.TargetPosition, &item.SellerID,
 		&item.PreparationStatus, &item.PublicationStatus, &item.MediaStatus,
 		&item.OverallOutcome, &item.AttentionCode, &item.ItemsTotal,
 		&item.ItemsTerminal, &item.ItemsAttention, &startedAt, &finishedAt,
@@ -279,7 +279,7 @@ func (repository *Repository) listItems(
 		SELECT
 			item.transfer_id, item.item_target_id, item.group_target_id,
 			item.transfer_item_id, item.target_id, item.target_position,
-			item.cabinet_id, item.item_position, item.vendor_code, item.state,
+			item.seller_id, item.item_position, item.vendor_code, item.state,
 			COALESCE(item.outcome_class, ''), COALESCE(item.outcome_code, ''),
 			COALESCE(item.nm_id, 0), COALESCE(item.source_action_id, 0),
 			item.attention_closed_at, item.created_at, item.started_at, item.finished_at
@@ -296,7 +296,7 @@ func scanItem(row rowScanner) (statistics_service.ItemRow, error) {
 	err := row.Scan(
 		&item.TransferID, &item.ItemTargetID, &item.GroupTargetID,
 		&item.TransferItemID, &item.TargetID, &item.TargetPosition,
-		&item.CabinetID, &item.ItemPosition, &item.VendorCode, &item.State,
+		&item.SellerID, &item.ItemPosition, &item.VendorCode, &item.State,
 		&item.OutcomeClass, &item.OutcomeCode, &item.NMID, &item.SourceActionID,
 		&attentionAt, &item.CreatedAt, &startedAt, &finishedAt,
 	)
@@ -398,7 +398,7 @@ func scanAction(row rowScanner) (statistics_service.ActionRow, error) {
 	var startedAt, finishedAt pgtype.Timestamptz
 	err := row.Scan(
 		&item.TransferID, &item.ActionID, &item.PlanID, &item.TargetID,
-		&item.TargetPosition, &item.CabinetID, &item.Kind, &item.State,
+		&item.TargetPosition, &item.SellerID, &item.Kind, &item.State,
 		&item.Revision, &item.OutcomeClass, &item.OutcomeCode,
 		&item.AuthorizationID, &item.MembersCount, &item.CreatedAt,
 		&startedAt, &finishedAt,
@@ -415,11 +415,11 @@ func scanAttempt(row rowScanner) (statistics_service.AttemptRow, error) {
 	err := row.Scan(
 		&item.TransferID, &item.AttemptID, &item.ActionID,
 		&item.AuthorizationID, &item.RecheckObservationID, &item.AttributionID,
-		&item.PlanID, &item.TargetID, &item.TargetPosition, &item.CabinetID,
+		&item.PlanID, &item.TargetID, &item.TargetPosition, &item.SellerID,
 		&item.ActionKind, &item.DeliveryState, &item.HTTPStatus,
 		&item.ResponseDisposition, &item.ClassifierVersion,
 		&item.SafeErrorCode, &item.UnmatchedCount,
-		&item.ErrorBaselineCabinetID, &item.ErrorCursorRevision, &cursorAt,
+		&item.ErrorBaselineSellerID, &item.ErrorCursorRevision, &cursorAt,
 		&item.ErrorCursorBatchUUID, &item.ErrorBaselineCapturedAt,
 		&item.StartedAt, &finishedAt,
 	)

@@ -14,18 +14,18 @@ import (
 
 func (repository *Repository) LoadErrorCursor(
 	ctx context.Context,
-	cabinetID cardpublication_service.CabinetID,
+	sellerID cardpublication_service.SellerID,
 ) (cardpublication_service.ErrorCursor, error) {
 	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 	const query = `
-		SELECT cabinet_id, cursor_updated_at, cursor_batch_uuid, revision, polled_at
+		SELECT seller_id, cursor_updated_at, cursor_batch_uuid, revision, polled_at
 		FROM wb.publication_error_cursors
-		WHERE cabinet_id = $1;
+		WHERE seller_id = $1;
 	`
-	cursor, err := scanErrorCursor(repository.pool.QueryRow(ctx, query, cabinetID))
+	cursor, err := scanErrorCursor(repository.pool.QueryRow(ctx, query, sellerID))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return cardpublication_service.ErrorCursor{CabinetID: cabinetID}, nil
+		return cardpublication_service.ErrorCursor{SellerID: sellerID}, nil
 	}
 	if err != nil {
 		return cardpublication_service.ErrorCursor{}, fmt.Errorf(
@@ -46,10 +46,10 @@ func (repository *Repository) SaveErrorFeed(
 			"save publication error feed: DBTX is nil",
 		)
 	}
-	if err := ensureErrorCursor(ctx, tx, command.CabinetID); err != nil {
+	if err := ensureErrorCursor(ctx, tx, command.SellerID); err != nil {
 		return cardpublication_service.ErrorCursor{}, err
 	}
-	current, err := lockErrorCursor(ctx, tx, command.CabinetID)
+	current, err := lockErrorCursor(ctx, tx, command.SellerID)
 	if err != nil {
 		return cardpublication_service.ErrorCursor{}, err
 	}
@@ -65,7 +65,7 @@ func (repository *Repository) SaveErrorFeed(
 	for _, batch := range command.Batches {
 		const insert = `
 			INSERT INTO wb.publication_error_batches (
-				cabinet_id,
+				seller_id,
 				batch_uuid,
 				batch_updated_at,
 				source_digest,
@@ -75,12 +75,12 @@ func (repository *Repository) SaveErrorFeed(
 				observed_at
 			)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-			ON CONFLICT (cabinet_id, batch_uuid, source_digest) DO NOTHING;
+			ON CONFLICT (seller_id, batch_uuid, source_digest) DO NOTHING;
 		`
 		result, err := tx.Exec(
 			ctx,
 			insert,
-			batch.CabinetID,
+			batch.SellerID,
 			batch.BatchUUID,
 			batch.UpdatedAt,
 			batch.SourceDigest[:],
@@ -118,13 +118,13 @@ func (repository *Repository) SaveErrorFeed(
 		    revision = revision + $4,
 		    polled_at = $5,
 		    updated_at = CURRENT_TIMESTAMP
-		WHERE cabinet_id = $1
-		RETURNING cabinet_id, cursor_updated_at, cursor_batch_uuid, revision, polled_at;
+		WHERE seller_id = $1
+		RETURNING seller_id, cursor_updated_at, cursor_batch_uuid, revision, polled_at;
 	`
 	saved, err := scanErrorCursor(tx.QueryRow(
 		ctx,
 		update,
-		command.CabinetID,
+		command.SellerID,
 		cursorUpdatedAt,
 		next.BatchUUID,
 		inserted,
@@ -149,10 +149,10 @@ func (repository *Repository) CaptureErrorBaseline(
 			"capture publication error baseline: DBTX is nil",
 		)
 	}
-	if err := ensureErrorCursor(ctx, tx, command.CabinetID); err != nil {
+	if err := ensureErrorCursor(ctx, tx, command.SellerID); err != nil {
 		return cardpublication_service.ErrorBaseline{}, err
 	}
-	cursor, err := lockErrorCursor(ctx, tx, command.CabinetID)
+	cursor, err := lockErrorCursor(ctx, tx, command.SellerID)
 	if err != nil {
 		return cardpublication_service.ErrorBaseline{}, err
 	}
@@ -165,7 +165,7 @@ func (repository *Repository) CaptureErrorBaseline(
 		WHERE action.transfer_id = $1
 		  AND action.id = $2
 		  AND action.state = 'planned'
-		  AND target.cabinet_id = $3;
+		  AND target.seller_id = $3;
 	`
 	var capturedAt time.Time
 	if err := tx.QueryRow(
@@ -173,7 +173,7 @@ func (repository *Repository) CaptureErrorBaseline(
 		validateAction,
 		command.TransferID,
 		command.ActionID,
-		command.CabinetID,
+		command.SellerID,
 	).Scan(&capturedAt); err != nil {
 		return cardpublication_service.ErrorBaseline{}, fmt.Errorf(
 			"validate publication error baseline action: %w",
@@ -183,7 +183,7 @@ func (repository *Repository) CaptureErrorBaseline(
 	baseline := cardpublication_service.ErrorBaseline{
 		TransferID:      command.TransferID,
 		ActionID:        command.ActionID,
-		CabinetID:       command.CabinetID,
+		SellerID:        command.SellerID,
 		CursorRevision:  cursor.Revision,
 		CursorUpdatedAt: cursor.UpdatedAt,
 		CursorBatchUUID: cursor.BatchUUID,
@@ -198,14 +198,14 @@ func (repository *Repository) CaptureErrorBaseline(
 func ensureErrorCursor(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	cabinetID cardpublication_service.CabinetID,
+	sellerID cardpublication_service.SellerID,
 ) error {
 	const insert = `
-		INSERT INTO wb.publication_error_cursors (cabinet_id)
+		INSERT INTO wb.publication_error_cursors (seller_id)
 		VALUES ($1)
-		ON CONFLICT (cabinet_id) DO NOTHING;
+		ON CONFLICT (seller_id) DO NOTHING;
 	`
-	if _, err := tx.Exec(ctx, insert, cabinetID); err != nil {
+	if _, err := tx.Exec(ctx, insert, sellerID); err != nil {
 		return fmt.Errorf("ensure publication error cursor: %w", err)
 	}
 	return nil
@@ -214,15 +214,15 @@ func ensureErrorCursor(
 func lockErrorCursor(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	cabinetID cardpublication_service.CabinetID,
+	sellerID cardpublication_service.SellerID,
 ) (cardpublication_service.ErrorCursor, error) {
 	const query = `
-		SELECT cabinet_id, cursor_updated_at, cursor_batch_uuid, revision, polled_at
+		SELECT seller_id, cursor_updated_at, cursor_batch_uuid, revision, polled_at
 		FROM wb.publication_error_cursors
-		WHERE cabinet_id = $1
+		WHERE seller_id = $1
 		FOR UPDATE;
 	`
-	cursor, err := scanErrorCursor(tx.QueryRow(ctx, query, cabinetID))
+	cursor, err := scanErrorCursor(tx.QueryRow(ctx, query, sellerID))
 	if err != nil {
 		return cardpublication_service.ErrorCursor{}, fmt.Errorf(
 			"lock publication error cursor: %w",
@@ -239,7 +239,7 @@ func scanErrorCursor(row interface{ Scan(...any) error }) (
 	var cursor cardpublication_service.ErrorCursor
 	var updatedAt, polledAt pgtype.Timestamptz
 	if err := row.Scan(
-		&cursor.CabinetID,
+		&cursor.SellerID,
 		&updatedAt,
 		&cursor.BatchUUID,
 		&cursor.Revision,

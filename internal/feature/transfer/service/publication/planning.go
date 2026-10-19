@@ -24,7 +24,7 @@ type PublicationPlanningGroup struct {
 	GroupTargetID int64
 	SourceGroupID int64
 	TargetID      int64
-	CabinetID     CabinetID
+	SellerID      SellerID
 	ProposalRoot  Digest
 	Members       []PublicationPlanningMember
 }
@@ -44,8 +44,8 @@ func (source PublicationPlanningSource) Validate() error {
 		if group.GroupTargetID <= 0 || group.SourceGroupID <= 0 ||
 			group.TargetID <= 0 ||
 			group.ProposalRoot == (Digest{}) || len(group.Members) == 0 ||
-			strings.TrimSpace(string(group.CabinetID)) != string(group.CabinetID) ||
-			group.CabinetID == "" {
+			strings.TrimSpace(string(group.SellerID)) != string(group.SellerID) ||
+			group.SellerID == "" {
 			return fmt.Errorf("publication planning group at index %d is invalid", groupIndex)
 		}
 		if _, exists := seenGroups[group.GroupTargetID]; exists {

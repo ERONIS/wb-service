@@ -12,9 +12,6 @@ var (
 	errRequestBodyModeUnsupported = errors.New(
 		"WB request has unsupported body mode",
 	)
-	errRequestBaseURLRequired = errors.New(
-		"WB API base URL is required",
-	)
 	errRequestOperationRequired = errors.New(
 		"WB request operation is required",
 	)

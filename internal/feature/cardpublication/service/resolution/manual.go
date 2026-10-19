@@ -146,7 +146,7 @@ type ManualResolutionSubject struct {
 	ActionRevision           int64
 	PlanID                   int64
 	TargetID                 int64
-	CabinetID                CabinetID
+	SellerID                 SellerID
 	ActionKind               ActionKind
 	RequestPayload           []byte
 	PlanDigest               Digest

@@ -32,7 +32,7 @@ func (repository *Repository) LockMediaAction(
 			action.request_payload,
 			action.member_set_digest,
 			action.media_link_set_root,
-			target.seller_key,
+			target.seller_id,
 			target.client_generation,
 			target.credential_expires_at,
 			(
@@ -82,7 +82,7 @@ func (repository *Repository) LockMediaAction(
 				      = media_member.transfer_item_target_id
 				  AND counted_product_action.plan_id = action.plan_id
 				  AND counted_attribution.plan_digest = plan.plan_digest
-				  AND counted_attribution.cabinet_id = target.cabinet_id
+				  AND counted_attribution.seller_id = target.seller_id
 				  AND counted_attribution.group_target_id = media_member.group_target_id
 			),
 			product_action.id IS NOT NULL
@@ -112,10 +112,10 @@ func (repository *Repository) LockMediaAction(
 		 AND attribution.action_member_id = product_member.id
 		 AND attribution.level IN ('direct', 'observed_after_attempt')
 		 AND attribution.plan_digest = plan.plan_digest
-		 AND attribution.cabinet_id = target.cabinet_id
+		 AND attribution.seller_id = target.seller_id
 		 AND attribution.group_target_id = media_member.group_target_id
 		JOIN wb.product_identities AS identity
-		  ON identity.cabinet_id = target.cabinet_id
+		  ON identity.seller_id = target.seller_id
 		 AND identity.vendor_code_key = media_member.vendor_code
 		 AND (attribution.nm_id IS NULL OR identity.nm_id = attribution.nm_id)
 		LEFT JOIN wb.publication_attempts AS attempt
@@ -124,7 +124,7 @@ func (repository *Repository) LockMediaAction(
 		WHERE action.transfer_id = $1
 			AND action.id = $2
 			AND action.target_id = $3
-			AND target.cabinet_id = $4
+			AND target.seller_id = $4
 			AND action.kind = 'upload_media'
 			AND (
 				(product_action.id IS NOT NULL
@@ -152,7 +152,8 @@ func (repository *Repository) LockMediaAction(
 	action := cardpublication_service.MediaAction{ProductActionCandidate: candidate}
 	var (
 		requestDigest, memberDigest, mediaRoot []byte
-		sellerKey, generation                  []byte
+		generation                             []byte
+		sellerID                               cardpublication_service.SellerID
 		preflightID                            pgtype.Int8
 		attemptID, recheckID                   pgtype.Int8
 		attributionID                          pgtype.Int8
@@ -169,7 +170,7 @@ func (repository *Repository) LockMediaAction(
 		candidate.TransferID,
 		candidate.ActionID,
 		candidate.TargetID,
-		candidate.CabinetID,
+		candidate.SellerID,
 		candidate.AuthorizationID,
 		candidate.PlanDigest[:],
 		candidate.TargetSetRoot[:],
@@ -181,7 +182,7 @@ func (repository *Repository) LockMediaAction(
 		&action.RequestPayload,
 		&memberDigest,
 		&mediaRoot,
-		&sellerKey,
+		&sellerID,
 		&generation,
 		&action.CredentialExpiresAt,
 		&preflightID,
@@ -214,7 +215,7 @@ func (repository *Repository) LockMediaAction(
 	if len(requestDigest) != len(action.RequestDigest) ||
 		len(memberDigest) != len(action.MemberSetDigest) ||
 		len(mediaRoot) != len(action.MediaLinkSetRoot) ||
-		len(sellerKey) != len(action.SellerKey) ||
+		sellerID.Validate() != nil ||
 		len(generation) != len(action.ClientGeneration) || !preflightID.Valid ||
 		memberCount != 1 || (hasProductAction && attributionCount != 1) || (!hasProductAction && attributionCount != 0) {
 		return cardpublication_service.MediaAction{},
@@ -226,7 +227,7 @@ func (repository *Repository) LockMediaAction(
 	copy(action.RequestDigest[:], requestDigest)
 	copy(action.MemberSetDigest[:], memberDigest)
 	copy(action.MediaLinkSetRoot[:], mediaRoot)
-	copy(action.SellerKey[:], sellerKey)
+	action.SellerID = sellerID
 	copy(action.ClientGeneration[:], generation)
 	action.PreflightObservationID = preflightID.Int64
 	action.AuthorizationRevision = currentAuthorizationRevision

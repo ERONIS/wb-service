@@ -10,42 +10,42 @@ import (
 type CatalogTransport interface {
 	CardsList(
 		context.Context,
-		CabinetID,
+		SellerID,
 		contentapi.CardsListQuery,
 		contentapi.CardsListRequest,
 	) (contentapi.CardsListResponse, error)
 
 	TrashCardsList(
 		context.Context,
-		CabinetID,
+		SellerID,
 		contentapi.TrashCardsListQuery,
 		contentapi.TrashCardsListRequest,
 	) (contentapi.TrashCardsListResponse, error)
 
 	CardsErrorList(
 		context.Context,
-		CabinetID,
+		SellerID,
 		contentapi.CardsErrorListQuery,
 		contentapi.CardsErrorListRequest,
 	) (contentapi.CardsErrorListResponse, error)
 
 	UploadCards(
 		context.Context,
-		CabinetID,
+		SellerID,
 		domain.ClientGeneration,
 		contentapi.UploadCardsRequest,
 	) (contentapi.UploadCardsResponse, error)
 
 	UploadCardsAdd(
 		context.Context,
-		CabinetID,
+		SellerID,
 		domain.ClientGeneration,
 		contentapi.UploadCardsAddRequest,
 	) (contentapi.UploadCardsAddResponse, error)
 
 	SaveMediaByLinks(
 		context.Context,
-		CabinetID,
+		SellerID,
 		domain.ClientGeneration,
 		contentapi.SaveMediaByLinksRequest,
 	) (contentapi.SaveMediaByLinksResponse, error)

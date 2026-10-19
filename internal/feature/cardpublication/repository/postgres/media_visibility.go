@@ -77,7 +77,7 @@ func (repository *Repository) ClaimMediaVisibility(ctx context.Context, limit in
 			WHERE job.transfer_id = due.transfer_id AND job.action_id = due.action_id
 			RETURNING job.*
 		)
-		SELECT action.transfer_id, action.id, action.target_id, target.cabinet_id,
+		SELECT action.transfer_id, action.id, action.target_id, target.seller_id,
 		       auth.id, auth.revision, plan.plan_digest, plan.target_set_root,
 		       job.attempt_id, job.revision AS claim_revision, job.deadline_at, job.check_count
 		FROM claimed AS job
@@ -101,7 +101,7 @@ func (repository *Repository) ClaimMediaVisibility(ctx context.Context, limit in
 		var job service.MediaVisibilityJob
 		var planDigest, targetRoot []byte
 		c := &job.Candidate
-		if err := rows.Scan(&c.TransferID, &c.ActionID, &c.TargetID, &c.CabinetID,
+		if err := rows.Scan(&c.TransferID, &c.ActionID, &c.TargetID, &c.SellerID,
 			&c.AuthorizationID, &c.AuthorizationRevision, &planDigest, &targetRoot,
 			&job.AttemptID, &job.Revision, &job.DeadlineAt, &job.CheckCount); err != nil {
 			return nil, fmt.Errorf("scan media visibility: %w", err)

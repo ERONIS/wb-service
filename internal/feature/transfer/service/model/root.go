@@ -5,14 +5,13 @@ import (
 )
 
 func TargetSetRoot(snapshot MutationTargetSnapshot) Digest {
-	builder := canonicalhash.NewSHA256("transfer-target-set:v2")
+	builder := canonicalhash.NewSHA256("transfer-target-set:v4")
 	builder.String(snapshot.CohortName)
 	builder.Bytes(snapshot.Revision[:])
 	builder.Int64(int64(len(snapshot.Targets)))
 	for _, target := range snapshot.Targets {
 		builder.Int64(int64(target.Position))
-		builder.String(string(target.CabinetID))
-		builder.Bytes(target.SellerKey[:])
+		builder.String(string(target.SellerID))
 		builder.Bytes(target.ClientGeneration[:])
 		builder.Int64(target.CredentialExpiresAt.UTC().UnixNano())
 		builder.Int64(target.BindingRevision)

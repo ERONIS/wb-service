@@ -5,7 +5,7 @@ import (
 	"github.com/ERONIS/wb-service/internal/feature/cardpublication/service/model"
 )
 
-type CabinetID = model.CabinetID
+type SellerID = model.SellerID
 type Digest = model.Digest
 type CatalogTransport = catalog.CatalogTransport
 

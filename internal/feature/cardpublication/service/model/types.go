@@ -11,7 +11,7 @@ import (
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 )
 
-type CabinetID = domain.CabinetID
+type SellerID = domain.SellerID
 type Digest = cardpipeline.Digest
 
 type ActionKind string
@@ -46,7 +46,7 @@ const (
 
 type ObservationDraft struct {
 	TargetID    int64
-	CabinetID   CabinetID
+	SellerID    SellerID
 	Digest      Digest
 	NormalCount int
 	TrashCount  int
@@ -90,7 +90,7 @@ type PlannedGroupDraft struct {
 }
 
 type IdentityDraft struct {
-	CabinetID         CabinetID
+	SellerID          SellerID
 	VendorCode        string
 	State             IdentityState
 	NMID              int64

@@ -33,7 +33,7 @@ type DirectMediaTransport interface {
 	DownloadMediaFile(context.Context, string) (contentapi.DownloadedMediaFile, error)
 	UploadMediaFile(
 		context.Context,
-		CabinetID,
+		SellerID,
 		domain.ClientGeneration,
 		contentapi.UploadMediaFileRequest,
 	) (contentapi.UploadMediaFileResponse, error)
@@ -52,7 +52,7 @@ type MediaAction struct {
 	RequestPayload         []byte
 	MemberSetDigest        Digest
 	MediaLinkSetRoot       Digest
-	SellerKey              domain.SellerKey
+	SellerID               domain.SellerID
 	ClientGeneration       domain.ClientGeneration
 	CredentialExpiresAt    time.Time
 	PreflightObservationID int64
@@ -73,12 +73,11 @@ type mediaTemplate struct {
 
 func (action MediaAction) Validate() error {
 	if action.TransferID <= 0 || action.ActionID <= 0 || action.TargetID <= 0 ||
-		action.CabinetID == "" || action.AuthorizationID <= 0 ||
+		action.SellerID.Validate() != nil || action.AuthorizationID <= 0 ||
 		action.AuthorizationRevision < 0 || action.PlanDigest == (Digest{}) ||
 		action.TargetSetRoot == (Digest{}) || action.PlanID <= 0 || action.Revision < 0 ||
 		action.RequestDigest == (Digest{}) || len(action.RequestPayload) == 0 ||
 		action.MemberSetDigest == (Digest{}) || action.MediaLinkSetRoot == (Digest{}) ||
-		action.SellerKey.IsZero() ||
 		action.ClientGeneration.IsZero() ||
 		action.CredentialExpiresAt.IsZero() || action.PreflightObservationID <= 0 ||
 		action.Member.ID <= 0 || action.Member.GroupTargetID <= 0 ||
@@ -519,7 +518,7 @@ func (dispatcher *MediaDispatcher) dispatch(
 	observation, err := dispatcher.catalogReader.ReadActiveVendorCode(
 		ctx,
 		action.TargetID,
-		action.CabinetID,
+		action.SellerID,
 		action.Member.VendorCode,
 	)
 	if err != nil {
@@ -593,8 +592,7 @@ func (dispatcher *MediaDispatcher) dispatch(
 					PlanDigest:                    transfer_service.Digest(locked.PlanDigest),
 					TargetSetRoot:                 transfer_service.Digest(locked.TargetSetRoot),
 					TargetID:                      locked.TargetID,
-					CabinetID:                     transfer_service.CabinetID(locked.CabinetID),
-					SellerKey:                     locked.SellerKey,
+					SellerID:                      locked.SellerID,
 					ClientGeneration:              locked.ClientGeneration,
 				},
 			)
@@ -607,7 +605,7 @@ func (dispatcher *MediaDispatcher) dispatch(
 				CaptureErrorBaselineCommand{
 					TransferID: locked.TransferID,
 					ActionID:   locked.ActionID,
-					CabinetID:  locked.CabinetID,
+					SellerID:   locked.SellerID,
 				},
 			)
 			if err != nil {
@@ -648,7 +646,7 @@ func (dispatcher *MediaDispatcher) dispatch(
 	result := executeMediaMutation(
 		mutationCtx,
 		dispatcher.transport,
-		action.CabinetID,
+		action.SellerID,
 		action.ClientGeneration,
 		request,
 		dispatcher.mediaUploadMethod,
@@ -835,7 +833,7 @@ func BuildMediaRecheck(
 	if err := action.Validate(); err != nil {
 		return TargetedRecheck{}, err
 	}
-	if observation.TargetID != action.TargetID || observation.CabinetID != action.CabinetID {
+	if observation.TargetID != action.TargetID || observation.SellerID != action.SellerID {
 		return TargetedRecheck{}, ErrMediaActionConflict
 	}
 	normal := make([]contentapi.Card, 0, 1)
@@ -852,7 +850,7 @@ func BuildMediaRecheck(
 	}
 	targeted := CatalogObservation{
 		TargetID:   observation.TargetID,
-		CabinetID:  observation.CabinetID,
+		SellerID:   observation.SellerID,
 		Normal:     normal,
 		Trash:      trash,
 		ObservedAt: observation.ObservedAt,
@@ -872,15 +870,15 @@ func BuildMediaRecheck(
 func executeMediaMutation(
 	ctx context.Context,
 	transport CatalogTransport,
-	cabinetID CabinetID,
+	sellerID SellerID,
 	generation domain.ClientGeneration,
 	request contentapi.SaveMediaByLinksRequest,
 	method MediaUploadMethod,
 ) MediaMutationResult {
 	if method == MediaUploadByFile {
-		return executeDirectMediaMutation(ctx, transport, cabinetID, generation, request)
+		return executeDirectMediaMutation(ctx, transport, sellerID, generation, request)
 	}
-	response, err := transport.SaveMediaByLinks(ctx, cabinetID, generation, request)
+	response, err := transport.SaveMediaByLinks(ctx, sellerID, generation, request)
 	if err != nil {
 		return classifyMediaError(err)
 	}
@@ -907,17 +905,17 @@ func executeMediaMutation(
 func executeDirectMediaMutation(
 	ctx context.Context,
 	transport CatalogTransport,
-	cabinetID CabinetID,
+	sellerID SellerID,
 	generation domain.ClientGeneration,
 	request contentapi.SaveMediaByLinksRequest,
 ) MediaMutationResult {
-	return executeDirectMediaMutationWithWait(ctx, transport, cabinetID, generation, request, waitMediaRetry)
+	return executeDirectMediaMutationWithWait(ctx, transport, sellerID, generation, request, waitMediaRetry)
 }
 
 func executeDirectMediaMutationWithWait(
 	ctx context.Context,
 	transport CatalogTransport,
-	cabinetID CabinetID,
+	sellerID SellerID,
 	generation domain.ClientGeneration,
 	request contentapi.SaveMediaByLinksRequest,
 	wait func(context.Context, time.Duration) error,
@@ -953,7 +951,7 @@ func executeDirectMediaMutationWithWait(
 			NMID: request.NMID, MediaNumber: mediaNumber,
 			FileName: file.FileName, Data: file.Data,
 		}
-		response, err := directTransport.UploadMediaFile(ctx, cabinetID, generation, upload)
+		response, err := directTransport.UploadMediaFile(ctx, sellerID, generation, upload)
 		if err != nil {
 			if accepted > 0 {
 				return partialMediaMutationResult()
@@ -1048,12 +1046,11 @@ func classifyMediaError(err error) MediaMutationResult {
 func sameImmutableMediaAction(left, right MediaAction) bool {
 	return left.TransferID == right.TransferID && left.ActionID == right.ActionID &&
 		left.PlanID == right.PlanID && left.TargetID == right.TargetID &&
-		left.CabinetID == right.CabinetID && left.PlanDigest == right.PlanDigest &&
+		left.SellerID == right.SellerID && left.PlanDigest == right.PlanDigest &&
 		left.TargetSetRoot == right.TargetSetRoot &&
 		left.RequestDigest == right.RequestDigest &&
 		left.MemberSetDigest == right.MemberSetDigest &&
 		left.MediaLinkSetRoot == right.MediaLinkSetRoot &&
-		left.SellerKey == right.SellerKey &&
 		left.ClientGeneration == right.ClientGeneration &&
 		left.CredentialExpiresAt.Equal(right.CredentialExpiresAt) &&
 		left.PreflightObservationID == right.PreflightObservationID &&

@@ -21,13 +21,14 @@ type OperationID string
 // OperationKind определяет, читает операция данные или изменяет их.
 type OperationKind string
 
-// BodyMode определяет, ожидается ли JSON body.
+// BodyMode определяет формат тела запроса или ответа.
 type BodyMode string
 
 // Operation описывает одну разрешённую операцию WB API.
 type Operation struct {
 	id               OperationID
 	method           string
+	host             string
 	path             string
 	bucketID         BucketID
 	kind             OperationKind
@@ -44,6 +45,7 @@ type Operation struct {
 type OperationSpec struct {
 	ID               OperationID
 	Method           string
+	Host             string
 	Path             string
 	BucketID         BucketID
 	Kind             OperationKind
@@ -56,8 +58,8 @@ type OperationSpec struct {
 	Headers          http.Header
 }
 
-// NewOperation создаёт проверенную операцию для закрытых catalog-пакетов WB Core.
-// Feature-код не должен вызывать этот конструктор.
+// NewOperation создаёт проверенную операцию для внутреннего каталога WB Core.
+// Код функциональных модулей не должен вызывать этот конструктор.
 func NewOperation(spec OperationSpec) (Operation, error) {
 	if err := validateOperationSpec(spec); err != nil {
 		return Operation{}, err
@@ -100,6 +102,10 @@ func (operation Operation) ID() OperationID {
 
 func (operation Operation) Method() string {
 	return operation.method
+}
+
+func (operation Operation) Host() string {
+	return operation.host
 }
 
 func (operation Operation) Path() string {
@@ -157,6 +163,7 @@ func buildOperation(spec OperationSpec) Operation {
 	return Operation{
 		id:        spec.ID,
 		method:    spec.Method,
+		host:      spec.Host,
 		path:      spec.Path,
 		bucketID:  spec.BucketID,
 		kind:      spec.Kind,
@@ -247,6 +254,10 @@ func validateOperationHTTP(spec OperationSpec) error {
 		)
 	}
 
+	if !validWBAPIHost(spec.Host) {
+		return fmt.Errorf("operation %q has invalid WB API host %q", spec.ID, spec.Host)
+	}
+
 	if spec.Path == "" {
 		return fmt.Errorf(
 			"operation %q path is empty",
@@ -286,6 +297,25 @@ func validateOperationHTTP(spec OperationSpec) error {
 	}
 
 	return nil
+}
+
+func validWBAPIHost(host string) bool {
+	if !strings.HasSuffix(host, ".wildberries.ru") {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, char := range label {
+			letter := char >= 'a' && char <= 'z'
+			digit := char >= '0' && char <= '9'
+			if !letter && !digit && char != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func validateOperationSizeBounds(spec OperationSpec) error {

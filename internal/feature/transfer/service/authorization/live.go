@@ -320,8 +320,7 @@ type LiveAuthorizationCheck struct {
 	PlanDigest                    Digest
 	TargetSetRoot                 Digest
 	TargetID                      int64
-	CabinetID                     CabinetID
-	SellerKey                     SellerKey
+	SellerID                      SellerID
 	ClientGeneration              ClientGeneration
 }
 
@@ -329,7 +328,7 @@ func (check LiveAuthorizationCheck) validate() error {
 	if check.TransferID <= 0 || check.ActionID <= 0 || check.AuthorizationID <= 0 ||
 		check.ExpectedAuthorizationRevision < 0 || check.PlanDigest == (Digest{}) ||
 		check.TargetSetRoot == (Digest{}) || check.TargetID <= 0 ||
-		check.CabinetID.IsZero() || check.SellerKey.IsZero() ||
+		check.SellerID.Validate() != nil ||
 		check.ClientGeneration.IsZero() {
 		return ErrLiveAuthorization
 	}
@@ -344,8 +343,7 @@ type LiveAuthorizationEvidence struct {
 	PlanDigest       Digest
 	TargetSetRoot    Digest
 	TargetID         int64
-	CabinetID        CabinetID
-	SellerKey        SellerKey
+	SellerID         SellerID
 	ClientGeneration ClientGeneration
 	ActorDigest      Digest
 	ApprovedAt       time.Time

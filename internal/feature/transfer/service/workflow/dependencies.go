@@ -8,7 +8,7 @@ import (
 
 type TransferID = model.TransferID
 type Digest = model.Digest
-type CabinetID = model.CabinetID
+type SellerID = model.SellerID
 type Phase = model.Phase
 type Transfer = model.Transfer
 type MutationTarget = model.MutationTarget

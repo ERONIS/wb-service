@@ -187,7 +187,7 @@ func finishMediaAction(
 		    active_action_id = NULL,
 		    revision = revision + 1,
 		    updated_at = CURRENT_TIMESTAMP
-		WHERE cabinet_id = $1
+		WHERE seller_id = $1
 			AND vendor_code_key = $2
 			AND state = 'remote_present'
 			AND nm_id = $5
@@ -197,7 +197,7 @@ func finishMediaAction(
 	result, err = tx.Exec(
 		ctx,
 		releaseIdentity,
-		action.CabinetID,
+		action.SellerID,
 		action.Member.VendorCode,
 		action.TransferID,
 		action.ActionID,

@@ -16,11 +16,11 @@ import (
 
 // mockCatalogTransport эмулирует ответы API каталога Wildberries.
 type mockCatalogTransport struct {
-	unavailableCabinets map[CabinetID]bool
+	unavailableCabinets map[SellerID]bool
 	mu                  sync.Mutex
 }
 
-func (m *mockCatalogTransport) CardsLimits(ctx context.Context, cab CabinetID) (contentapi.CardsLimitsResponse, error) {
+func (m *mockCatalogTransport) CardsLimits(ctx context.Context, cab SellerID) (contentapi.CardsLimitsResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.unavailableCabinets[cab] {
@@ -36,7 +36,7 @@ func (m *mockCatalogTransport) CardsLimits(ctx context.Context, cab CabinetID) (
 	}, nil
 }
 
-func (m *mockCatalogTransport) Subjects(ctx context.Context, cab CabinetID, q contentapi.SubjectsQuery) (contentapi.SubjectsResponse, error) {
+func (m *mockCatalogTransport) Subjects(ctx context.Context, cab SellerID, q contentapi.SubjectsQuery) (contentapi.SubjectsResponse, error) {
 	return contentapi.SubjectsResponse{
 		Data: []contentapi.Subject{
 			{SubjectID: 101, SubjectName: "Брюки"},
@@ -44,13 +44,13 @@ func (m *mockCatalogTransport) Subjects(ctx context.Context, cab CabinetID, q co
 	}, nil
 }
 
-func (m *mockCatalogTransport) SubjectCharacteristics(ctx context.Context, cab CabinetID, subID int64, q contentapi.SubjectCharacteristicsQuery) (contentapi.SubjectCharacteristicsResponse, error) {
+func (m *mockCatalogTransport) SubjectCharacteristics(ctx context.Context, cab SellerID, subID int64, q contentapi.SubjectCharacteristicsQuery) (contentapi.SubjectCharacteristicsResponse, error) {
 	return contentapi.SubjectCharacteristicsResponse{
 		Data: []contentapi.SubjectCharacteristic{},
 	}, nil
 }
 
-func (m *mockCatalogTransport) Brands(ctx context.Context, cab CabinetID, q contentapi.BrandsQuery) (contentapi.BrandsResponse, error) {
+func (m *mockCatalogTransport) Brands(ctx context.Context, cab SellerID, q contentapi.BrandsQuery) (contentapi.BrandsResponse, error) {
 	return contentapi.BrandsResponse{
 		Brands: []contentapi.Brand{
 			{ID: 1, Name: "TestBrand"},
@@ -58,27 +58,27 @@ func (m *mockCatalogTransport) Brands(ctx context.Context, cab CabinetID, q cont
 	}, nil
 }
 
-func (m *mockCatalogTransport) Colors(ctx context.Context, cab CabinetID, q contentapi.DirectoryQuery) (contentapi.DirectoryColorsResponse, error) {
+func (m *mockCatalogTransport) Colors(ctx context.Context, cab SellerID, q contentapi.DirectoryQuery) (contentapi.DirectoryColorsResponse, error) {
 	return contentapi.DirectoryColorsResponse{}, nil
 }
 
-func (m *mockCatalogTransport) Kinds(ctx context.Context, cab CabinetID, q contentapi.DirectoryQuery) (contentapi.DirectoryKindsResponse, error) {
+func (m *mockCatalogTransport) Kinds(ctx context.Context, cab SellerID, q contentapi.DirectoryQuery) (contentapi.DirectoryKindsResponse, error) {
 	return contentapi.DirectoryKindsResponse{}, nil
 }
 
-func (m *mockCatalogTransport) Countries(ctx context.Context, cab CabinetID, q contentapi.DirectoryQuery) (contentapi.DirectoryCountriesResponse, error) {
+func (m *mockCatalogTransport) Countries(ctx context.Context, cab SellerID, q contentapi.DirectoryQuery) (contentapi.DirectoryCountriesResponse, error) {
 	return contentapi.DirectoryCountriesResponse{}, nil
 }
 
-func (m *mockCatalogTransport) Seasons(ctx context.Context, cab CabinetID, q contentapi.DirectoryQuery) (contentapi.DirectorySeasonsResponse, error) {
+func (m *mockCatalogTransport) Seasons(ctx context.Context, cab SellerID, q contentapi.DirectoryQuery) (contentapi.DirectorySeasonsResponse, error) {
 	return contentapi.DirectorySeasonsResponse{}, nil
 }
 
-func (m *mockCatalogTransport) VAT(ctx context.Context, cab CabinetID, q contentapi.DirectoryQuery) (contentapi.DirectoryVATResponse, error) {
+func (m *mockCatalogTransport) VAT(ctx context.Context, cab SellerID, q contentapi.DirectoryQuery) (contentapi.DirectoryVATResponse, error) {
 	return contentapi.DirectoryVATResponse{}, nil
 }
 
-func (m *mockCatalogTransport) TNVED(ctx context.Context, cab CabinetID, q contentapi.DirectoryTNVEDQuery) (contentapi.DirectoryTNVEDResponse, error) {
+func (m *mockCatalogTransport) TNVED(ctx context.Context, cab SellerID, q contentapi.DirectoryTNVEDQuery) (contentapi.DirectoryTNVEDResponse, error) {
 	return contentapi.DirectoryTNVEDResponse{}, nil
 }
 
@@ -186,7 +186,7 @@ func TestProcessor_ProcessPendingWithProgress(t *testing.T) {
 	ctx := context.Background()
 
 	transport := &mockCatalogTransport{
-		unavailableCabinets: make(map[CabinetID]bool),
+		unavailableCabinets: make(map[SellerID]bool),
 	}
 	preparer := preparation.NewPreparer(transport)
 
@@ -196,7 +196,7 @@ func TestProcessor_ProcessPendingWithProgress(t *testing.T) {
 		},
 		pending: map[transfer_service.TransferID][]transfer_service.PreparationPendingGroup{
 			1: {
-				{GroupTargetID: 10, SourceGroupID: 1, TargetID: 1, CabinetID: "cab-1"},
+				{GroupTargetID: 10, SourceGroupID: 1, TargetID: 1, SellerID: "cab-1"},
 			},
 		},
 		sources: map[int64]transfer_service.PreparationSource{
@@ -205,7 +205,7 @@ func TestProcessor_ProcessPendingWithProgress(t *testing.T) {
 				GroupTargetID: 10,
 				SourceGroupID: 1,
 				TargetID:      1,
-				CabinetID:     "cab-1",
+				SellerID:      "cab-1",
 				Items: []transfer_service.PreparationSourceItem{
 					{
 						TransferItemID: 100,
@@ -289,7 +289,7 @@ func TestProcessor_AdvancePastTransientErrors_LargeBatch(t *testing.T) {
 	ctx := context.Background()
 
 	transport := &mockCatalogTransport{
-		unavailableCabinets: map[CabinetID]bool{
+		unavailableCabinets: map[SellerID]bool{
 			"cab-failing": true, // Кабинет 1 временно недоступен
 		},
 	}
@@ -308,14 +308,14 @@ func TestProcessor_AdvancePastTransientErrors_LargeBatch(t *testing.T) {
 			GroupTargetID: failID,
 			SourceGroupID: int64(i + 1),
 			TargetID:      1,
-			CabinetID:     "cab-failing",
+			SellerID:      "cab-failing",
 		})
 		sourcesMap[failID] = transfer_service.PreparationSource{
 			TransferID:    1,
 			GroupTargetID: failID,
 			SourceGroupID: int64(i + 1),
 			TargetID:      1,
-			CabinetID:     "cab-failing",
+			SellerID:      "cab-failing",
 			Items: []transfer_service.PreparationSourceItem{
 				{
 					TransferItemID: failID * 10,
@@ -355,14 +355,14 @@ func TestProcessor_AdvancePastTransientErrors_LargeBatch(t *testing.T) {
 			GroupTargetID: okID,
 			SourceGroupID: int64(i + 1),
 			TargetID:      2,
-			CabinetID:     "cab-ok",
+			SellerID:      "cab-ok",
 		})
 		sourcesMap[okID] = transfer_service.PreparationSource{
 			TransferID:    1,
 			GroupTargetID: okID,
 			SourceGroupID: int64(i + 1),
 			TargetID:      2,
-			CabinetID:     "cab-ok",
+			SellerID:      "cab-ok",
 			Items: []transfer_service.PreparationSourceItem{
 				{
 					TransferItemID: okID * 10,
@@ -494,9 +494,9 @@ func TestProcessorSkipsFailingPageAndServesNextTransfer(t *testing.T) {
 	// Первые сто групп не загружаются; следующая и второй перенос дают терминальный отказ.
 	for id := int64(1); id <= preparationGroupBatchSize+1; id++ {
 		source.pending[1] = append(source.pending[1], transfer_service.PreparationPendingGroup{
-			GroupTargetID: id, SourceGroupID: id, TargetID: 1, CabinetID: "cab-1"})
+			GroupTargetID: id, SourceGroupID: id, TargetID: 1, SellerID: "cab-1"})
 	}
-	source.pending[2] = []transfer_service.PreparationPendingGroup{{GroupTargetID: 1000, SourceGroupID: 1000, TargetID: 2, CabinetID: "cab-2"}}
+	source.pending[2] = []transfer_service.PreparationPendingGroup{{GroupTargetID: 1000, SourceGroupID: 1000, TargetID: 2, SellerID: "cab-2"}}
 	for _, transferID := range []transfer_service.TransferID{1, 2} {
 		groups := source.pending[transferID]
 		g := groups[len(groups)-1]
@@ -505,7 +505,7 @@ func TestProcessorSkipsFailingPageAndServesNextTransfer(t *testing.T) {
 			GroupTargetID: g.GroupTargetID,
 			SourceGroupID: g.SourceGroupID,
 			TargetID:      g.TargetID,
-			CabinetID:     g.CabinetID,
+			SellerID:      g.SellerID,
 			Items: []transfer_service.PreparationSourceItem{
 				{
 					Position: 1,

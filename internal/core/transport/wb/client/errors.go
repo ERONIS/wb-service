@@ -9,14 +9,11 @@ import (
 )
 
 var (
-	errAPICabinetIDRequired = errors.New(
-		"WB API cabinet ID is required",
+	errAPISellerIDRequired = errors.New(
+		"WB API seller ID is required",
 	)
 	errAPICabinetNameRequired = errors.New(
 		"WB API cabinet name is required",
-	)
-	errAPIBaseURLRequired = errors.New(
-		"WB API base URL is required",
 	)
 	errAPIHTTPClientRequired = errors.New(
 		"WB API HTTP client is required",
@@ -29,9 +26,6 @@ var (
 	)
 	errAPIRateLimitersRequired = errors.New(
 		"WB API rate limiter registry is required",
-	)
-	errAPIMaxReadAttemptsRequired = errors.New(
-		"WB API max read attempts must be positive",
 	)
 	errAPILoggerRequired = errors.New(
 		"WB API logger is required",

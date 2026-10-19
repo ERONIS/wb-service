@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ERONIS/wb-service/internal/core/domain"
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
@@ -77,21 +78,41 @@ func setupTestTransferData(
 		ON CONFLICT (id) DO NOTHING;
 	`)
 
-	// 2. Создаем batch
+	// 2. Создаем сессию и batch
 	var batchID int64
 	checksum := make([]byte, 32)
 	copy(checksum, []byte("test_checksum_"+prefix))
-	refID := time.Now().UnixNano()
+	var sessionID int64
 	err := pool.QueryRow(ctx, `
+		INSERT INTO wb.card_import_sessions (author_telegram_id, purpose)
+		VALUES ($1, 'transfer')
+		RETURNING id;
+	`, time.Now().UnixNano()).Scan(&sessionID)
+	if err != nil {
+		t.Fatalf("создание тестовой сессии импорта: %v", err)
+	}
+	err = pool.QueryRow(ctx, `
 		INSERT INTO wb.card_batches (
-			source_kind, source_reference_id, purpose, schema_version,
+			source_session_id, source_kind, source_reference_id, purpose, schema_version,
 			normalization_version, items_count, groups_count, checksum, author_snapshot
 		)
-		VALUES ('wb_cabinet', $1, 'transfer', 1, 1, 1, 1, $2, '{}'::jsonb)
+		VALUES ($1, 'xlsx', $1, 'transfer', 1, 1, 1, 1, $2, '{}'::jsonb)
 		RETURNING id;
-	`, refID, checksum).Scan(&batchID)
+	`, sessionID, checksum).Scan(&batchID)
 	if err != nil {
 		t.Fatalf("создание тестовой пачки карточек: %v", err)
+	}
+	_, err = pool.Exec(ctx, `
+		UPDATE wb.card_import_sessions
+		SET status = 'finalized', finalized_batch_id = $2,
+			finalized_from_revision = revision,
+			finalize_idempotency_key = 'integration-test',
+			finalize_command_digest = $3,
+			finalized_at = CURRENT_TIMESTAMP
+		WHERE id = $1;
+	`, sessionID, batchID, checksum)
+	if err != nil {
+		t.Fatalf("финализация тестовой сессии импорта: %v", err)
 	}
 
 	// 3. Создаем transfer в статусе initializing для соблюдения инвариантов триггеров
@@ -115,36 +136,32 @@ func setupTestTransferData(
 	transferID = transfer_service.TransferID(tid)
 
 	// 4. Создаем 2 цели (target cabinets)
-	sellerKey1 := make([]byte, 32)
-	copy(sellerKey1, []byte("seller_key_1_"+prefix))
-	sellerKey2 := make([]byte, 32)
-	copy(sellerKey2, []byte("seller_key_2_"+prefix))
 	clientGen := make([]byte, 32)
 	copy(clientGen, []byte("client_gen_"+prefix))
 
-	cabID1 := fmt.Sprintf("cab_1_%s", prefix)
-	cabID2 := fmt.Sprintf("cab_2_%s", prefix)
+	sellerID1 := domain.SellerID("00000000-0000-0000-0000-000000000001")
+	sellerID2 := domain.SellerID("00000000-0000-0000-0000-000000000002")
 
 	err = pool.QueryRow(ctx, `
 		INSERT INTO wb.transfer_targets (
-			transfer_id, position, cabinet_id, seller_key, client_generation,
+			transfer_id, position, seller_id, client_generation,
 			credential_expires_at, binding_revision, capability_revision, content_read, content_write
 		)
-		VALUES ($1, 1, $2, $3, $4, CURRENT_TIMESTAMP + interval '1 day', 1, 1, true, true)
+		VALUES ($1, 1, $2, $3, CURRENT_TIMESTAMP + interval '1 day', 1, 1, true, true)
 		RETURNING id;
-	`, transferID, cabID1, sellerKey1, clientGen).Scan(&targetID1)
+	`, transferID, sellerID1, clientGen).Scan(&targetID1)
 	if err != nil {
 		t.Fatalf("создание target 1: %v", err)
 	}
 
 	err = pool.QueryRow(ctx, `
 		INSERT INTO wb.transfer_targets (
-			transfer_id, position, cabinet_id, seller_key, client_generation,
+			transfer_id, position, seller_id, client_generation,
 			credential_expires_at, binding_revision, capability_revision, content_read, content_write
 		)
-		VALUES ($1, 2, $2, $3, $4, CURRENT_TIMESTAMP + interval '1 day', 1, 1, true, true)
+		VALUES ($1, 2, $2, $3, CURRENT_TIMESTAMP + interval '1 day', 1, 1, true, true)
 		RETURNING id;
-	`, transferID, cabID2, sellerKey2, clientGen).Scan(&targetID2)
+	`, transferID, sellerID2, clientGen).Scan(&targetID2)
 	if err != nil {
 		t.Fatalf("создание target 2: %v", err)
 	}
@@ -492,8 +509,8 @@ func TestPostgres_FairWindowPartitioning(t *testing.T) {
 	}
 
 	// Проверяем, что группы принадлежат разным кабинетам (справедливое чередование)
-	if groups[0].CabinetID == groups[1].CabinetID {
+	if groups[0].SellerID == groups[1].SellerID {
 		t.Errorf("группы должны быть от разных кабинетов, получено: %s и %s",
-			groups[0].CabinetID, groups[1].CabinetID)
+			groups[0].SellerID, groups[1].SellerID)
 	}
 }

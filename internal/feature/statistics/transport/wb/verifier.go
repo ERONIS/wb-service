@@ -3,23 +3,40 @@ package statistics_wb_transport
 import (
 	"context"
 	"fmt"
+	"time"
+
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
-	wb_catalog "github.com/ERONIS/wb-service/internal/core/transport/wb/catalog"
+	core_wb "github.com/ERONIS/wb-service/internal/core/transport/wb"
+	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
+	wb_catalog "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1/catalog"
 	statistics_service "github.com/ERONIS/wb-service/internal/feature/statistics/service"
-	"time"
 )
 
 type Verifier struct{ cards wb_catalog.CardsLister }
 
-func NewVerifier(cards wb_catalog.CardsLister) *Verifier {
-	if cards == nil {
-		panic("statistics WB cards dependency is nil")
+func NewVerifier(executors core_wb.ExecutorRegistry) *Verifier {
+	if executors == nil {
+		panic("statistics WB executor registry is nil")
 	}
-	return &Verifier{cards: cards}
+	return &Verifier{cards: cardsLister{executors: executors}}
 }
-func (verifier *Verifier) FindCardByVendorCode(ctx context.Context, cabinetID string, vendorCode string) (*statistics_service.CardVerificationInfo, error) {
-	cards, _, err := wb_catalog.FindByVendorCode(ctx, verifier.cards, domain.CabinetID(cabinetID), vendorCode, 100)
+
+type cardsLister struct{ executors core_wb.ExecutorRegistry }
+
+func (lister cardsLister) CardsList(
+	ctx context.Context,
+	sellerID domain.SellerID,
+	query contentapi.CardsListQuery,
+	request contentapi.CardsListRequest,
+) (contentapi.CardsListResponse, error) {
+	return core_wb.ExecuteForCabinet[contentapi.CardsListResponse](
+		ctx, lister.executors, sellerID, contentapi.CardsListOperation(), query, request,
+	)
+}
+
+func (verifier *Verifier) FindCardByVendorCode(ctx context.Context, sellerID string, vendorCode string) (*statistics_service.CardVerificationInfo, error) {
+	cards, _, err := wb_catalog.FindByVendorCode(ctx, verifier.cards, domain.SellerID(sellerID), vendorCode, 100)
 	if err != nil {
 		return nil, fmt.Errorf("query WB cards list: %w", err)
 	}

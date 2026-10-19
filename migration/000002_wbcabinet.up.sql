@@ -1,48 +1,6 @@
-CREATE TABLE wb.cabinet_identity_bindings (
-    cabinet_id              VARCHAR(128) PRIMARY KEY
-                            CHECK (char_length(cabinet_id) > 0),
-    seller_key              BYTEA NOT NULL UNIQUE
-                            CHECK (octet_length(seller_key) = 32),
-    binding_revision        BIGINT NOT NULL DEFAULT 1
-                            CHECK (binding_revision > 0),
-    capability_revision     BIGINT NOT NULL DEFAULT 1
-                            CHECK (capability_revision > 0),
-    content_read            BOOLEAN NOT NULL,
-    content_write           BOOLEAN NOT NULL,
-    client_generation       BYTEA NOT NULL
-                            CHECK (octet_length(client_generation) = 32),
-    credential_expires_at   TIMESTAMPTZ NOT NULL,
-    verified_at             TIMESTAMPTZ NOT NULL,
-    status                  TEXT NOT NULL DEFAULT 'active'
-                            CHECK (status IN (
-                                'active',
-                                'identity_mismatch'
-                            )),
-    mismatch_seller_key     BYTEA
-                            CHECK (
-                                mismatch_seller_key IS NULL
-                                OR octet_length(mismatch_seller_key) = 32
-                            ),
-
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CHECK (
-        (status = 'active' AND mismatch_seller_key IS NULL)
-        OR (
-            status = 'identity_mismatch'
-            AND mismatch_seller_key IS NOT NULL
-        )
-    )
-);
-
-
 CREATE TABLE wb.api_cabinets (
-    cabinet_id              VARCHAR(128) PRIMARY KEY
-                            CHECK (
-                                char_length(cabinet_id) > 0
-                                AND cabinet_id = btrim(cabinet_id)
-                            ),
+    seller_id          VARCHAR(36) PRIMARY KEY
+                            CHECK (seller_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
     owner_tg_id             BIGINT NOT NULL
                             CONSTRAINT api_cabinets_owner_fk
                             REFERENCES wb.users(tg_id),
@@ -51,9 +9,6 @@ CREATE TABLE wb.api_cabinets (
     normalized_name         VARCHAR(128) NOT NULL,
     token                   TEXT NOT NULL
                             CHECK (char_length(btrim(token)) > 0),
-    seller_key              BYTEA NOT NULL
-                            CONSTRAINT api_cabinets_seller_key_key UNIQUE
-                            CHECK (octet_length(seller_key) = 32),
     token_properties        BIGINT NOT NULL DEFAULT 0
                             CHECK (token_properties >= 0),
     binding_revision        BIGINT NOT NULL DEFAULT 1

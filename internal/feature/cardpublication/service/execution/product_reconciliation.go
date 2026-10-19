@@ -16,8 +16,8 @@ import (
 const emptyResponseProductRetryDelay = 10 * time.Minute
 
 type productCatalogKey struct {
-	targetID  int64
-	cabinetID CabinetID
+	targetID int64
+	sellerID SellerID
 }
 
 type productCatalogRead struct {
@@ -39,7 +39,7 @@ func (dispatcher *ProductDispatcher) reconcilePending(ctx context.Context) error
 	observations, catalogErr := dispatcher.readProductCatalog(ctx, candidates)
 	processErr := processConcurrently(ctx, candidates, dispatcher.concurrency, func(candidate ProductActionCandidate) error {
 		observation, exists := observations[productCatalogKey{
-			targetID: candidate.TargetID, cabinetID: candidate.CabinetID,
+			targetID: candidate.TargetID, sellerID: candidate.SellerID,
 		}]
 		if !exists {
 			return nil
@@ -66,7 +66,7 @@ func (dispatcher *ProductDispatcher) readProductCatalog(
 	vendorsByTarget := make(map[productCatalogKey]map[string]struct{})
 	for _, candidate := range candidates {
 		key := productCatalogKey{
-			targetID: candidate.TargetID, cabinetID: candidate.CabinetID,
+			targetID: candidate.TargetID, sellerID: candidate.SellerID,
 		}
 		vendors := vendorsByTarget[key]
 		if vendors == nil {
@@ -87,8 +87,8 @@ func (dispatcher *ProductDispatcher) readProductCatalog(
 		reads = append(reads, productCatalogRead{key: key, vendorCodes: vendorCodes})
 	}
 	sort.Slice(reads, func(left, right int) bool {
-		if reads[left].key.cabinetID != reads[right].key.cabinetID {
-			return reads[left].key.cabinetID < reads[right].key.cabinetID
+		if reads[left].key.sellerID != reads[right].key.sellerID {
+			return reads[left].key.sellerID < reads[right].key.sellerID
 		}
 		return reads[left].key.targetID < reads[right].key.targetID
 	})
@@ -103,7 +103,7 @@ func (dispatcher *ProductDispatcher) readProductCatalog(
 			loaded[index], readErrors[index] = dispatcher.catalogReader.ReadVendorCodes(
 				ctx,
 				read.key.targetID,
-				read.key.cabinetID,
+				read.key.sellerID,
 				read.vendorCodes,
 			)
 			return nil

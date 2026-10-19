@@ -2,7 +2,7 @@ package cardpublication_service
 
 import "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/model"
 
-type CabinetID = model.CabinetID
+type SellerID = model.SellerID
 type Digest = model.Digest
 type ActionKind = model.ActionKind
 type DecisionCode = model.DecisionCode
