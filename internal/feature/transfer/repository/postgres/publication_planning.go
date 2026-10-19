@@ -91,7 +91,7 @@ func (repository *Repository) LoadPublicationPlanningSource(
 			group_target.id,
 			group_target.source_group_id,
 			group_target.target_id,
-			target.cabinet_id,
+			target.seller_id,
 			group_target.preparation_proposal_root,
 			item.id,
 			item_target.id,
@@ -149,7 +149,7 @@ func (repository *Repository) LoadPublicationPlanningSource(
 			groupTargetID int64
 			sourceGroupID int64
 			targetID      int64
-			cabinetID     string
+			sellerID      string
 			proposalRoot  []byte
 			member        transfer_service.PublicationPlanningMember
 			payload       []byte
@@ -158,7 +158,7 @@ func (repository *Repository) LoadPublicationPlanningSource(
 			&groupTargetID,
 			&sourceGroupID,
 			&targetID,
-			&cabinetID,
+			&sellerID,
 			&proposalRoot,
 			&member.TransferItemID,
 			&member.TransferItemTargetID,
@@ -183,13 +183,13 @@ func (repository *Repository) LoadPublicationPlanningSource(
 				GroupTargetID: groupTargetID,
 				SourceGroupID: sourceGroupID,
 				TargetID:      targetID,
-				CabinetID:     transfer_service.CabinetID(cabinetID),
+				SellerID:      transfer_service.SellerID(sellerID),
 				ProposalRoot:  root,
 			})
 			current = &source.Groups[len(source.Groups)-1]
 		} else if current.SourceGroupID != sourceGroupID ||
 			current.TargetID != targetID ||
-			current.CabinetID != transfer_service.CabinetID(cabinetID) {
+			current.SellerID != transfer_service.SellerID(sellerID) {
 			return transfer_service.PublicationPlanningSource{}, errors.New(
 				"publication planning group identity changed within result",
 			)

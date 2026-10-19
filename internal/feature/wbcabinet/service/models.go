@@ -11,8 +11,7 @@ import (
 
 const MaxCabinetNameLength = 128
 
-type CabinetID = domain.CabinetID
-type SellerKey = domain.SellerKey
+type SellerID = domain.SellerID
 type ClientGeneration = domain.ClientGeneration
 
 type TokenProperties = credentials.TokenProperties
@@ -36,10 +35,9 @@ func (status Status) IsValid() bool {
 }
 
 type Cabinet struct {
-	ID                  CabinetID
+	ID                  SellerID
 	OwnerTelegramID     int64
 	Name                string
-	SellerKey           SellerKey
 	BindingRevision     int64
 	CapabilityRevision  int64
 	ContentRead         bool
@@ -57,13 +55,11 @@ func (cabinet Cabinet) Validate() error {
 	name := strings.TrimSpace(cabinet.Name)
 	switch {
 	case cabinet.ID.Validate() != nil:
-		return core_errors.InvalidArgument("invalid cabinet ID")
+		return core_errors.InvalidArgument("invalid seller ID")
 	case cabinet.OwnerTelegramID <= 0:
 		return core_errors.InvalidArgument("invalid cabinet owner")
 	case name == "" || len([]rune(name)) > MaxCabinetNameLength:
 		return core_errors.InvalidArgument("invalid cabinet name")
-	case cabinet.SellerKey.IsZero():
-		return core_errors.InvalidArgument("invalid seller key")
 	case cabinet.BindingRevision <= 0 || cabinet.CapabilityRevision <= 0:
 		return core_errors.InvalidArgument("invalid cabinet revision")
 	case cabinet.ClientGeneration.IsZero():
@@ -82,10 +78,9 @@ type StoredCabinet struct {
 }
 
 type VerifiedCredential struct {
-	CabinetID           CabinetID
+	SellerID            SellerID
 	OwnerTelegramID     int64
 	Name                string
-	SellerKey           SellerKey
 	ContentRead         bool
 	ContentWrite        bool
 	TokenProperties     TokenProperties
@@ -101,5 +96,5 @@ type AddCommand struct {
 	OwnerTelegramID int64
 	Name            string
 	Token           string
-	CabinetID       CabinetID
+	SellerID        SellerID
 }

@@ -106,7 +106,7 @@ func insertPlanObservations(
 		return nil
 	}
 	targetIDs := make([]int64, len(draft.Observations))
-	cabinetIDs := make([]string, len(draft.Observations))
+	sellerIDs := make([]string, len(draft.Observations))
 	digests := make([][]byte, len(draft.Observations))
 	normalCounts := make([]int32, len(draft.Observations))
 	trashCounts := make([]int32, len(draft.Observations))
@@ -114,7 +114,7 @@ func insertPlanObservations(
 	observedAt := make([]time.Time, len(draft.Observations))
 	for index, observation := range draft.Observations {
 		targetIDs[index] = observation.TargetID
-		cabinetIDs[index] = string(observation.CabinetID)
+		sellerIDs[index] = string(observation.SellerID)
 		digests[index] = observation.Digest[:]
 		normalCounts[index] = int32(observation.NormalCount)
 		trashCounts[index] = int32(observation.TrashCount)
@@ -123,18 +123,18 @@ func insertPlanObservations(
 	}
 	const insert = `
 		INSERT INTO wb.publication_observations (
-			transfer_id, target_id, cabinet_id, kind, observation_digest,
+			transfer_id, target_id, seller_id, kind, observation_digest,
 			normal_count, trash_count, snapshot, observed_at
 		)
 		SELECT
-			$1, source.target_id, source.cabinet_id, 'normal_trash_preflight',
+			$1, source.target_id, source.seller_id, 'normal_trash_preflight',
 			source.observation_digest, source.normal_count, source.trash_count,
 			source.snapshot::jsonb, source.observed_at
 		FROM UNNEST(
 			$2::bigint[], $3::text[], $4::bytea[], $5::integer[],
 			$6::integer[], $7::text[], $8::timestamptz[]
 		) AS source(
-			target_id, cabinet_id, observation_digest, normal_count,
+			target_id, seller_id, observation_digest, normal_count,
 			trash_count, snapshot, observed_at
 		)
 		ON CONFLICT (
@@ -146,7 +146,7 @@ func insertPlanObservations(
 		insert,
 		draft.TransferID,
 		targetIDs,
-		cabinetIDs,
+		sellerIDs,
 		digests,
 		normalCounts,
 		trashCounts,
@@ -258,7 +258,7 @@ func upsertPlanIdentities(
 	if len(identities) == 0 {
 		return nil
 	}
-	cabinetIDs := make([]string, len(identities))
+	sellerIDs := make([]string, len(identities))
 	vendorCodes := make([]string, len(identities))
 	states := make([]string, len(identities))
 	nmIDs := make([]int64, len(identities))
@@ -266,7 +266,7 @@ func upsertPlanIdentities(
 	subjectIDs := make([]int64, len(identities))
 	observationDigests := make([][]byte, len(identities))
 	for index, identity := range identities {
-		cabinetIDs[index] = string(identity.CabinetID)
+		sellerIDs[index] = string(identity.SellerID)
 		vendorCodes[index] = identity.VendorCode
 		states[index] = string(identity.State)
 		nmIDs[index] = identity.NMID
@@ -281,26 +281,26 @@ func upsertPlanIdentities(
 				$1::text[], $2::text[], $3::text[], $4::bigint[],
 				$5::bigint[], $6::bigint[], $7::bytea[]
 			) WITH ORDINALITY AS source(
-				cabinet_id, vendor_code_key, state, nm_id, imt_id,
+				seller_id, vendor_code_key, state, nm_id, imt_id,
 				subject_id, observation_digest, position
 			)
 		), deduplicated AS (
-			SELECT DISTINCT ON (cabinet_id, vendor_code_key)
-				cabinet_id, vendor_code_key, state, nm_id, imt_id,
+			SELECT DISTINCT ON (seller_id, vendor_code_key)
+				seller_id, vendor_code_key, state, nm_id, imt_id,
 				subject_id, observation_digest
 			FROM incoming
-			ORDER BY cabinet_id, vendor_code_key, position DESC
+			ORDER BY seller_id, vendor_code_key, position DESC
 		)
 		INSERT INTO wb.product_identities (
-			cabinet_id, vendor_code_key, normalization_version, state,
+			seller_id, vendor_code_key, normalization_version, state,
 			nm_id, imt_id, subject_id, observation_digest
 		)
 		SELECT
-			cabinet_id, vendor_code_key, 1, state,
+			seller_id, vendor_code_key, 1, state,
 			NULLIF(nm_id, 0), NULLIF(imt_id, 0), NULLIF(subject_id, 0),
 			observation_digest
 		FROM deduplicated
-		ON CONFLICT (cabinet_id, vendor_code_key) DO UPDATE
+		ON CONFLICT (seller_id, vendor_code_key) DO UPDATE
 		SET state = EXCLUDED.state,
 		    nm_id = EXCLUDED.nm_id,
 		    imt_id = EXCLUDED.imt_id,
@@ -315,7 +315,7 @@ func upsertPlanIdentities(
 	if _, err := tx.Exec(
 		ctx,
 		upsert,
-		cabinetIDs,
+		sellerIDs,
 		vendorCodes,
 		states,
 		nmIDs,

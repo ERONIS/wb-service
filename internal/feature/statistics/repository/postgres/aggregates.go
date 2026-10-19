@@ -46,11 +46,11 @@ func (repository *Repository) AggregateTransfers(
 func transferAggregateWhere(filter statistics_service.AggregateFilter) whereBuilder {
 	var builder whereBuilder
 	builder.addIf(filter.TransferID > 0, "transfer.transfer_id = $%d", filter.TransferID)
-	builder.addIf(filter.CabinetID != "", `EXISTS (
+	builder.addIf(filter.SellerID != "", `EXISTS (
 			SELECT 1 FROM wb.transfer_targets AS target
 			WHERE target.transfer_id = transfer.transfer_id
-			  AND target.cabinet_id = $%d
-		)`, filter.CabinetID)
+			  AND target.seller_id = $%d
+		)`, filter.SellerID)
 	builder.addIf(filter.ActionKind != "", `EXISTS (
 			SELECT 1 FROM wb.statistics_action_facts AS action_filter
 			WHERE action_filter.transfer_id = transfer.transfer_id
@@ -138,7 +138,7 @@ func (repository *Repository) AggregateItems(
 func itemAggregateWhere(filter statistics_service.AggregateFilter) whereBuilder {
 	var builder whereBuilder
 	builder.addIf(filter.TransferID > 0, "item.transfer_id = $%d", filter.TransferID)
-	builder.addIf(filter.CabinetID != "", "item.cabinet_id = $%d", filter.CabinetID)
+	builder.addIf(filter.SellerID != "", "item.seller_id = $%d", filter.SellerID)
 	builder.addIf(filter.ActionKind != "", `EXISTS (
 			SELECT 1 FROM wb.statistics_action_facts AS action_filter
 			WHERE action_filter.transfer_id = item.transfer_id
@@ -225,7 +225,7 @@ func (repository *Repository) AggregateActions(
 func actionAggregateWhere(filter statistics_service.AggregateFilter) whereBuilder {
 	var builder whereBuilder
 	builder.addIf(filter.TransferID > 0, "action.transfer_id = $%d", filter.TransferID)
-	builder.addIf(filter.CabinetID != "", "action.cabinet_id = $%d", filter.CabinetID)
+	builder.addIf(filter.SellerID != "", "action.seller_id = $%d", filter.SellerID)
 	builder.addIf(filter.ActionKind != "", "action.kind = $%d", filter.ActionKind)
 	builder.addIf(filter.Phase != "", `EXISTS (
 			SELECT 1 FROM wb.statistics_transfer_facts AS transfer_filter
@@ -256,7 +256,7 @@ func (repository *Repository) AggregateErrors(
 	defer cancel()
 	var builder whereBuilder
 	builder.addIf(filter.TransferID > 0, "fact.transfer_id = $%d", filter.TransferID)
-	builder.addIf(filter.CabinetID != "", "fact.cabinet_id = $%d", filter.CabinetID)
+	builder.addIf(filter.SellerID != "", "fact.seller_id = $%d", filter.SellerID)
 	builder.addIf(filter.ActionKind != "", "fact.action_kind = $%d", filter.ActionKind)
 	builder.addIf(filter.Phase != "", "fact.phase = $%d", filter.Phase)
 	builder.addIf(filter.OutcomeClass != "", "fact.outcome_class = $%d", filter.OutcomeClass)
@@ -271,7 +271,7 @@ func (repository *Repository) AggregateErrors(
 		WITH facts AS (
 			SELECT
 				'item'::text AS source,
-				item.transfer_id, item.cabinet_id, action.kind AS action_kind,
+				item.transfer_id, item.seller_id, action.kind AS action_kind,
 				transfer.phase, item.outcome_class, item.outcome_code,
 				attempt.delivery_state, attempt.response_disposition,
 				(item.outcome_class IN ('unresolved', 'internal_error')
@@ -290,7 +290,7 @@ func (repository *Repository) AggregateErrors(
 			UNION ALL
 			SELECT
 				'action'::text AS source,
-				action.transfer_id, action.cabinet_id, action.kind,
+				action.transfer_id, action.seller_id, action.kind,
 				transfer.phase, action.outcome_class, action.outcome_code,
 				attempt.delivery_state, attempt.response_disposition,
 				(action.outcome_class IN ('unresolved', 'internal_error')) AS requires_attention,
@@ -305,7 +305,7 @@ func (repository *Repository) AggregateErrors(
 			UNION ALL
 			SELECT
 				'attempt'::text AS source,
-				attempt.transfer_id, attempt.cabinet_id, attempt.action_kind,
+				attempt.transfer_id, attempt.seller_id, attempt.action_kind,
 				transfer.phase,
 				CASE
 					WHEN attempt.response_disposition = 'rejected_proven' THEN 'rejected'
@@ -325,7 +325,7 @@ func (repository *Repository) AggregateErrors(
 			UNION ALL
 			SELECT
 				'error_batch'::text AS source,
-				correlation.transfer_id, batch.cabinet_id, action.kind,
+				correlation.transfer_id, batch.seller_id, action.kind,
 				transfer.phase, 'rejected'::text AS outcome_class,
 				error_code.value AS outcome_code,
 				attempt.delivery_state, attempt.response_disposition,

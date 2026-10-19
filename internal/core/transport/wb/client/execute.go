@@ -5,12 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptrace"
+	"sync/atomic"
 	"time"
 
 	"github.com/ERONIS/wb-service/internal/core/transport/wb/client/request"
 	"github.com/ERONIS/wb-service/internal/core/transport/wb/client/response"
 	policy "github.com/ERONIS/wb-service/internal/core/transport/wb/policy"
-	transport "github.com/ERONIS/wb-service/internal/core/transport/wb/transport"
 )
 
 type executionResult struct {
@@ -81,7 +82,6 @@ func (client *APIClient) Execute(
 	}
 
 	prepared, err := request.Prepare(
-		client.baseURL,
 		operation,
 		query,
 		body,
@@ -109,7 +109,7 @@ func (client *APIClient) Execute(
 		waitStartedAt := time.Now()
 		waitErr := client.rateLimiters.Wait(
 			executionContext,
-			client.cabinetID,
+			client.sellerID,
 			operation.BucketID(),
 		)
 		trace.addLimiterWait(time.Since(waitStartedAt))
@@ -212,7 +212,7 @@ func (client *APIClient) attemptLimit(
 	if client != nil &&
 		operation.Kind().IsRead() &&
 		operation.RetryMode().AllowsRetry() {
-		return client.maxReadAttempts
+		return policy.DefaultMaxReadAttempts
 	}
 
 	return 1
@@ -238,8 +238,12 @@ func (client *APIClient) doAttempt(
 	operation policy.Operation,
 	trace *requestTrace,
 ) executionResult {
-	recorder := &attemptRecorder{}
-	attemptContext := transport.WithAttemptRecorder(ctx, recorder)
+	var dispatchCount atomic.Int64
+	attemptContext := httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		WroteRequest: func(_ httptrace.WroteRequestInfo) {
+			dispatchCount.Add(1)
+		},
+	})
 
 	httpRequest, err := prepared.NewHTTPRequest(attemptContext)
 	if err != nil {
@@ -253,12 +257,16 @@ func (client *APIClient) doAttempt(
 			delivery: NotDispatched,
 		}
 	}
+	httpRequest.Header.Set("Authorization", client.token)
 
 	httpResponse, transportErr := client.httpClient.Do(httpRequest)
-	attempt := recorder.snapshot(httpResponse)
-	trace.recordAttempt(attempt)
-
-	dispatched := attempt.DispatchCount > 0
+	statusCode := 0
+	if httpResponse != nil {
+		statusCode = httpResponse.StatusCode
+	}
+	dispatches := int(dispatchCount.Load())
+	trace.recordAttempt(statusCode, dispatches)
+	dispatched := dispatches > 0
 	if transportErr != nil {
 		return client.transportErrorResult(
 			httpResponse,
@@ -334,7 +342,7 @@ func (client *APIClient) responseResult(
 	}
 
 	result.retryAfter, result.observationErr = client.rateLimiters.Observe(
-		client.cabinetID,
+		client.sellerID,
 		operation.BucketID(),
 		httpResponse,
 	)

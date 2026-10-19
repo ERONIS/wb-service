@@ -76,18 +76,18 @@ func (registry *MutationTargetRegistry) FanoutMutationSnapshot(
 func (registry *MutationTargetRegistry) MutationSnapshotForOwner(
 	ctx context.Context,
 	ownerTelegramID int64,
-	cabinetIDs []CabinetID,
+	sellerIDs []SellerID,
 ) (MutationTargetSnapshot, error) {
 	base, err := registry.MutationSnapshot(ctx, ownerTelegramID)
 	if err != nil {
 		return MutationTargetSnapshot{}, err
 	}
-	return selectMutationTargets(base, cabinetIDs, registry.now().UTC())
+	return selectMutationTargets(base, sellerIDs, registry.now().UTC())
 }
 
 func (registry *MutationTargetRegistry) MutationSnapshotFor(
 	ctx context.Context,
-	cabinetIDs []CabinetID,
+	sellerIDs []SellerID,
 ) (MutationTargetSnapshot, error) {
 	if ctx == nil {
 		return MutationTargetSnapshot{}, errors.New("select mutation targets: context is nil")
@@ -100,7 +100,7 @@ func (registry *MutationTargetRegistry) MutationSnapshotFor(
 	if err != nil {
 		return MutationTargetSnapshot{}, err
 	}
-	return selectMutationTargets(base, cabinetIDs, registry.now().UTC())
+	return selectMutationTargets(base, sellerIDs, registry.now().UTC())
 }
 
 func (registry *MutationTargetRegistry) AllTargets(
@@ -133,8 +133,7 @@ func (registry *MutationTargetRegistry) snapshotForCredentials(
 	for index, credential := range credentials {
 		targets[index] = MutationTarget{
 			Position:            index + 1,
-			CabinetID:           credential.CabinetID,
-			SellerKey:           credential.SellerKey,
+			SellerID:            credential.SellerID,
 			ClientGeneration:    credential.ClientGeneration,
 			BindingRevision:     credential.BindingRevision,
 			CapabilityRevision:  credential.CapabilityRevision,
@@ -156,33 +155,32 @@ func (registry *MutationTargetRegistry) snapshotForCredentials(
 
 func selectMutationTargets(
 	base MutationTargetSnapshot,
-	cabinetIDs []CabinetID,
+	sellerIDs []SellerID,
 	now time.Time,
 ) (MutationTargetSnapshot, error) {
-	if len(cabinetIDs) == 0 {
+	if len(sellerIDs) == 0 {
 		return MutationTargetSnapshot{}, errors.New("select mutation targets: cabinet list is empty")
 	}
-	byID := make(map[CabinetID]MutationTarget, len(base.Targets))
+	byID := make(map[SellerID]MutationTarget, len(base.Targets))
 	for _, target := range base.Targets {
-		byID[target.CabinetID] = target
+		byID[target.SellerID] = target
 	}
-	selectedCredentials := make([]TargetCredential, 0, len(cabinetIDs))
-	seen := make(map[CabinetID]struct{}, len(cabinetIDs))
-	for _, cabinetID := range cabinetIDs {
-		if cabinetID.Validate() != nil {
-			return MutationTargetSnapshot{}, errors.New("select mutation targets: cabinet ID is invalid")
+	selectedCredentials := make([]TargetCredential, 0, len(sellerIDs))
+	seen := make(map[SellerID]struct{}, len(sellerIDs))
+	for _, sellerID := range sellerIDs {
+		if sellerID.Validate() != nil {
+			return MutationTargetSnapshot{}, errors.New("select mutation targets: seller ID is invalid")
 		}
-		if _, duplicate := seen[cabinetID]; duplicate {
-			return MutationTargetSnapshot{}, errors.New("select mutation targets: cabinet ID is duplicated")
+		if _, duplicate := seen[sellerID]; duplicate {
+			return MutationTargetSnapshot{}, errors.New("select mutation targets: seller ID is duplicated")
 		}
-		seen[cabinetID] = struct{}{}
-		target, exists := byID[cabinetID]
+		seen[sellerID] = struct{}{}
+		target, exists := byID[sellerID]
 		if !exists {
-			return MutationTargetSnapshot{}, fmt.Errorf("select mutation targets: cabinet %q is unavailable", cabinetID)
+			return MutationTargetSnapshot{}, fmt.Errorf("select mutation targets: cabinet %q is unavailable", sellerID)
 		}
 		selectedCredentials = append(selectedCredentials, TargetCredential{
-			CabinetID:           target.CabinetID,
-			SellerKey:           target.SellerKey,
+			SellerID:            target.SellerID,
 			ClientGeneration:    target.ClientGeneration,
 			BindingRevision:     target.BindingRevision,
 			CapabilityRevision:  target.CapabilityRevision,
@@ -195,8 +193,7 @@ func selectMutationTargets(
 	for index, credential := range selectedCredentials {
 		targets[index] = MutationTarget{
 			Position:            index + 1,
-			CabinetID:           credential.CabinetID,
-			SellerKey:           credential.SellerKey,
+			SellerID:            credential.SellerID,
 			ClientGeneration:    credential.ClientGeneration,
 			BindingRevision:     credential.BindingRevision,
 			CapabilityRevision:  credential.CapabilityRevision,
@@ -220,12 +217,11 @@ func targetSnapshotRevision(
 	cohortName string,
 	credentials []TargetCredential,
 ) Digest {
-	builder := canonicalhash.NewSHA256("transfer-target-snapshot:v2")
+	builder := canonicalhash.NewSHA256("transfer-target-snapshot:v4")
 	builder.String(cohortName)
 	builder.Int64(int64(len(credentials)))
 	for _, credential := range credentials {
-		builder.String(string(credential.CabinetID))
-		builder.Bytes(credential.SellerKey[:])
+		builder.String(string(credential.SellerID))
 		builder.Bytes(credential.ClientGeneration[:])
 		builder.Int64(credential.CredentialExpiresAt.UTC().UnixNano())
 		builder.Int64(credential.BindingRevision)

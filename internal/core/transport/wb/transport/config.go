@@ -14,20 +14,19 @@ var (
 	)
 )
 
-// NewHTTPClient создаёт копию базового клиента для одного кабинета.
-func NewHTTPClient(
+// NewHTTPClient создаёт копию базового клиента с общим WB transport.
+func (transport *SharedTransport) NewHTTPClient(
 	baseClient *http.Client,
-	roundTripper http.RoundTripper,
 ) (*http.Client, error) {
 	if baseClient == nil {
 		return nil, errHTTPClientRequired
 	}
-	if roundTripper == nil {
+	if transport == nil || transport.base == nil {
 		return nil, errRoundTripperRequired
 	}
 
 	clientCopy := *baseClient
-	clientCopy.Transport = roundTripper
+	clientCopy.Transport = transport.base
 	clientCopy.CheckRedirect = denyRedirects
 
 	return &clientCopy, nil

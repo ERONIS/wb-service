@@ -6,7 +6,10 @@ import (
 	"strconv"
 	"strings"
 
-	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
+	core_tg_callback "github.com/ERONIS/wb-service/internal/core/transport/telegram/callback"
+	core_tg_identity "github.com/ERONIS/wb-service/internal/core/transport/telegram/identity"
+	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
+	core_tg_ui "github.com/ERONIS/wb-service/internal/core/transport/telegram/ui"
 	users_service "github.com/ERONIS/wb-service/internal/feature/users/service"
 
 	tele "gopkg.in/telebot.v3"
@@ -17,9 +20,9 @@ func (h *UsersTgHandler) ListUsers(
 ) error {
 	page, err := parseUsersPage(ctx)
 	if err != nil {
-		return core_transport_telegram.Notify(ctx, "users.invalid_page", "Не удалось определить страницу списка.")
+		return core_tg_menu.Notify(ctx, "users.invalid_page", "Не удалось определить страницу списка.")
 	}
-	adminTelegramID, err := core_transport_telegram.SenderID(ctx)
+	adminTelegramID, err := core_tg_identity.SenderID(ctx)
 	if err != nil {
 		return sendServiceError(ctx, err)
 	}
@@ -47,7 +50,7 @@ func parseUsersPage(ctx tele.Context) (int, error) {
 	if len(args) != 1 {
 		return 0, fmt.Errorf("unexpected arguments count: %d", len(args))
 	}
-	return core_transport_telegram.ParsePageNumber(args[0])
+	return core_tg_callback.ParsePageNumber(args[0])
 }
 
 func usersPageText(result users_service.UsersPage) string {
@@ -123,7 +126,7 @@ func usersPageMarkup(
 	if result.HasNext {
 		totalPages = result.Page + 1
 	}
-	if navRow, ok := core_transport_telegram.BuildPaginationRow(markup, core_transport_telegram.PaginationConfig{
+	if navRow, ok := core_tg_ui.BuildPaginationRow(markup, core_tg_ui.PaginationConfig{
 		Page:           result.Page,
 		TotalPages:     totalPages,
 		CallbackUnique: buttonListUsers.Unique,

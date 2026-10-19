@@ -15,7 +15,7 @@
 - Повторное применение terminal preparation work необходимо для восстановления разрыва между этими транзакциями. Удалять повторное применение до атомарного сохранения нельзя.
 - ListPreparationWork читает все задания переноса, включая завершённые; processTransfer повторно обходит их.
 - Подготовка использует всю исходную группу. card_preparation_items повторно хранит transfer_item_id, item_position и vendor_code; LoadProposals читает этот снимок и проверяет его соответствие payload.
-- Исходные card_batch_items и копии transfer_items заморожены. Однако для cabinet-copy источник файла в доменной модели вычисляется как COALESCE(item.source_file_id, batch.source_reference_id); простой SQL-перенос полей не эквивалентен.
+- Исходные card_batch_items и копии transfer_items заморожены. При изменении модели источника необходимо сохранить связи с исходным файлом и историю transfer.
 - transfer_groups существует отдельно и используется в отчётах; не считать её автоматически лишней.
 - Фазы master transfer не являются глобальным последовательным барьером: подготовка и планирование допускаются в активных фазах вплоть до media, готовые группы публикуются независимо от остальных.
 - Polling запускает независимые циклы; wake поступает только обработчику с индексом 0. Остальные этапы обычно узнают о работе по таймеру.
@@ -30,7 +30,7 @@
 - Лимиты размера, capacity/overflow-проверки, лимиты WB, rate limiting и классификацию доставки.
 - Политику повторной отправки, восстановление неоднозначных/прерванных отправок, error feed, media visibility и ручное разрешение.
 - Неизменяемые publication facts, attempts, attributions, correlations, observations и manual resolutions.
-- Режимы disabled/dry-run/live, направленный перенос и fanout, Excel и cabinet-copy.
+- Режимы disabled/dry-run/live, направленный перенос и fanout, Excel.
 - Все коды результатов, диагностику проблемного поля/позиции, отчёты, внимание пользователя и восстановление после перезапуска.
 
 ### Разрешённое архитектурное изменение
@@ -174,7 +174,7 @@
 1. Составить полную карту ссылок на transfer_item_id, включая подготовку, transfer_item_targets, публикацию, statistics и историю.
 2. Доказать соответствие каждого transfer_item_id исходному batch_item_id и принадлежность batch текущему transfer.
 3. Не подменять исторические ID на batch ID: они различаются и могут участвовать в защищённых ссылках.
-4. Сохранить group membership, provenance, vendorCode, position, source_rows, payload и особенность SourceFileID для cabinet-copy.
+4. Сохранить group membership, provenance, vendorCode, position, source_rows, payload и SourceFileID.
 5. Проверить целевую схему связей без добавления постоянной таблицы mapping, которая отменит выигрыш.
 6. Если можно сохранить все ограничения, читать immutable card_batch_items напрямую и убрать копирование payload/резервирование transfer item ID.
 7. Сохранить checksum, capacity, полноту fanout и атомарную активацию initialization.
@@ -197,7 +197,7 @@
 - Snapshot/restore тестировать в изолированной БД. План не разрешает остановку или изменение рабочей БД.
 
 ## 7. Проверки сохранения функциональности
-- Excel и cabinet-copy; один/несколько кабинетов; группы с одной/несколькими карточками.
+- Excel; один/несколько кабинетов; группы с одной/несколькими карточками.
 - Успех, validation rejection, временная недоступность каталога, unresolved, mixed/partial, все группы rejected, план без действий.
 - Публикация готовой группы до завершения подготовки остальных.
 - Точные payload/proposal digests и metadata/limits snapshots при одинаковых входных данных.

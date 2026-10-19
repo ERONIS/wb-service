@@ -19,7 +19,6 @@ type Purpose = cardpipeline.Purpose
 
 const (
 	PurposeTransfer = cardpipeline.PurposeTransfer
-	PurposeEdit     = cardpipeline.PurposeEdit
 )
 
 type SessionStatus string

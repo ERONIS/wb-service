@@ -37,7 +37,6 @@ const (
 	MaxFileSize        = model.MaxFileSize
 
 	PurposeTransfer = model.PurposeTransfer
-	PurposeEdit     = model.PurposeEdit
 
 	SessionStatusCollecting = model.SessionStatusCollecting
 	SessionStatusFinalized  = model.SessionStatusFinalized

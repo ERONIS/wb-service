@@ -8,7 +8,8 @@ import (
 	"time"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
-	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
+	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
+	core_tg_ui "github.com/ERONIS/wb-service/internal/core/transport/telegram/ui"
 	credentials "github.com/ERONIS/wb-service/internal/core/transport/wb/credentials"
 	wbcabinet_service "github.com/ERONIS/wb-service/internal/feature/wbcabinet/service"
 	tele "gopkg.in/telebot.v3"
@@ -53,7 +54,7 @@ func (handler *Handler) showProfile(ctx tele.Context, prefix string) error {
 	}
 	profile, err := handler.profiles.GetProfile(handler.ctx, sender.ID)
 	if err != nil {
-		return core_transport_telegram.Notify(
+		return core_tg_menu.Notify(
 			ctx,
 			"wbcabinet.profile",
 			"❌ Не удалось загрузить профиль.",
@@ -61,7 +62,7 @@ func (handler *Handler) showProfile(ctx tele.Context, prefix string) error {
 	}
 	cabinets, err := handler.service.ListByOwner(handler.ctx, sender.ID)
 	if err != nil {
-		return core_transport_telegram.Notify(
+		return core_tg_menu.Notify(
 			ctx,
 			"wbcabinet.list",
 			"❌ Не удалось загрузить кабинеты.",
@@ -126,7 +127,7 @@ func profileText(
 			statusText(status),
 			permissionsText(cabinet.TokenProperties),
 			accessModeText(cabinet.TokenProperties),
-			core_transport_telegram.FormatDateTime(cabinet.CredentialExpiresAt),
+			core_tg_ui.FormatDateTime(cabinet.CredentialExpiresAt),
 		)
 	}
 	if len(cabinets) > shown {
@@ -207,7 +208,7 @@ func profileMarkup(hasCabinets bool) *tele.ReplyMarkup {
 			buttonDeleteSelect.Unique,
 		)))
 	}
-	rows = append(rows, markup.Row(core_transport_telegram.MainMenuButton()))
+	rows = append(rows, markup.Row(core_tg_menu.MainMenuButton()))
 	markup.Inline(rows...)
 	return markup
 }

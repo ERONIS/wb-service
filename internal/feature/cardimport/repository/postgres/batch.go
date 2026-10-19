@@ -15,7 +15,7 @@ import (
 
 const batchColumns = `
 	batch.id,
-	COALESCE(batch.source_session_id, batch.source_reference_id),
+	batch.source_session_id,
 	batch.purpose,
 	batch.items_count,
 	batch.groups_count,
@@ -104,14 +104,12 @@ func loadBatch(
 	query := `
 		SELECT ` + batchColumns + `
 		FROM wb.card_batches AS batch
-		LEFT JOIN wb.card_import_sessions AS session
+		JOIN wb.card_import_sessions AS session
 			ON session.finalized_batch_id = batch.id
 		   AND session.id = batch.source_session_id
 		WHERE batch.id = $1
-		  AND (
-			(batch.source_kind = 'xlsx' AND session.status = 'finalized')
-			OR batch.source_kind = 'wb_cabinet'
-		  );
+		  AND batch.source_kind = 'xlsx'
+		  AND session.status = 'finalized';
 	`
 
 	header, err := scanBatchHeader(db.QueryRow(ctx, query, batchID))
@@ -190,22 +188,20 @@ func (r *Repository) ListBatchItems(
 			item.id,
 			item.batch_id,
 			item.position,
-			COALESCE(item.source_file_id, batch.source_reference_id),
+			item.source_file_id,
 			item.source_rows,
 			item.source_group_key,
 			item.vendor_code,
 			item.payload
 		FROM wb.card_batch_items AS item
 		JOIN wb.card_batches AS batch ON batch.id = item.batch_id
-		LEFT JOIN wb.card_import_sessions AS session
+		JOIN wb.card_import_sessions AS session
 			ON session.finalized_batch_id = batch.id
 		   AND session.id = batch.source_session_id
 		WHERE item.batch_id = $1
 			AND item.position > $2
-			AND (
-				(batch.source_kind = 'xlsx' AND session.status = 'finalized')
-				OR batch.source_kind = 'wb_cabinet'
-			)
+			AND batch.source_kind = 'xlsx'
+			AND session.status = 'finalized'
 		ORDER BY item.position
 		LIMIT $3;
 	`

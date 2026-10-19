@@ -93,11 +93,6 @@ CREATE TABLE wb.transfers (
 CREATE INDEX transfers_phase_outcome_id_idx
 ON wb.transfers (phase, outcome, id);
 
-ALTER TABLE wb.cabinet_copy_sessions
-ADD CONSTRAINT cabinet_copy_sessions_transfer_fk
-FOREIGN KEY (transfer_id) REFERENCES wb.transfers(id);
-
-
 CREATE TABLE wb.transfer_targets (
     id                      BIGSERIAL PRIMARY KEY,
 
@@ -106,10 +101,8 @@ CREATE TABLE wb.transfer_targets (
 
     position                INTEGER NOT NULL
                             CHECK (position > 0),
-    cabinet_id              VARCHAR(128) NOT NULL
-                            CHECK (char_length(cabinet_id) > 0),
-    seller_key              BYTEA NOT NULL
-                            CHECK (octet_length(seller_key) = 32),
+    seller_id          VARCHAR(36) NOT NULL
+                            CHECK (seller_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
     client_generation       BYTEA NOT NULL
                             CHECK (octet_length(client_generation) = 32),
     credential_expires_at   TIMESTAMPTZ NOT NULL,
@@ -124,8 +117,7 @@ CREATE TABLE wb.transfer_targets (
 
     UNIQUE (transfer_id, id),
     UNIQUE (transfer_id, position),
-    UNIQUE (transfer_id, cabinet_id),
-    UNIQUE (transfer_id, seller_key),
+    UNIQUE (transfer_id, seller_id),
 
     CHECK (content_read AND content_write),
     CHECK (credential_expires_at > created_at)

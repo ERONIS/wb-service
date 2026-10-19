@@ -29,13 +29,13 @@ func (repository *Repository) ListReconcilingProductActions(
 			action.transfer_id AS transfer_id,
 			action.id AS action_id,
 			action.target_id AS target_id,
-			target.cabinet_id AS cabinet_id,
+			target.seller_id AS seller_id,
 			live_auth.id AS authorization_id,
 			live_auth.revision AS authorization_revision,
 			plan.plan_digest,
 			plan.target_set_root,
 			ROW_NUMBER() OVER (
-				PARTITION BY target.cabinet_id
+				PARTITION BY target.seller_id
 				ORDER BY action.updated_at, action.id
 			) AS cabinet_rank,
 			action.updated_at,
@@ -83,11 +83,11 @@ func (repository *Repository) ListReconcilingProductActions(
 			)
 		)
 		SELECT
-			transfer_id, action_id, target_id, cabinet_id,
+			transfer_id, action_id, target_id, seller_id,
 			authorization_id, authorization_revision,
 			plan_digest, target_set_root, catalog_vendor_codes
 		FROM reconciling
-		ORDER BY cabinet_rank, updated_at, cabinet_id, action_id
+		ORDER BY cabinet_rank, updated_at, seller_id, action_id
 		LIMIT $3;
 	`
 	rows, err := repository.pool.Query(ctx, query, now, baseDelay.Seconds(), limit)
@@ -128,7 +128,7 @@ func (repository *Repository) LoadErrorBatchMatches(
 			batch.error_codes
 		FROM wb.publication_attempts AS attempt
 		JOIN wb.publication_error_batches AS batch
-		  ON batch.cabinet_id = attempt.baseline_cabinet_id
+		  ON batch.seller_id = attempt.baseline_seller_id
 		WHERE attempt.transfer_id = $1
 			AND attempt.id = $2
 			AND attempt.action_id = $3
@@ -390,7 +390,7 @@ func recordProductReconciliationMembers(
 			    active_action_id = CASE WHEN $9 THEN NULL ELSE active_action_id END,
 			    revision = revision + 1,
 			    updated_at = CURRENT_TIMESTAMP
-			WHERE cabinet_id = $1
+			WHERE seller_id = $1
 				AND vendor_code_key = $2
 				AND active_transfer_id = $3
 				AND active_action_id = $4;
@@ -398,7 +398,7 @@ func recordProductReconciliationMembers(
 		updated, err = tx.Exec(
 			ctx,
 			finishIdentity,
-			action.CabinetID,
+			action.SellerID,
 			member.VendorCode,
 			action.TransferID,
 			action.ActionID,
@@ -419,7 +419,7 @@ func recordProductReconciliationMembers(
 			const insertAttribution = `
 				INSERT INTO wb.publication_attributions (
 					transfer_id, group_target_id, action_id, action_member_id,
-					cabinet_id, nm_id, plan_digest, attempt_id,
+					seller_id, nm_id, plan_digest, attempt_id,
 					preflight_observation_id, post_observation_id, level,
 					safe_reason_code
 				)
@@ -435,7 +435,7 @@ func recordProductReconciliationMembers(
 				member.GroupTargetID,
 				action.ActionID,
 				member.ID,
-				action.CabinetID,
+				action.SellerID,
 				result.NMID,
 				action.PlanDigest[:],
 				action.AttemptID,
@@ -460,7 +460,7 @@ func recordProductReconciliationMembers(
 				 AND attempt.id = $4
 				 AND attempt.action_id = $2
 				WHERE batch.id = $5
-					AND batch.cabinet_id = attempt.baseline_cabinet_id
+					AND batch.seller_id = attempt.baseline_seller_id
 					AND batch.rejected_vendor_codes @> ARRAY[$7]::text[]
 					AND (
 						attempt.baseline_cursor_updated_at IS NULL
@@ -534,7 +534,7 @@ func finishPotentialMediaActions(
 					  AND product_action.kind IN ('create_group', 'add_to_group')
 					  AND attribution.level IN ('direct', 'observed_after_attempt')
 					  AND attribution.plan_digest = $5
-					  AND attribution.cabinet_id = $6
+					  AND attribution.seller_id = $6
 					  AND attribution.group_target_id = member.group_target_id
 				);
 	`
@@ -546,7 +546,7 @@ func finishPotentialMediaActions(
 		itemTargetIDs,
 		safeCode,
 		action.PlanDigest[:],
-		action.CabinetID,
+		action.SellerID,
 	); err != nil {
 		return fmt.Errorf("skip publication media members: %w", err)
 	}

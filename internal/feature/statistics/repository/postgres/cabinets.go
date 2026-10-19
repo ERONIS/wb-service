@@ -54,7 +54,7 @@ func (repository *Repository) ListCabinetProgress(
 		SELECT
 			target.id,
 			target.position,
-			target.cabinet_id,
+			target.seller_id,
 			COUNT(item.item_target_id),
 			COUNT(item.item_target_id) FILTER (
 				WHERE task.overall_outcome = 'running'
@@ -102,7 +102,7 @@ func (repository *Repository) ListCabinetProgress(
 		 AND group_target.id = item.group_target_id
 		` + cabinetTaskMediaJoin + `
 		WHERE target.transfer_id = $1
-		GROUP BY target.id, target.position, target.cabinet_id
+		GROUP BY target.id, target.position, target.seller_id
 		ORDER BY target.position, target.id`
 
 	rows, err := repository.pool.Query(ctx, query, transferID)
@@ -117,7 +117,7 @@ func (repository *Repository) ListCabinetProgress(
 		if err := rows.Scan(
 			&item.TargetID,
 			&item.TargetPosition,
-			&item.CabinetID,
+			&item.SellerID,
 			&item.Total,
 			&item.Pending,
 			&item.Running,
@@ -164,7 +164,7 @@ func (repository *Repository) ListCabinetTasks(
 			item.transfer_id,
 			item.item_target_id,
 			item.target_id,
-			item.cabinet_id,
+			item.seller_id,
 			item.item_position,
 			item.vendor_code,
 			source_group.source_group_name,
@@ -216,7 +216,7 @@ func (repository *Repository) ListCabinetTasks(
 			&item.TransferID,
 			&item.ItemTargetID,
 			&item.TargetID,
-			&item.CabinetID,
+			&item.SellerID,
 			&item.ItemPosition,
 			&item.VendorCode,
 			&item.GroupName,

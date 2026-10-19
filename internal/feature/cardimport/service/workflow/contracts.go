@@ -96,12 +96,6 @@ type Repository interface {
 		commandDigest Digest,
 	) (BatchHeader, error)
 
-	CreateExternalBatch(
-		ctx context.Context,
-		tx core_postgres_transaction.DBTX,
-		draft ExternalBatchDraft,
-	) (BatchHeader, error)
-
 	ListFinalizedBatches(
 		ctx context.Context,
 		after *BatchCursor,

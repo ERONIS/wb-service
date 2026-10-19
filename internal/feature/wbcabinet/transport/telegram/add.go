@@ -5,7 +5,8 @@ import (
 	"html"
 	"strings"
 
-	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
+	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
+	core_tg_state "github.com/ERONIS/wb-service/internal/core/transport/telegram/state"
 	wbcabinet_service "github.com/ERONIS/wb-service/internal/feature/wbcabinet/service"
 
 	tele "gopkg.in/telebot.v3"
@@ -43,18 +44,18 @@ func (handler *Handler) handleText(ctx tele.Context) (bool, error) {
 		return false, nil
 	}
 	lease, status := handler.pending.Claim(sender.ID)
-	if status == core_transport_telegram.StateMissing {
+	if status == core_tg_state.StateMissing {
 		return false, nil
 	}
 	_ = ctx.Delete()
-	if status == core_transport_telegram.StateBusy {
-		return true, core_transport_telegram.Notify(
+	if status == core_tg_state.StateBusy {
+		return true, core_tg_menu.Notify(
 			ctx,
 			"wbcabinet.verification_busy",
 			"⏳ Предыдущий токен уже проверяется. Дождитесь результата.",
 		)
 	}
-	if status == core_transport_telegram.StateExpired {
+	if status == core_tg_state.StateExpired {
 		handler.textFlows.EndTextFlow(sender.ID, addCabinetTextFlow)
 		return true, handler.showProfile(
 			ctx,
@@ -120,7 +121,7 @@ func (handler *Handler) handleText(ctx tele.Context) (bool, error) {
 
 func (handler *Handler) finishPending(
 	telegramID int64,
-	lease core_transport_telegram.StateLease[pendingAdd],
+	lease core_tg_state.StateLease[pendingAdd],
 	retry bool,
 	state pendingAdd,
 ) {

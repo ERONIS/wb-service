@@ -6,6 +6,8 @@ type RetryMode string
 const (
 	RetryModeNever    RetryMode = "never"
 	RetryModeReadSafe RetryMode = "read_safe"
+	// DefaultMaxReadAttempts задаёт число попыток для безопасных операций чтения.
+	DefaultMaxReadAttempts = 3
 )
 
 func (mode RetryMode) String() string {

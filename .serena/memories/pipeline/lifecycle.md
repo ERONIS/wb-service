@@ -4,7 +4,7 @@
 Every transfer workflow transitions through strictly ordered phases (`internal/feature/transfer/service/model`):
 
 ```
-[Import / Staging] (Excel upload or Cabinet Copy)
+[Import / Staging] (Excel upload)
        │
        ▼
 PhaseInitializing ──► PhasePreparing ──► PhaseAwaitingAuthorization ──► PhasePublishing
@@ -13,8 +13,8 @@ PhaseInitializing ──► PhasePreparing ──► PhaseAwaitingAuthorization 
 PhaseFinished ◄──────── PhaseReconciling ◄──────── PhaseMedia ◄───────────────┘
 ```
 
-### 1. Ingestion & Staging (`cardimport` / `cabinetcopy`)
-- **Sources**: Uploaded Excel file (`cardimport`) or existing cabinet catalog clone (`cabinetcopy`).
+### 1. Ingestion & Staging (`cardimport`)
+- **Sources**: Uploaded Excel file (`cardimport`).
 - **Validation**: Headers, mandatory fields, barcode uniqueness, variant grouping.
 - **Output**: Canonical immutable batch in `wb.card_batches` with `wb.card_batch_items`.
 

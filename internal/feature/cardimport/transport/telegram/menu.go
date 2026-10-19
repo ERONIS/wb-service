@@ -1,7 +1,8 @@
 package cardimport_telegram_transport
 
 import (
-	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
+	core_tg_identity "github.com/ERONIS/wb-service/internal/core/transport/telegram/identity"
+	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
 	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
 
 	tele "gopkg.in/telebot.v3"
@@ -9,15 +10,10 @@ import (
 
 func (h *Handler) showCardsMenu(ctx tele.Context) error {
 	markup := h.bot.NewMarkup()
-	actions := make([]tele.Btn, 0, 1+len(h.additionalMenuButtons))
-	actions = append(actions, buttonTransfer)
-	actions = append(actions, h.additionalMenuButtons...)
-	rows := make([]tele.Row, 0, len(actions)+1)
-	for _, action := range actions {
-		rows = append(rows, markup.Row(action))
-	}
-	rows = append(rows, markup.Row(core_transport_telegram.MainMenuButton()))
-	markup.Inline(rows...)
+	markup.Inline(
+		markup.Row(buttonTransfer),
+		markup.Row(core_tg_menu.MainMenuButton()),
+	)
 
 	return ctx.EditOrSend(
 		"📦 <b>Карточки</b>\n\nВыберите действие:",
@@ -26,7 +22,7 @@ func (h *Handler) showCardsMenu(ctx tele.Context) error {
 }
 
 func (h *Handler) startTransfer(ctx tele.Context) error {
-	authorTelegramID, err := core_transport_telegram.SenderID(ctx)
+	authorTelegramID, err := core_tg_identity.SenderID(ctx)
 	if err != nil {
 		return sendServiceError(ctx, err)
 	}
@@ -51,14 +47,14 @@ func (h *Handler) startTransfer(ctx tele.Context) error {
 }
 
 func (h *Handler) cancel(ctx tele.Context) error {
-	authorTelegramID, err := core_transport_telegram.SenderID(ctx)
+	authorTelegramID, err := core_tg_identity.SenderID(ctx)
 	if err != nil {
 		return sendServiceError(ctx, err)
 	}
 
 	sessionID, err := parseSessionID(ctx.Args())
 	if err != nil {
-		return core_transport_telegram.Notify(ctx, "cardimport.session_argument", "⚠️ Не удалось определить текущую загрузку.")
+		return core_tg_menu.Notify(ctx, "cardimport.session_argument", "⚠️ Не удалось определить текущую загрузку.")
 	}
 
 	if err := h.service.Cancel(h.ctx, cardimport_service.SessionCommand{
@@ -71,7 +67,7 @@ func (h *Handler) cancel(ctx tele.Context) error {
 	markup := h.bot.NewMarkup()
 	markup.Inline(
 		markup.Row(buttonTransfer),
-		markup.Row(core_transport_telegram.MainMenuButton()),
+		markup.Row(core_tg_menu.MainMenuButton()),
 	)
 
 	return ctx.EditOrSend(
@@ -81,13 +77,13 @@ func (h *Handler) cancel(ctx tele.Context) error {
 }
 
 func (h *Handler) continueImport(ctx tele.Context) error {
-	authorTelegramID, err := core_transport_telegram.SenderID(ctx)
+	authorTelegramID, err := core_tg_identity.SenderID(ctx)
 	if err != nil {
 		return sendServiceError(ctx, err)
 	}
 	command, err := parseContinueCommand(ctx.Args())
 	if err != nil {
-		return core_transport_telegram.Notify(ctx, "cardimport.stale_continue", "⚠️ Кнопка устарела. Откройте текущую загрузку заново.")
+		return core_tg_menu.Notify(ctx, "cardimport.stale_continue", "⚠️ Кнопка устарела. Откройте текущую загрузку заново.")
 	}
 	command.AuthorTelegramID = authorTelegramID
 
@@ -104,13 +100,13 @@ func (h *Handler) continueImport(ctx tele.Context) error {
 }
 
 func (h *Handler) finalize(ctx tele.Context) error {
-	user, err := core_transport_telegram.UserFromContext(ctx)
+	user, err := core_tg_identity.UserFromContext(ctx)
 	if err != nil {
 		return sendServiceError(ctx, err)
 	}
 	command, err := parseFinalizeCommand(ctx.Args())
 	if err != nil {
-		return core_transport_telegram.Notify(ctx, "cardimport.stale_finalize", "⚠️ Кнопка устарела. Откройте новый перенос заново.")
+		return core_tg_menu.Notify(ctx, "cardimport.stale_finalize", "⚠️ Кнопка устарела. Откройте новый перенос заново.")
 	}
 
 	batch, err := h.service.Finalize(h.ctx, user, command)

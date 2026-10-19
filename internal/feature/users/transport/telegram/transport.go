@@ -6,7 +6,9 @@ import (
 	"time"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
-	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
+	core_tg_identity "github.com/ERONIS/wb-service/internal/core/transport/telegram/identity"
+	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
+	core_tg_state "github.com/ERONIS/wb-service/internal/core/transport/telegram/state"
 	users_service "github.com/ERONIS/wb-service/internal/feature/users/service"
 
 	tele "gopkg.in/telebot.v3"
@@ -102,8 +104,8 @@ type UsersService interface {
 type UsersTgHandler struct {
 	ctx          context.Context
 	usersService UsersService
-	textFlows    *core_transport_telegram.Handler
-	pendingAdds  *core_transport_telegram.StateStore[pendingAddState]
+	textFlows    *core_tg_menu.Handler
+	pendingAdds  *core_tg_state.StateStore[pendingAddState]
 }
 
 type pendingAddState struct {
@@ -117,12 +119,12 @@ func NewUsersTgHandler(
 	return &UsersTgHandler{
 		ctx:          ctx,
 		usersService: usersService,
-		pendingAdds:  core_transport_telegram.NewStateStore[pendingAddState](),
+		pendingAdds:  core_tg_state.NewStateStore[pendingAddState](),
 	}
 }
 
 func (h *UsersTgHandler) Register(
-	menu *core_transport_telegram.Handler,
+	menu *core_tg_menu.Handler,
 ) {
 	h.textFlows = menu
 	menu.RegisterTextFlow(addUserTextFlow, domain.RoleAdmin, h.handleAddUserText)
@@ -177,18 +179,18 @@ func (h *UsersTgHandler) Register(
 func (h *UsersTgHandler) handleAddUserText(
 	ctx tele.Context,
 ) (bool, error) {
-	senderID, err := core_transport_telegram.SenderID(ctx)
+	senderID, err := core_tg_identity.SenderID(ctx)
 	if err != nil {
 		return false, nil
 	}
 	pending, status := h.pendingAdds.Claim(senderID)
-	if status != core_transport_telegram.StateClaimed {
+	if status != core_tg_state.StateClaimed {
 		return false, nil
 	}
 	targetID, fullName, err := parseAddUserInput(strings.Fields(ctx.Text()))
 	if err != nil {
 		h.finishPendingAdd(senderID, pending, true)
-		return true, core_transport_telegram.Notify(ctx, "users.invalid_add_format", "⚠️ Неверный формат. Отправьте TG ID и полное имя одной строкой.")
+		return true, core_tg_menu.Notify(ctx, "users.invalid_add_format", "⚠️ Неверный формат. Отправьте TG ID и полное имя одной строкой.")
 	}
 	created, err := h.createUser(ctx, senderID, targetID, fullName, pending.Value.page)
 	h.finishPendingAdd(senderID, pending, !created)

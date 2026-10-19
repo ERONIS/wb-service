@@ -2,7 +2,7 @@
 
 ## System Summary
 - Multi-cabinet Wildberries automation platform in Go 1.27.1 with PostgreSQL 18 and Telegram Bot API.
-- Implements resilient e-commerce product lifecycle: Excel import / cross-cabinet copy, preparation & WB schema validation, authorization, publication dispatch, media upload tracking, error feed reconciliation, and performance metrics.
+- Implements resilient e-commerce product lifecycle: Excel import, preparation & WB schema validation, authorization, publication dispatch, media upload tracking, error feed reconciliation, and performance metrics.
 
 ## Layered Topology
 1. **Composition Root (`cmd/wb-service/main.go`)**:
@@ -11,13 +11,13 @@
 2. **Infrastructure Core (`internal/core`)**:
    - `core/logger`: Zap structured JSON logger with trace/attempt logging.
    - `core/repository/postgres`: Connection pooling (`pgx/v5` + `puddle/v2`) and transactional Unit of Work (`core_postgres_transaction.UnitOfWork`).
-   - `core/transport/wb`: Kubernetes `client-go` style HTTP client managing Wildberries Content and Prices APIs through shared typed clients; unused General API support is removed.
+   - `core/transport/wb`: Kubernetes `client-go` style HTTP client managing Wildberries Content API executors, operation specs, rate limits and retries. Feature-owned `transport/wb` adapters select only their required operations; unused Prices and General API support is removed.
    - `core/transport/telegram`: Long-polling / webhook engine on `telebot.v3`, screen state persistence, and role-based middleware.
    - `core/canonicalhash`: Deterministic SHA-256 with length-prefixed encoding for batch hashing, idempotency keys, and payload validation.
-   - `core/domain`: Base types (`CabinetID`, `SellerKey`, `TransferID`, `Digest`, `User`).
+   - `core/domain`: Base types (`SellerID`, `ClientGeneration`, `TransferID`, `Digest`, `User`).
    - `core/errors`: Centralized error taxonomy (`core_errors`). Provides domain/HTTP sentinel errors (`ErrNotFound`, `ErrInvalidArgument`, `ErrConflict`, `ErrForbidden`, `ErrUnauthorized`, `ErrAlreadyExists`, `ErrRateLimited`, `ErrQueueFull`, `ErrCapacityExceeded`, `ErrUnavailable`, `ErrTimeout`, etc.) and re-exports stdlib `errors` functions (`Is`, `As`, `New`, `Join`, `Unwrap`). Feature modules wrap core sentinels via `%w`.
 3. **Business Feature Layer (`internal/feature`)**:
-   - 9 isolated feature packages: `wbcabinet`, `cardimport`, `cardedit`, `cardprepare`, `cardpublication`, `transfer`, `cabinetcopy`, `statistics`, `users`.
+   - 7 isolated feature packages: `wbcabinet`, `cardimport`, `cardprepare`, `cardpublication`, `transfer`, `statistics`, `users`.
    - Each feature encapsulates: `transport` (WB adapters / Telegram menus), `service` (domain logic / state machines), `repository` (Postgres queries within UoW).
 
 ## Background Workers Topology (in `main.go`)

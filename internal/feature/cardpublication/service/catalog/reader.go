@@ -11,7 +11,7 @@ import (
 
 	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
-	wb_catalog "github.com/ERONIS/wb-service/internal/core/transport/wb/catalog"
+	wb_catalog "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1/catalog"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
@@ -27,7 +27,7 @@ var ErrCatalogChangedDuringScan = wb_catalog.ErrCursorStalled
 
 type CatalogObservation struct {
 	TargetID   int64
-	CabinetID  CabinetID
+	SellerID   SellerID
 	Normal     []contentapi.Card
 	Trash      []contentapi.TrashCard
 	ObservedAt time.Time
@@ -57,7 +57,7 @@ func NewCatalogReader(transport CatalogTransport, loggers ...*zap.Logger) *Catal
 
 func (reader *CatalogReader) WaitForMedia(
 	ctx context.Context,
-	cabinetID CabinetID,
+	sellerID SellerID,
 	vendorCode string,
 	nmID int64,
 	expectedPhotos int,
@@ -67,7 +67,7 @@ func (reader *CatalogReader) WaitForMedia(
 ) (err error) {
 	lastPhotosCount, lastCardFound := 0, false
 	vendorCode = normalizeCatalogVendorCode(vendorCode)
-	if ctx == nil || cabinetID == "" || vendorCode == "" || nmID <= 0 ||
+	if ctx == nil || sellerID == "" || vendorCode == "" || nmID <= 0 ||
 		expectedPhotos < 0 || interval <= 0 || timeout <= 0 {
 		return errors.New("targeted WB media check is invalid")
 	}
@@ -79,7 +79,7 @@ func (reader *CatalogReader) WaitForMedia(
 			(!expectedVideo || strings.TrimSpace(card.Video) != "")
 	}
 	refresh := func() (bool, error) {
-		cards, err := reader.readNormalVendorCode(ctx, cabinetID, vendorCode)
+		cards, err := reader.readNormalVendorCode(ctx, sellerID, vendorCode)
 		if err != nil {
 			return false, err
 		}
@@ -89,7 +89,7 @@ func (reader *CatalogReader) WaitForMedia(
 				lastCardFound = true
 				lastPhotosCount = loadedPhotoCount(card.Photos)
 			}
-			reader.recent.StoreIfRecent(cabinetID, card)
+			reader.recent.StoreIfRecent(sellerID, card)
 			if mediaLoaded(card) {
 				return true, nil
 			}
@@ -129,29 +129,29 @@ func (reader *CatalogReader) WaitForMedia(
 func (reader *CatalogReader) ReadActiveVendorCode(
 	ctx context.Context,
 	targetID int64,
-	cabinetID CabinetID,
+	sellerID SellerID,
 	vendorCode string,
 ) (observation CatalogObservation, err error) {
 	vendorCode = normalizeCatalogVendorCode(vendorCode)
-	if ctx == nil || targetID <= 0 || cabinetID == "" || vendorCode == "" {
+	if ctx == nil || targetID <= 0 || sellerID == "" || vendorCode == "" {
 		return CatalogObservation{}, errors.New("active publication catalog query is invalid")
 	}
 	cards := make([]contentapi.Card, 0, 1)
-	if card, ok := reader.recent.LookupVendorCode(cabinetID, vendorCode); ok {
+	if card, ok := reader.recent.LookupVendorCode(sellerID, vendorCode); ok {
 		cards = append(cards, card)
 	} else {
-		found, err := reader.readNormalVendorCode(ctx, cabinetID, vendorCode)
+		found, err := reader.readNormalVendorCode(ctx, sellerID, vendorCode)
 		if err != nil {
 			return CatalogObservation{}, err
 		}
 		for _, card := range found {
-			reader.recent.StoreIfRecent(cabinetID, card)
+			reader.recent.StoreIfRecent(sellerID, card)
 		}
 		cards = found
 	}
 	return CatalogObservation{
 		TargetID:   targetID,
-		CabinetID:  cabinetID,
+		SellerID:   sellerID,
 		Normal:     cards,
 		ObservedAt: time.Now().UTC(),
 	}, nil
@@ -160,10 +160,10 @@ func (reader *CatalogReader) ReadActiveVendorCode(
 func (reader *CatalogReader) ReadVendorCodes(
 	ctx context.Context,
 	targetID int64,
-	cabinetID CabinetID,
+	sellerID SellerID,
 	vendorCodes []string,
 ) (observation CatalogObservation, err error) {
-	if ctx == nil || targetID <= 0 || cabinetID == "" {
+	if ctx == nil || targetID <= 0 || sellerID == "" {
 		return CatalogObservation{}, errors.New("publication catalog query is invalid")
 	}
 	vendorCodes = normalizedUniqueStrings(vendorCodes)
@@ -174,7 +174,7 @@ func (reader *CatalogReader) ReadVendorCodes(
 	normalByID := make(map[int64]contentapi.Card)
 	missingNormal := make([]string, 0, len(vendorCodes))
 	for _, vendorCode := range vendorCodes {
-		if card, ok := reader.recent.LookupVendorCode(cabinetID, vendorCode); ok {
+		if card, ok := reader.recent.LookupVendorCode(sellerID, vendorCode); ok {
 			normalByID[card.NMID] = card
 		} else {
 			missingNormal = append(missingNormal, vendorCode)
@@ -188,7 +188,7 @@ func (reader *CatalogReader) ReadVendorCodes(
 			var err error
 			normalCards, _, _, err = reader.readNormalVendorCodes(
 				readCtx,
-				cabinetID,
+				sellerID,
 				missingNormal,
 			)
 			return err
@@ -198,7 +198,7 @@ func (reader *CatalogReader) ReadVendorCodes(
 		var err error
 		trashCards, _, _, err = reader.readTrashVendorCodes(
 			readCtx,
-			cabinetID,
+			sellerID,
 			vendorCodes,
 		)
 		return err
@@ -208,7 +208,7 @@ func (reader *CatalogReader) ReadVendorCodes(
 	}
 	for _, card := range normalCards {
 		normalByID[card.NMID] = card
-		reader.recent.StoreIfRecent(cabinetID, card)
+		reader.recent.StoreIfRecent(sellerID, card)
 	}
 	trashByID := make(map[int64]contentapi.TrashCard, len(trashCards))
 	for _, card := range trashCards {
@@ -217,7 +217,7 @@ func (reader *CatalogReader) ReadVendorCodes(
 
 	observation = CatalogObservation{
 		TargetID:   targetID,
-		CabinetID:  cabinetID,
+		SellerID:   sellerID,
 		Normal:     sortedNormalCards(normalByID),
 		Trash:      sortedTrashCards(trashByID),
 		ObservedAt: time.Now().UTC(),
@@ -227,13 +227,13 @@ func (reader *CatalogReader) ReadVendorCodes(
 
 func (reader *CatalogReader) readNormalVendorCodes(
 	ctx context.Context,
-	cabinetID CabinetID,
+	sellerID SellerID,
 	vendorCodes []string,
 ) ([]contentapi.Card, int, bool, error) {
 	if len(vendorCodes) >= bulkVendorCodeScanThreshold {
 		cards, requests, complete, err := reader.scanNormalVendorCodes(
 			ctx,
-			cabinetID,
+			sellerID,
 			vendorCodes,
 		)
 		if err != nil {
@@ -244,24 +244,24 @@ func (reader *CatalogReader) readNormalVendorCodes(
 		}
 		result, exactRequests, err := reader.searchNormalVendorCodes(
 			ctx,
-			cabinetID,
+			sellerID,
 			vendorCodes,
 		)
 		return result, requests + exactRequests, false, err
 	}
-	result, requests, err := reader.searchNormalVendorCodes(ctx, cabinetID, vendorCodes)
+	result, requests, err := reader.searchNormalVendorCodes(ctx, sellerID, vendorCodes)
 	return result, requests, false, err
 }
 
 func (reader *CatalogReader) readTrashVendorCodes(
 	ctx context.Context,
-	cabinetID CabinetID,
+	sellerID SellerID,
 	vendorCodes []string,
 ) ([]contentapi.TrashCard, int, bool, error) {
 	if len(vendorCodes) >= bulkVendorCodeScanThreshold {
 		cards, requests, complete, err := reader.scanTrashVendorCodes(
 			ctx,
-			cabinetID,
+			sellerID,
 			vendorCodes,
 		)
 		if err != nil {
@@ -272,24 +272,24 @@ func (reader *CatalogReader) readTrashVendorCodes(
 		}
 		result, exactRequests, err := reader.searchTrashVendorCodes(
 			ctx,
-			cabinetID,
+			sellerID,
 			vendorCodes,
 		)
 		return result, requests + exactRequests, false, err
 	}
-	result, requests, err := reader.searchTrashVendorCodes(ctx, cabinetID, vendorCodes)
+	result, requests, err := reader.searchTrashVendorCodes(ctx, sellerID, vendorCodes)
 	return result, requests, false, err
 }
 
 func (reader *CatalogReader) searchNormalVendorCodes(
 	ctx context.Context,
-	cabinetID CabinetID,
+	sellerID SellerID,
 	vendorCodes []string,
 ) ([]contentapi.Card, int, error) {
 	result := make(map[int64]contentapi.Card)
 	requests := 0
 	for _, vendorCode := range vendorCodes {
-		cards, count, err := reader.readNormalVendorCodeCount(ctx, cabinetID, vendorCode)
+		cards, count, err := reader.readNormalVendorCodeCount(ctx, sellerID, vendorCode)
 		requests += count
 		if err != nil {
 			return nil, requests, err
@@ -303,13 +303,13 @@ func (reader *CatalogReader) searchNormalVendorCodes(
 
 func (reader *CatalogReader) searchTrashVendorCodes(
 	ctx context.Context,
-	cabinetID CabinetID,
+	sellerID SellerID,
 	vendorCodes []string,
 ) ([]contentapi.TrashCard, int, error) {
 	result := make(map[int64]contentapi.TrashCard)
 	requests := 0
 	for _, vendorCode := range vendorCodes {
-		cards, count, err := reader.readTrashVendorCodeCount(ctx, cabinetID, vendorCode)
+		cards, count, err := reader.readTrashVendorCodeCount(ctx, sellerID, vendorCode)
 		requests += count
 		if err != nil {
 			return nil, requests, err
@@ -321,10 +321,10 @@ func (reader *CatalogReader) searchTrashVendorCodes(
 	return sortedTrashCards(result), requests, nil
 }
 
-func (reader *CatalogReader) scanNormalVendorCodes(ctx context.Context, cabinetID CabinetID, vendorCodes []string) ([]contentapi.Card, int, bool, error) {
+func (reader *CatalogReader) scanNormalVendorCodes(ctx context.Context, sellerID SellerID, vendorCodes []string) ([]contentapi.Card, int, bool, error) {
 	wanted := stringSet(vendorCodes)
 	result := make(map[int64]contentapi.Card)
-	pages, err := wb_catalog.WalkCards(ctx, reader.transport, cabinetID, contentapi.CardsListQuery{}, contentapi.CardsListRequest{Settings: contentapi.CardsListSettings{Sort: contentapi.CardsSort{Ascending: true}}}, normalCatalogProbePages, func(card contentapi.Card) bool {
+	pages, err := wb_catalog.WalkCards(ctx, reader.transport, sellerID, contentapi.CardsListQuery{}, contentapi.CardsListRequest{Settings: contentapi.CardsListSettings{Sort: contentapi.CardsSort{Ascending: true}}}, normalCatalogProbePages, func(card contentapi.Card) bool {
 		if _, ok := wanted[card.VendorCode]; ok {
 			result[card.NMID] = card
 		}
@@ -339,10 +339,10 @@ func (reader *CatalogReader) scanNormalVendorCodes(ctx context.Context, cabinetI
 	return sortedNormalCards(result), pages, true, nil
 }
 
-func (reader *CatalogReader) scanTrashVendorCodes(ctx context.Context, cabinetID CabinetID, vendorCodes []string) ([]contentapi.TrashCard, int, bool, error) {
+func (reader *CatalogReader) scanTrashVendorCodes(ctx context.Context, sellerID SellerID, vendorCodes []string) ([]contentapi.TrashCard, int, bool, error) {
 	wanted := stringSet(vendorCodes)
 	result := make(map[int64]contentapi.TrashCard)
-	pages, err := wb_catalog.WalkTrashCards(ctx, reader.transport, cabinetID, contentapi.TrashCardsListQuery{}, contentapi.TrashCardsListRequest{Settings: contentapi.TrashCardsListSettings{Sort: contentapi.CardsSort{Ascending: true}}}, min(len(vendorCodes), maxVendorSearchPages), func(card contentapi.TrashCard) bool {
+	pages, err := wb_catalog.WalkTrashCards(ctx, reader.transport, sellerID, contentapi.TrashCardsListQuery{}, contentapi.TrashCardsListRequest{Settings: contentapi.TrashCardsListSettings{Sort: contentapi.CardsSort{Ascending: true}}}, min(len(vendorCodes), maxVendorSearchPages), func(card contentapi.TrashCard) bool {
 		if _, ok := wanted[card.VendorCode]; ok {
 			result[card.NMID] = card
 		}
@@ -367,15 +367,15 @@ func stringSet(values []string) map[string]struct{} {
 
 func (reader *CatalogReader) readNormalVendorCode(
 	ctx context.Context,
-	cabinetID CabinetID,
+	sellerID SellerID,
 	vendorCode string,
 ) ([]contentapi.Card, error) {
-	cards, _, err := reader.readNormalVendorCodeCount(ctx, cabinetID, vendorCode)
+	cards, _, err := reader.readNormalVendorCodeCount(ctx, sellerID, vendorCode)
 	return cards, err
 }
 
-func (reader *CatalogReader) readNormalVendorCodeCount(ctx context.Context, cabinetID CabinetID, vendorCode string) ([]contentapi.Card, int, error) {
-	cards, pages, err := wb_catalog.FindByVendorCode(ctx, reader.transport, cabinetID, vendorCode, maxVendorSearchPages)
+func (reader *CatalogReader) readNormalVendorCodeCount(ctx context.Context, sellerID SellerID, vendorCode string) ([]contentapi.Card, int, error) {
+	cards, pages, err := wb_catalog.FindByVendorCode(ctx, reader.transport, sellerID, vendorCode, maxVendorSearchPages)
 	if err != nil {
 		return nil, pages, err
 	}
@@ -385,16 +385,16 @@ func (reader *CatalogReader) readNormalVendorCodeCount(ctx context.Context, cabi
 
 func (reader *CatalogReader) readTrashVendorCode(
 	ctx context.Context,
-	cabinetID CabinetID,
+	sellerID SellerID,
 	vendorCode string,
 ) ([]contentapi.TrashCard, error) {
-	cards, _, err := reader.readTrashVendorCodeCount(ctx, cabinetID, vendorCode)
+	cards, _, err := reader.readTrashVendorCodeCount(ctx, sellerID, vendorCode)
 	return cards, err
 }
 
-func (reader *CatalogReader) readTrashVendorCodeCount(ctx context.Context, cabinetID CabinetID, vendorCode string) ([]contentapi.TrashCard, int, error) {
+func (reader *CatalogReader) readTrashVendorCodeCount(ctx context.Context, sellerID SellerID, vendorCode string) ([]contentapi.TrashCard, int, error) {
 	result := make(map[int64]contentapi.TrashCard)
-	pages, err := wb_catalog.WalkTrashCards(ctx, reader.transport, cabinetID, contentapi.TrashCardsListQuery{}, contentapi.TrashCardsListRequest{Settings: contentapi.TrashCardsListSettings{
+	pages, err := wb_catalog.WalkTrashCards(ctx, reader.transport, sellerID, contentapi.TrashCardsListQuery{}, contentapi.TrashCardsListRequest{Settings: contentapi.TrashCardsListSettings{
 		Sort: contentapi.CardsSort{Ascending: true}, Filter: &contentapi.TrashCardsListFilter{TextSearch: vendorCode},
 	}}, maxVendorSearchPages, func(card contentapi.TrashCard) bool {
 		if card.VendorCode == vendorCode {
@@ -446,7 +446,7 @@ func DraftObservation(observation CatalogObservation) (ObservationDraft, error) 
 	}
 	return ObservationDraft{
 		TargetID:    observation.TargetID,
-		CabinetID:   observation.CabinetID,
+		SellerID:    observation.SellerID,
 		Digest:      digestParts("cardpublication-observation:v1", payload),
 		NormalCount: len(observation.Normal),
 		TrashCount:  len(observation.Trash),

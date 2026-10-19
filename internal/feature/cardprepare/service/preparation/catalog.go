@@ -34,7 +34,7 @@ func NewPreparer(transport CatalogTransport, loggers ...*zap.Logger) *Preparer {
 
 func (preparer *Preparer) PrepareTarget(
 	ctx context.Context,
-	cabinetID CabinetID,
+	sellerID SellerID,
 	group SourceGroup,
 ) (prepared Result, err error) {
 	var subjectID int64
@@ -45,7 +45,7 @@ func (preparer *Preparer) PrepareTarget(
 		if err == nil && prepared.Outcome.Code != "" && prepared.Outcome.Code != OutcomePrepared {
 			fields := []zap.Field{
 				zap.String("event", "card_preparation_rejected"),
-				zap.String("cabinet_id", string(cabinetID)),
+				zap.String("seller_id", string(sellerID)),
 				zap.Int64("subject_id", subjectID),
 				zap.String("outcome_code", string(prepared.Outcome.Code)),
 				zap.Int("outcome_item_position", prepared.Outcome.ItemPosition),
@@ -88,9 +88,9 @@ func (preparer *Preparer) PrepareTarget(
 	if ctx == nil {
 		return Result{}, errors.New("prepare target: context is nil")
 	}
-	if strings.TrimSpace(string(cabinetID)) != string(cabinetID) ||
-		cabinetID == "" {
-		return Result{}, errors.New("prepare target: cabinet ID is invalid")
+	if strings.TrimSpace(string(sellerID)) != string(sellerID) ||
+		sellerID == "" {
+		return Result{}, errors.New("prepare target: seller ID is invalid")
 	}
 
 	normalizedGroup, err := normalizeSourceGroup(group)
@@ -101,7 +101,7 @@ func (preparer *Preparer) PrepareTarget(
 		return *localResult, nil
 	}
 
-	limitsResponse, err := preparer.transport.CardsLimits(ctx, cabinetID)
+	limitsResponse, err := preparer.transport.CardsLimits(ctx, sellerID)
 	if err != nil {
 		return Result{}, fmt.Errorf("read WB Cards Limits: %w", err)
 	}
@@ -118,7 +118,7 @@ func (preparer *Preparer) PrepareTarget(
 
 	subjects, subjectsResult, err := preparer.readSubjects(
 		ctx,
-		cabinetID,
+		sellerID,
 		normalizedGroup.Items[0].Card.Category,
 	)
 	if err != nil {
@@ -135,7 +135,7 @@ func (preparer *Preparer) PrepareTarget(
 
 	characteristicsResponse, err := preparer.transport.SubjectCharacteristics(
 		ctx,
-		cabinetID,
+		sellerID,
 		subject.SubjectID,
 		contentapi.SubjectCharacteristicsQuery{Locale: contentapi.LocaleRU},
 	)
@@ -154,7 +154,7 @@ func (preparer *Preparer) PrepareTarget(
 		var brandsResult *Result
 		brands, brandsResult, err = preparer.readBrands(
 			ctx,
-			cabinetID,
+			sellerID,
 			subject.SubjectID,
 		)
 		if err != nil {
@@ -167,7 +167,7 @@ func (preparer *Preparer) PrepareTarget(
 
 	directories, directoriesResult, err := preparer.readUsedDirectories(
 		ctx,
-		cabinetID,
+		sellerID,
 		subject.SubjectID,
 		normalizedGroup,
 		characteristicsResponse.Data,
@@ -211,7 +211,7 @@ func validateLocalGroupCategory(group SourceGroup) *Result {
 
 func (preparer *Preparer) readSubjects(
 	ctx context.Context,
-	cabinetID CabinetID,
+	sellerID SellerID,
 	category string,
 ) ([]contentapi.Subject, *Result, error) {
 	result := make([]contentapi.Subject, 0)
@@ -219,7 +219,7 @@ func (preparer *Preparer) readSubjects(
 	for page := 0; page < maxCatalogPages; page++ {
 		response, err := preparer.transport.Subjects(
 			ctx,
-			cabinetID,
+			sellerID,
 			contentapi.SubjectsQuery{
 				Locale: contentapi.LocaleRU,
 				Name:   category,
@@ -248,7 +248,7 @@ func (preparer *Preparer) readSubjects(
 
 func (preparer *Preparer) readBrands(
 	ctx context.Context,
-	cabinetID CabinetID,
+	sellerID SellerID,
 	subjectID int64,
 ) ([]contentapi.Brand, *Result, error) {
 	result := make([]contentapi.Brand, 0)
@@ -257,7 +257,7 @@ func (preparer *Preparer) readBrands(
 	for page := 0; page < maxCatalogPages; page++ {
 		response, err := preparer.transport.Brands(
 			ctx,
-			cabinetID,
+			sellerID,
 			contentapi.BrandsQuery{SubjectID: subjectID, Next: next},
 		)
 		if err != nil {
@@ -299,7 +299,7 @@ const (
 
 func (preparer *Preparer) readUsedDirectories(
 	ctx context.Context,
-	cabinetID CabinetID,
+	sellerID SellerID,
 	subjectID int64,
 	group SourceGroup,
 	characteristics []contentapi.SubjectCharacteristic,
@@ -309,7 +309,7 @@ func (preparer *Preparer) readUsedDirectories(
 	query := contentapi.DirectoryQuery{Locale: contentapi.LocaleRU}
 
 	if used[directoryColors] {
-		response, err := preparer.transport.Colors(ctx, cabinetID, query)
+		response, err := preparer.transport.Colors(ctx, sellerID, query)
 		if err != nil {
 			return result, nil, fmt.Errorf("read WB colors directory: %w", err)
 		}
@@ -325,7 +325,7 @@ func (preparer *Preparer) readUsedDirectories(
 		}
 	}
 	if used[directoryKinds] {
-		response, err := preparer.transport.Kinds(ctx, cabinetID, query)
+		response, err := preparer.transport.Kinds(ctx, sellerID, query)
 		if err != nil {
 			return result, nil, fmt.Errorf("read WB kinds directory: %w", err)
 		}
@@ -338,7 +338,7 @@ func (preparer *Preparer) readUsedDirectories(
 		result.Kinds = append([]string(nil), response.Data...)
 	}
 	if used[directoryCountries] {
-		response, err := preparer.transport.Countries(ctx, cabinetID, query)
+		response, err := preparer.transport.Countries(ctx, sellerID, query)
 		if err != nil {
 			return result, nil, fmt.Errorf("read WB countries directory: %w", err)
 		}
@@ -357,7 +357,7 @@ func (preparer *Preparer) readUsedDirectories(
 		}
 	}
 	if used[directorySeasons] {
-		response, err := preparer.transport.Seasons(ctx, cabinetID, query)
+		response, err := preparer.transport.Seasons(ctx, sellerID, query)
 		if err != nil {
 			return result, nil, fmt.Errorf("read WB seasons directory: %w", err)
 		}
@@ -370,7 +370,7 @@ func (preparer *Preparer) readUsedDirectories(
 		result.Seasons = append([]string(nil), response.Data...)
 	}
 	if used[directoryVAT] {
-		response, err := preparer.transport.VAT(ctx, cabinetID, query)
+		response, err := preparer.transport.VAT(ctx, sellerID, query)
 		if err != nil {
 			return result, nil, fmt.Errorf("read WB VAT directory: %w", err)
 		}
@@ -385,7 +385,7 @@ func (preparer *Preparer) readUsedDirectories(
 	if used[directoryTNVED] {
 		response, err := preparer.transport.TNVED(
 			ctx,
-			cabinetID,
+			sellerID,
 			contentapi.DirectoryTNVEDQuery{
 				SubjectID: subjectID,
 				Locale:    contentapi.LocaleRU,

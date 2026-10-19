@@ -6,7 +6,8 @@ import (
 	"html"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
-	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
+	core_tg_identity "github.com/ERONIS/wb-service/internal/core/transport/telegram/identity"
+	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
 
 	tele "gopkg.in/telebot.v3"
 )
@@ -18,7 +19,7 @@ func (h *UsersTgHandler) mutateUserRole(
 	prefix string,
 	action func(context.Context, int64, int64) (domain.User, error),
 ) error {
-	adminTelegramID, err := core_transport_telegram.SenderID(ctx)
+	adminTelegramID, err := core_tg_identity.SenderID(ctx)
 	if err != nil {
 		return sendServiceError(ctx, err)
 	}
@@ -49,7 +50,7 @@ func (h *UsersTgHandler) deleteUser(
 	targetTelegramID int64,
 	opts ...interface{},
 ) error {
-	adminTelegramID, err := core_transport_telegram.SenderID(ctx)
+	adminTelegramID, err := core_tg_identity.SenderID(ctx)
 	if err != nil {
 		return sendServiceError(ctx, err)
 	}
@@ -71,7 +72,7 @@ func (h *UsersTgHandler) confirmDeleteUser(
 	targetTelegramID int64,
 	page int,
 ) error {
-	adminTelegramID, err := core_transport_telegram.SenderID(ctx)
+	adminTelegramID, err := core_tg_identity.SenderID(ctx)
 	if err != nil {
 		return sendServiceError(ctx, err)
 	}
@@ -85,7 +86,7 @@ func (h *UsersTgHandler) confirmDeleteUser(
 	}
 
 	if user.IsAdmin() {
-		return core_transport_telegram.Notify(ctx, "users.admin_delete_forbidden", "⛔ Администраторов удалять нельзя.")
+		return core_tg_menu.Notify(ctx, "users.admin_delete_forbidden", "⛔ Администраторов удалять нельзя.")
 	}
 
 	return ctx.EditOrSend(

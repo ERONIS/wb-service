@@ -30,11 +30,10 @@ type Purpose string
 
 const (
 	PurposeTransfer Purpose = "transfer"
-	PurposeEdit     Purpose = "edit"
 )
 
 func (purpose Purpose) IsValid() bool {
-	return purpose == PurposeTransfer || purpose == PurposeEdit
+	return purpose == PurposeTransfer
 }
 
 type AuthorSnapshot struct {

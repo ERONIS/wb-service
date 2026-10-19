@@ -5,7 +5,8 @@ import (
 	"time"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
-	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
+	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
+	core_tg_state "github.com/ERONIS/wb-service/internal/core/transport/telegram/state"
 	wbcabinet_service "github.com/ERONIS/wb-service/internal/feature/wbcabinet/service"
 
 	tele "gopkg.in/telebot.v3"
@@ -33,7 +34,7 @@ var (
 type CabinetService interface {
 	Add(context.Context, wbcabinet_service.AddCommand) (wbcabinet_service.Cabinet, error)
 	ListByOwner(context.Context, int64) ([]wbcabinet_service.Cabinet, error)
-	Delete(context.Context, int64, wbcabinet_service.CabinetID) error
+	Delete(context.Context, int64, wbcabinet_service.SellerID) error
 }
 
 type ProfileProvider interface {
@@ -44,8 +45,8 @@ type Handler struct {
 	ctx       context.Context
 	service   CabinetService
 	profiles  ProfileProvider
-	textFlows *core_transport_telegram.Handler
-	pending   *core_transport_telegram.StateStore[pendingAdd]
+	textFlows *core_tg_menu.Handler
+	pending   *core_tg_state.StateStore[pendingAdd]
 }
 
 type addStep uint8
@@ -62,12 +63,12 @@ func New(ctx context.Context, service CabinetService) *Handler {
 	return &Handler{
 		ctx:     ctx,
 		service: service,
-		pending: core_transport_telegram.NewStateStore[pendingAdd](),
+		pending: core_tg_state.NewStateStore[pendingAdd](),
 	}
 }
 
 func (handler *Handler) Register(
-	menu *core_transport_telegram.Handler,
+	menu *core_tg_menu.Handler,
 	profiles ProfileProvider,
 ) {
 	if menu == nil || profiles == nil {

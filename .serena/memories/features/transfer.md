@@ -24,16 +24,19 @@ The central State Machine and pipeline coordinator of `wb-service`. It tracks th
   - Prevents combinatorial explosion (`Items * Targets = ItemTargets`, `Groups * Targets = GroupTargets`).
   - Strict integer overflow checking (`checkedMultiply`) before allocating records in DB.
 - **TargetSetRoot (`model/root.go`)**:
-  - Cryptographic canonical SHA-256 (`"transfer-target-set:v2"`) over sorted target cabinet IDs, seller keys, revisions, credential expiration timestamps, and content capabilities.
+  - Cryptographic canonical SHA-256 (`"transfer-target-set:v4"`) over sorted raw seller IDs, revisions, credential expiration timestamps, and content capabilities.
   - Invariant: Prevents silent target mutation or permission drift mid-transfer.
 
+## Publication Authorization
+- Live target authorization requires the cabinet owner to be a partner or administrator.
+
 ## Shared Identity Contract
-- TargetCredential aliases core `domain.CabinetAccess`; cabinet and transfer adapters share it without field-by-field mapping. Transfer registry owns cohort selection (partner/admin fan-out), snapshot hashing and MutationTarget position. Its transport only reads credentials by owner, role or all cabinets; it contains no role-selection policy. The unused in-memory snapshot override was removed; snapshots always use current credentials. Hash encoding is unchanged and does not include display names.
+- TargetCredential aliases core `domain.CabinetAccess`; cabinet and transfer adapters share it without field-by-field mapping. Transfer registry owns cohort selection (partner/admin fan-out), snapshot hashing and MutationTarget position. Its transport only reads credentials by owner, role or all cabinets; it contains no role-selection policy. The unused in-memory snapshot override was removed; snapshots always use current credentials. The target root and snapshot revision use version `v4`, hash each `SellerID` once and do not include display names.
 
 ## Subsystems, Functions & Contracts
 1. **Workflow Service (`service/workflow/service.go`)**:
    - `Start(ctx, batchID) (TransferID, error)`: Initiates fanout transfer across default cohort.
-   - `StartToCabinet(ctx, batchID, cabinetID) (TransferID, error)`: Initiates directed transfer to single target cabinet.
+   - `StartToCabinet(ctx, batchID, sellerID) (TransferID, error)`: Initiates directed transfer to single target cabinet.
    - `Initialize(ctx, transferID) error`: Transitions transfer from `PhaseInitializing` -> `PhasePreparing`. Seeds `transfer_items`, `transfer_group_targets`, and `transfer_item_targets`.
    - **High-Performance Seeding**: Repository pre-allocates PostgreSQL sequences in bulk through `core/repository/postgres/sequence.ReserveIDs` and its transfer-specific `reserveIDs` wrapper and streams thousands of rows via `pgx.CopyFrom`.
 2. **Polling Engine (`server/polling.go`)**:
@@ -62,7 +65,7 @@ The central State Machine and pipeline coordinator of `wb-service`. It tracks th
 
 ## Database Schema (`wb` namespace)
 - `wb.transfers`: Master transfer record (source batch ID, current phase, outcome, owner).
-- `wb.transfer_targets`: Target cabinets attached to transfer.
+- `wb.transfer_targets`: Target cabinets attached to transfer, identified by a single `seller_id` column plus a separate `client_generation` snapshot.
 - `wb.transfer_items`: Items attached to transfer.
 - `wb.transfer_group_targets`: Group-level target progress tracking with foreign key to `wb.publication_plans` (migration 000016).
 - `wb.transfer_item_targets`: Granular item-level projections per target cabinet.

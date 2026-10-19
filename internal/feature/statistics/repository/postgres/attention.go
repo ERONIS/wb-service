@@ -25,7 +25,7 @@ func (repository *Repository) ListAttention(
 	query := `
 		SELECT
 			item.transfer_id, item.item_target_id, item.group_target_id,
-			item.cabinet_id, item.vendor_code, item.outcome_class, item.outcome_code,
+			item.seller_id, item.vendor_code, item.outcome_class, item.outcome_code,
 			action.id, member.id, action.revision, action.kind,
 			COALESCE(attempt.id, 0),
 			COALESCE(observation.id, 0),
@@ -76,7 +76,7 @@ func (repository *Repository) ListAttention(
 		var item statistics_service.AttentionRow
 		if err := rows.Scan(
 			&item.TransferID, &item.ItemTargetID, &item.GroupTargetID,
-			&item.CabinetID, &item.VendorCode, &item.OutcomeClass,
+			&item.SellerID, &item.VendorCode, &item.OutcomeClass,
 			&item.OutcomeCode, &item.ActionID, &item.ActionMemberID,
 			&item.ActionRevision, &item.ActionKind, &item.AttemptID,
 			&item.ObservationEvidenceID, &item.ErrorBatchEvidenceID,

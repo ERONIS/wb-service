@@ -34,7 +34,7 @@ func (repository *Repository) LockProductAction(
 			action.request_digest,
 			action.request_payload,
 			action.member_set_digest,
-			target.seller_key,
+			target.seller_id,
 			target.client_generation,
 			target.credential_expires_at,
 			(
@@ -83,7 +83,7 @@ func (repository *Repository) LockProductAction(
 		WHERE action.transfer_id = $1
 			AND action.id = $2
 			AND action.target_id = $3
-			AND target.cabinet_id = $4
+			AND target.seller_id = $4
 			AND plan.plan_digest = $6
 			AND plan.target_set_root = $7
 		FOR UPDATE OF action, plan;
@@ -91,7 +91,8 @@ func (repository *Repository) LockProductAction(
 	action := cardpublication_service.ProductAction{ProductActionCandidate: candidate}
 	var (
 		requestDigest, memberDigest  []byte
-		sellerKey, generation        []byte
+		generation                   []byte
+		sellerID                     cardpublication_service.SellerID
 		preflightID                  pgtype.Int8
 		attemptID, recheckID         pgtype.Int8
 		attemptStartedAt             pgtype.Timestamptz
@@ -116,7 +117,7 @@ func (repository *Repository) LockProductAction(
 		candidate.TransferID,
 		candidate.ActionID,
 		candidate.TargetID,
-		candidate.CabinetID,
+		candidate.SellerID,
 		candidate.AuthorizationID,
 		candidate.PlanDigest[:],
 		candidate.TargetSetRoot[:],
@@ -128,7 +129,7 @@ func (repository *Repository) LockProductAction(
 		&requestDigest,
 		&action.RequestPayload,
 		&memberDigest,
-		&sellerKey,
+		&sellerID,
 		&generation,
 		&action.CredentialExpiresAt,
 		&preflightID,
@@ -162,13 +163,13 @@ func (repository *Repository) LockProductAction(
 	}
 	if len(requestDigest) != len(action.RequestDigest) ||
 		len(memberDigest) != len(action.MemberSetDigest) ||
-		len(sellerKey) != len(action.SellerKey) ||
+		sellerID.Validate() != nil ||
 		len(generation) != len(action.ClientGeneration) || !preflightID.Valid {
 		return cardpublication_service.ProductAction{}, cardpublication_service.ErrProductActionConflict
 	}
 	copy(action.RequestDigest[:], requestDigest)
 	copy(action.MemberSetDigest[:], memberDigest)
-	copy(action.SellerKey[:], sellerKey)
+	action.SellerID = sellerID
 	copy(action.ClientGeneration[:], generation)
 	action.PreflightObservationID = preflightID.Int64
 	action.AuthorizationRevision = currentAuthorizationRevision
@@ -303,12 +304,12 @@ func lockProductIdentities(
 	const query = `
 		SELECT vendor_code_key
 		FROM wb.product_identities
-		WHERE cabinet_id = $1
+		WHERE seller_id = $1
 			AND vendor_code_key = ANY($2::text[])
 		ORDER BY vendor_code_key
 		FOR UPDATE;
 	`
-	rows, err := tx.Query(ctx, query, action.CabinetID, action.VendorCodes())
+	rows, err := tx.Query(ctx, query, action.SellerID, action.VendorCodes())
 	if err != nil {
 		return fmt.Errorf("lock publication product identities: %w", err)
 	}

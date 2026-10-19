@@ -18,7 +18,7 @@ type TargetRegistry interface {
 	MutationSnapshotForOwner(
 		context.Context,
 		int64,
-		[]CabinetID,
+		[]SellerID,
 	) (MutationTargetSnapshot, error)
 	AllTargets(context.Context) ([]MutationTarget, error)
 }

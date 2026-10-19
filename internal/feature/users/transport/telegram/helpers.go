@@ -2,9 +2,12 @@ package users_transport_tg
 
 import (
 	"fmt"
+	core_tg_identity "github.com/ERONIS/wb-service/internal/core/transport/telegram/identity"
 	"strconv"
 
-	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
+	core_tg_callback "github.com/ERONIS/wb-service/internal/core/transport/telegram/callback"
+	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
+	core_tg_presenter "github.com/ERONIS/wb-service/internal/core/transport/telegram/presenter"
 
 	tele "gopkg.in/telebot.v3"
 )
@@ -19,7 +22,7 @@ func withUserPayload(next userCallbackHandler) tele.HandlerFunc {
 	return func(ctx tele.Context) error {
 		telegramID, page, err := parseUserCallbackPayload(ctx.Args())
 		if err != nil {
-			return core_transport_telegram.Notify(
+			return core_tg_menu.Notify(
 				ctx,
 				"users.invalid_callback",
 				"Не удалось определить выбранного пользователя.",
@@ -40,12 +43,12 @@ func parseUserCallbackPayload(
 		)
 	}
 
-	telegramID, err = core_transport_telegram.ParseTelegramID(arguments[0])
+	telegramID, err = core_tg_identity.ParseTelegramID(arguments[0])
 	if err != nil {
 		return 0, 0, err
 	}
 
-	page, err = core_transport_telegram.ParsePageNumber(arguments[1])
+	page, err = core_tg_callback.ParsePageNumber(arguments[1])
 	if err != nil {
 		return 0, 0, fmt.Errorf("parse users page: %w", err)
 	}
@@ -77,9 +80,9 @@ func usersNavigationRows(
 }
 
 func mainMenuRow(markup *tele.ReplyMarkup) tele.Row {
-	return markup.Row(core_transport_telegram.MainMenuButton())
+	return markup.Row(core_tg_menu.MainMenuButton())
 }
 
 func sendServiceError(ctx tele.Context, err error) error {
-	return core_transport_telegram.NotifyServiceError(ctx, err)
+	return core_tg_presenter.NotifyServiceError(ctx, err)
 }

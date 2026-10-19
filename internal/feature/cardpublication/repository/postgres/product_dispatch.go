@@ -26,14 +26,14 @@ func (repository *Repository) ListDispatchableProductActions(
 			action.transfer_id AS transfer_id,
 			action.id AS action_id,
 			action.target_id AS target_id,
-			target.cabinet_id AS cabinet_id,
+			target.seller_id AS seller_id,
 			live_auth.id AS authorization_id,
 			live_auth.revision AS authorization_revision,
 			plan.plan_digest,
 			plan.target_set_root,
 			target.position AS target_position,
 			ROW_NUMBER() OVER (
-				PARTITION BY target.cabinet_id
+				PARTITION BY target.seller_id
 				ORDER BY transfer.id, action.id
 			) AS cabinet_rank,
 			ARRAY(
@@ -76,14 +76,14 @@ func (repository *Repository) ListDispatchableProductActions(
 			transfer_id,
 			action_id,
 			target_id,
-			cabinet_id,
+			seller_id,
 			authorization_id,
 			authorization_revision,
 			plan_digest,
 			target_set_root,
 			catalog_vendor_codes
 		FROM dispatchable
-		ORDER BY cabinet_rank, target_position, cabinet_id, action_id
+		ORDER BY cabinet_rank, target_position, seller_id, action_id
 		LIMIT $1;
 	`
 	rows, err := repository.pool.Query(ctx, query, limit)
@@ -120,7 +120,7 @@ func (repository *Repository) ListInterruptedProductActions(
 			action.transfer_id,
 			action.id,
 			action.target_id,
-			target.cabinet_id,
+			target.seller_id,
 			live_auth.id,
 			live_auth.revision,
 			plan.plan_digest,
@@ -176,7 +176,7 @@ func scanProductActionCandidate(row interface{ Scan(...any) error }) (
 		&transferID,
 		&candidate.ActionID,
 		&candidate.TargetID,
-		&candidate.CabinetID,
+		&candidate.SellerID,
 		&authorizationID,
 		&candidate.AuthorizationRevision,
 		&planDigest,
@@ -208,7 +208,7 @@ func scanCatalogProductActionCandidate(row interface{ Scan(...any) error }) (
 		&transferID,
 		&candidate.ActionID,
 		&candidate.TargetID,
-		&candidate.CabinetID,
+		&candidate.SellerID,
 		&authorizationID,
 		&candidate.AuthorizationRevision,
 		&planDigest,

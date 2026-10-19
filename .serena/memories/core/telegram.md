@@ -1,23 +1,25 @@
-# Telegram Transport Engine (`internal/core/transport/telegram`)
+# Telegram Transport (`internal/core/transport/telegram`)
 
-## Core Components
-- Powered by `gopkg.in/telebot.v3`.
-- `server/server.go`: Bot lifecycle management, webhook/long-polling executor, graceful shutdown.
-- `menu_manager.go`: Screen renderer, inline keyboards, message update vs send decision logic.
-- `state_store.go`: State machine management for multi-step interactive flows (`StateStore[T]`). Standardized across all interactive modules (`wbcabinet`, `users`, `cardedit`).
-- `pagination.go`: Unified inline keyboard pagination (`BuildPaginationRow`, `CalculateTotalPages`, `PaginationConfig`).
-- `ui_helpers.go`: Shared UI components including progress bar (`FormatProgressBar`), percentage (`CalcPercent`), and datetime formatters (`FormatDateTime`, `FormatDateTimeUTC`).
-- `helpers.go`: Callback argument packing/unpacking with Base-36 ID encoding (`EncodeID`, `ParseID`, `ParseBase36Argument`), ID+Revision parser (`ParseIDAndRevision`), and page parser (`ParsePageNumber`), eliminating duplicated parsing boilerplate across feature modules.
-- `error_presenter.go`: Translates domain and system errors into user-friendly localized messages (`NotifyServiceError`).
+## Package Boundaries
+- No root package or forwarding facade. Composition root and feature Telegram adapters import the narrow packages they use.
+- `menu`: bot `Handler`, command/callback registration, text/document flow ownership, main menu, active-screen persistence, reply keyboard, notifications, and managed `tele.Context`. Its `MenuStore` contract is implemented by the PostgreSQL Telegram view repository.
+- `callback`: callback argument and page parsing, compact Base-36 ID encoding.
+- `identity`: `ParseTelegramID`, `SenderID`, and `UserFromContext`; constructs `domain.User` with a validated fallback name.
+- `state`: generic `StateStore[T]`, `StateLease[T]`, and claim outcomes for interactive feature flows.
+- `ui`: pagination, progress/percentage, datetime formatting, and rune-safe display truncation.
+- `presenter`: localized error matching and `NotifyServiceError`; depends on `menu.Notify` for delivery.
+- `middleware`: role access and structured Telegram event logging. `server`: webhook/long-polling lifecycle.
+- Dependency direction: feature Telegram adapters -> narrow core packages; `presenter` -> `menu`; `identity` -> `ui`; `menu` -> `middleware`; no core Telegram package imports a feature.
 
-## Middlewares
-- `RoleMiddleware`: Restricts handlers according to `wb.users` roles (`admin`, `manager`, `partner`).
-- `CallbackMiddleware`: Prevents duplicate callback executions and ensures prompt callback answering.
-- `LoggerMiddleware`: Emits structured request/response trace logs for Telegram events.
+## Menu Ownership and Persistence
+- `menu/handler.go` registers commands/callbacks; `menu/flow.go` owns interactive input routing; `menu/host.go` owns chat state and middleware; `menu/render.go` owns active-screen rendering and the 1500 ms update interval; `menu/keyboard.go` owns persistent reply keyboard delivery; `menu/notification.go` owns temporary notifications and duplicate suppression; `menu/context.go` wraps `tele.Context`; `menu/text.go` enforces Telegram's 4096 UTF-16-unit text limit.
+- Active user screens persist through `MenuStore` to `wb.telegram_active_screens`. Rendering edits the active message when possible and falls back to sending a new one; this preserves the single active screen behavior across restarts.
+- `menu.Register` wires role access, menu middleware, the main menu, and input fallback. Feature modules attach their buttons and flows through `*menu.Handler`.
+- State lease IDs prevent an old flow from finishing a replacement flow; retry refreshes the lease expiry. Menu text limiting counts UTF-16 units, strips markup when truncating, then escapes the truncated text and appends the marker.
 
-## Screen Persistence Invariant
-- Active user screen state is persisted to database table `wb.telegram_active_screens`.
-- Survives service restarts; users resume on their last active screen without orphaned inline keyboards.
+## Callback and Error Contracts
+- Base-36 callback IDs protect Telegram's 64-byte callback-data limit.
+- `presenter.NotifyServiceError` matches feature-specific cases before common core errors, then a standard fallback.
 
 ## Related Memories
 - Overall architecture: `mem:architecture/overview`

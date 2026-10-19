@@ -7,7 +7,7 @@ import (
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
+	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
 	wbcabinet_postgres_repository "github.com/ERONIS/wb-service/internal/feature/wbcabinet/repository/postgres"
 	wbcabinet_service "github.com/ERONIS/wb-service/internal/feature/wbcabinet/service"
 	wbcabinet_telegram_transport "github.com/ERONIS/wb-service/internal/feature/wbcabinet/transport/telegram"
@@ -56,7 +56,7 @@ type ProfileProvider interface {
 }
 
 func (feature *Feature) RegisterTelegram(
-	menu *core_transport_telegram.Handler,
+	menu *core_tg_menu.Handler,
 	profiles ProfileProvider,
 ) {
 	feature.telegram.Register(menu, profiles)

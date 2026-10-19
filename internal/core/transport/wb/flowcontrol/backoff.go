@@ -7,16 +7,19 @@ import (
 	"time"
 )
 
+// DefaultRetryBaseDelay задаёт начальную задержку между повторными запросами.
+const DefaultRetryBaseDelay = 500 * time.Millisecond
+
 var errBackoffContextRequired = errors.New(
 	"backoff context is required",
 )
 
-// Backoff управляет задержкой между повторными read-запросами.
+// Backoff управляет задержкой между повторными запросами чтения.
 type Backoff struct {
 	baseDelay time.Duration
 }
 
-// NewBackoff создаёт backoff с начальной задержкой.
+// NewBackoff создаёт механизм с начальной задержкой между повторами.
 func NewBackoff(
 	baseDelay time.Duration,
 ) (Backoff, error) {

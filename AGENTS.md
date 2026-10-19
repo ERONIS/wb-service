@@ -22,4 +22,4 @@
 ## Code Quality & Language Standards
 
 - **Code Comments Exclusively in Russian**: All source code comments, docstrings, godoc comments, and inline code explanations MUST be written strictly in Russian. English or non-Russian comments in source code are forbidden.
-
+- **Go Declaration Order**: Place package-level constants, variables, aliases, types, structs, and interfaces before every function and method in each Go source file.

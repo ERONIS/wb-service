@@ -5,7 +5,8 @@ import (
 	"html"
 	"strings"
 
-	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
+	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
+	core_tg_ui "github.com/ERONIS/wb-service/internal/core/transport/telegram/ui"
 	statistics_service "github.com/ERONIS/wb-service/internal/feature/statistics/service"
 
 	tele "gopkg.in/telebot.v3"
@@ -52,8 +53,8 @@ func formatTaskSummary(summary taskSummary) string {
 		totalLine = fmt.Sprintf(
 			"Всего: <b>%d</b> · %s %d%%",
 			summary.Total,
-			core_transport_telegram.FormatProgressBar(summary.Terminal, summary.Total, 10),
-			core_transport_telegram.CalcPercent(summary.Terminal, summary.Total),
+			core_tg_ui.FormatProgressBar(summary.Terminal, summary.Total, 10),
+			core_tg_ui.CalcPercent(summary.Terminal, summary.Total),
 		)
 	}
 	return fmt.Sprintf(
@@ -71,10 +72,10 @@ func formatTaskSummary(summary taskSummary) string {
 	)
 }
 
-func (handler *Handler) cabinetName(cabinetID string) string {
-	name := strings.TrimSpace(handler.cabinetNames[cabinetID])
+func (handler *Handler) cabinetName(sellerID string) string {
+	name := strings.TrimSpace(handler.cabinetNames[sellerID])
 	if name == "" {
-		name = strings.TrimSpace(cabinetID)
+		name = strings.TrimSpace(sellerID)
 	}
 	if name == "" {
 		return "Кабинет"
@@ -97,11 +98,11 @@ func (handler *Handler) cabinetButtonText(cabinet statistics_service.CabinetProg
 	return fmt.Sprintf(
 		"%s %s · %d%%",
 		icon,
-		core_transport_telegram.TruncateRunes(
-			strings.TrimSpace(handler.cabinetName(cabinet.CabinetID)),
+		core_tg_ui.TruncateRunes(
+			strings.TrimSpace(handler.cabinetName(cabinet.SellerID)),
 			40,
 		),
-		core_transport_telegram.CalcPercent(cabinet.Terminal, cabinet.Total),
+		core_tg_ui.CalcPercent(cabinet.Terminal, cabinet.Total),
 	)
 }
 
@@ -154,7 +155,7 @@ func (handler *Handler) openCabinetTasks(ctx tele.Context) error {
 	}
 
 	operation := details.Operation
-	name := handler.cabinetName(cabinet.CabinetID)
+	name := handler.cabinetName(cabinet.SellerID)
 	text := fmt.Sprintf(
 		"🏬 <b>%s</b>\n"+
 			"📊 Сеанс №%d\n\n"+
@@ -180,7 +181,7 @@ func (handler *Handler) openCabinetTasks(ctx tele.Context) error {
 
 	markup := handler.bot.NewMarkup()
 	rows := make([]tele.Row, 0, 5)
-	if navRow, ok := core_transport_telegram.BuildPaginationRow(markup, core_transport_telegram.PaginationConfig{
+	if navRow, ok := core_tg_ui.BuildPaginationRow(markup, core_tg_ui.PaginationConfig{
 		Page:           int(page),
 		TotalPages:     int(totalPages),
 		CallbackUnique: buttonCabinetTasks.Unique,
@@ -200,7 +201,7 @@ func (handler *Handler) openCabinetTasks(ctx tele.Context) error {
 		callbackInt(transferID),
 	)))
 	rows = append(rows, markup.Row(buttonStatistics))
-	rows = append(rows, markup.Row(core_transport_telegram.MainMenuButton()))
+	rows = append(rows, markup.Row(core_tg_menu.MainMenuButton()))
 	markup.Inline(rows...)
 	return ctx.EditOrSend(text, markup)
 }
@@ -235,7 +236,7 @@ var phaseLabels = map[string]string{
 }
 
 func cabinetTaskPages(total int64) int64 {
-	return core_transport_telegram.CalculateTotalPages(total, int64(statistics_service.CabinetPageSize))
+	return core_tg_ui.CalculateTotalPages(total, int64(statistics_service.CabinetPageSize))
 }
 
 func cabinetTaskStatus(task statistics_service.CabinetTaskRow, phase string) string {
@@ -320,5 +321,5 @@ func escapeLimited(value string, limit int) string {
 	if value == "" {
 		return "—"
 	}
-	return html.EscapeString(core_transport_telegram.TruncateRunes(value, limit))
+	return html.EscapeString(core_tg_ui.TruncateRunes(value, limit))
 }

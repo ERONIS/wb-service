@@ -2,16 +2,15 @@ package client
 
 import (
 	"fmt"
-	"net/http"
-	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	policy "github.com/ERONIS/wb-service/internal/core/transport/wb/policy"
-	transport "github.com/ERONIS/wb-service/internal/core/transport/wb/transport"
 	"go.uber.org/zap"
 )
+
+const slowLimiterWaitLogThreshold = time.Second
 
 var requestTraceSequence atomic.Uint64
 
@@ -21,7 +20,7 @@ type attemptSummary struct {
 
 type requestTrace struct {
 	requestID       string
-	cabinetID       domain.CabinetID
+	sellerID        domain.SellerID
 	cabinetName     string
 	operation       policy.OperationID
 	method          string
@@ -40,11 +39,6 @@ type requestTrace struct {
 	attemptCount    int
 	dispatchCount   int
 	attempts        []attemptSummary
-}
-
-type attemptRecorder struct {
-	mutex  sync.Mutex
-	result transport.AttemptResult
 }
 
 func newRequestTrace(
@@ -72,7 +66,7 @@ func newRequestTrace(
 		),
 	}
 	if client != nil {
-		trace.cabinetID = client.cabinetID
+		trace.sellerID = client.sellerID
 		trace.cabinetName = client.cabinetName
 	}
 
@@ -87,47 +81,22 @@ func newRequestID(startedAt time.Time) string {
 	)
 }
 
-func (recorder *attemptRecorder) RecordAttempt(
-	result transport.AttemptResult,
-) {
-	if recorder == nil {
-		return
-	}
-
-	recorder.mutex.Lock()
-	recorder.result = result
-	recorder.mutex.Unlock()
-}
-
-func (recorder *attemptRecorder) snapshot(
-	response *http.Response,
-) transport.AttemptResult {
-	recorder.mutex.Lock()
-	defer recorder.mutex.Unlock()
-
-	result := recorder.result
-	if response != nil {
-		result.StatusCode = response.StatusCode
-	}
-
-	return result
-}
-
 func (trace *requestTrace) recordAttempt(
-	result transport.AttemptResult,
+	statusCode int,
+	dispatchCount int,
 ) {
 	if trace == nil {
 		return
 	}
 
 	trace.attemptCount++
-	trace.dispatchCount += result.DispatchCount
+	trace.dispatchCount += dispatchCount
 	if len(trace.attempts) >= trace.maxAttempts {
 		return
 	}
 
 	trace.attempts = append(trace.attempts, attemptSummary{
-		statusCode: result.StatusCode,
+		statusCode: statusCode,
 	})
 }
 
@@ -169,8 +138,6 @@ func (trace *requestTrace) complete(
 	trace.err = executeErr
 }
 
-const slowLimiterWaitLogThreshold = time.Second
-
 func (trace *requestTrace) log(logger *zap.Logger) {
 	if trace == nil || logger == nil {
 		return
@@ -179,7 +146,7 @@ func (trace *requestTrace) log(logger *zap.Logger) {
 	fields := []zap.Field{
 		zap.String("event", "wb_request_completed"),
 		zap.String("request_id", trace.requestID),
-		zap.String("cabinet_id", string(trace.cabinetID)),
+		zap.String("seller_id", string(trace.sellerID)),
 		zap.String("cabinet_name", trace.cabinetName),
 		zap.String("operation", trace.operation.String()),
 		zap.String("method", trace.method),
@@ -236,5 +203,3 @@ func clientLogger(client *APIClient) *zap.Logger {
 
 	return client.logger
 }
-
-var _ transport.AttemptRecorder = (*attemptRecorder)(nil)

@@ -177,7 +177,7 @@ func (repository *Repository) ListPendingPreparationGroups(
 	defer cancel()
 
 	const query = `
-        SELECT group_target.id, group_target.source_group_id, group_target.target_id, target.cabinet_id
+        SELECT group_target.id, group_target.source_group_id, group_target.target_id, target.seller_id
         FROM wb.transfer_group_targets AS group_target
         JOIN wb.transfer_targets AS target
           ON target.transfer_id = group_target.transfer_id AND target.id = group_target.target_id
@@ -201,7 +201,7 @@ func (repository *Repository) ListPendingPreparationGroups(
 		if err := rows.Scan(&g.GroupTargetID, &g.SourceGroupID, &g.TargetID, &cab); err != nil {
 			return nil, fmt.Errorf("scan pending transfer preparation group: %w", err)
 		}
-		g.CabinetID = transfer_service.CabinetID(cab)
+		g.SellerID = transfer_service.SellerID(cab)
 		if err := g.Validate(); err != nil {
 			return nil, fmt.Errorf("validate pending transfer preparation group: %w", err)
 		}
@@ -225,7 +225,7 @@ func (repository *Repository) LoadPreparationSource(
 		SELECT
 			group_target.source_group_id,
 			group_target.target_id,
-			target.cabinet_id,
+			target.seller_id,
 			item.id,
 			item.position,
 			item.vendor_code,
@@ -266,14 +266,14 @@ func (repository *Repository) LoadPreparationSource(
 		var (
 			sourceGroupID int64
 			targetID      int64
-			cabinetID     string
+			sellerID      string
 			item          transfer_service.PreparationSourceItem
 			payload       []byte
 		)
 		if err := rows.Scan(
 			&sourceGroupID,
 			&targetID,
-			&cabinetID,
+			&sellerID,
 			&item.TransferItemID,
 			&item.Position,
 			&item.VendorCode,
@@ -287,10 +287,10 @@ func (repository *Repository) LoadPreparationSource(
 		if len(source.Items) == 0 {
 			source.SourceGroupID = sourceGroupID
 			source.TargetID = targetID
-			source.CabinetID = transfer_service.CabinetID(cabinetID)
+			source.SellerID = transfer_service.SellerID(sellerID)
 		} else if source.SourceGroupID != sourceGroupID ||
 			source.TargetID != targetID ||
-			source.CabinetID != transfer_service.CabinetID(cabinetID) {
+			source.SellerID != transfer_service.SellerID(sellerID) {
 			return transfer_service.PreparationSource{}, errors.New(
 				"transfer preparation source identity changed within result",
 			)

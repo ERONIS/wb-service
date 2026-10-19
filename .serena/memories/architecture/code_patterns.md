@@ -1,5 +1,8 @@
 # Code Patterns & Implementation Mechanics
 
+## Go Source Layout
+- Package-level constants, variables, aliases, structs, and interfaces precede all functions and methods in each Go source file (`AGENTS.md`).
+
 ## 1. Cryptographic Hashing (`internal/core/canonicalhash`)
 - **Structure**: `canonicalhash.NewSHA256(domain string) *Builder`.
 - **Length-Prefixed Binary Encoding**:
@@ -19,12 +22,13 @@
 ## 3. WB Client Flow Control & Safety Policy (`internal/core/transport/wb`)
 - **Token Bucket Rate Limiter (`flowcontrol/limiter.go`)**:
   - Powered by `golang.org/x/time/rate.Limiter`.
-  - Rate limits partitioned per cabinet and API bucket (Content, Prices).
+  - Rate limits partitioned per cabinet and Content API bucket.
   - Response adaptation: observes `X-Ratelimit-*` headers, clamps available tokens to the reported remaining count, and sets `blockedUntil` on HTTP 429 (using `Retry-After` when present). Configured interval and burst remain fixed.
   - Bounded queue: uses `waiters chan struct{}` to reject callers with `ErrLimiterQueueFull` when backlog overflows.
+- **Operation routing (`policy/operation.go`)**: Each operation carries a validated lowercase WB API subdomain under `wildberries.ru` and a path; malformed labels, external domains, ports, userinfo, and schemes in the host are rejected. Request preparation combines them as HTTPS per call; the credential-bound executor and `Clientset` contain no fixed API URL. API bucket specs are supplied by the composition root at registry construction.
 - **Strict Safe-Retry Policy (`policy/retry.go`)**:
   - Two modes: `RetryModeNever` and `RetryModeReadSafe`.
-  - Core retries require read semantics (`OperationKindRead`) and `RetryModeReadSafe`; this includes POST catalog reads.
+  - Core retries require read semantics (`OperationKindRead`) and `RetryModeReadSafe`; this includes POST catalog reads. `policy.DefaultMaxReadAttempts` fixes three read attempts; `flowcontrol.DefaultRetryBaseDelay` fixes the 500 ms base delay. `APIClient` no longer accepts retry settings from `Clientset`.
   - Mutation operations use `RetryModeNever` inside the core executor. Publication sends link/file mutations once per business attempt; its local retry helper is restricted to downloading external media. Unknown delivery is handled by business reconciliation.
 - **Crash Recovery & Reconciliation**:
   - `ProductDispatcher.ProcessPending` begins by calling `ListInterruptedProductActions` to re-verify actions left in-flight during a service crash before picking up new work.
@@ -46,7 +50,7 @@
 
 ## 5. Dynamic Cabinet Hot-Reload (`internal/feature/wbcabinet`)
 - **Candidate Pattern (`CredentialCandidate`)**:
-  - Unverified tokens are encapsulated in `CredentialCandidate` and cannot be used by feature modules.
+  - Unverified tokens are encapsulated in `CredentialCandidate` and cannot be used by feature modules. `Clientset.Cabinets()` returns copies of activated candidates, so callers of that list can also access each candidate's Content executor.
   - Core credentials parsing is followed by wbcabinet Content `/ping` verification, persistence and `ActivateCandidate`. General API support was removed as unused. Restoration only retries pending generations and does not reverify working clients on every tick.
   - Dynamically updates active `Clientset` in-memory without service restart.
 - **Token storage boundary**: Current wbcabinet repository passes the raw verified token directly to the `wb.api_cabinets.token` TEXT column and reads it back on restoration; application-level AES-GCM encryption is not implemented. Do not assume encryption from earlier architecture notes.
@@ -72,7 +76,7 @@
   - Fast semantic checks without verbose manual type assertions: `IsNotFound(err)`, `IsInvalidArgument(err)`, `IsConflict(err)` (checks conflict & already exists), `IsForbidden(err)`, `IsRateLimited(err)`, `IsUnavailable(err)`, `IsTimeout(err)`, `IsCanceled(err)`.
   - Guard conditions: `Require(condition, err)`, `RequireContext(ctx)`.
 - **Telegram Error Presentation Integration**:
-  - `internal/core/transport/telegram.NotifyServiceError(ctx, err, extraCases...)` auto-matches core errors to Russian localized user notifications, collapsing repetitive switch-case error blocks across features into single-line handlers.
+  - `internal/core/transport/telegram/presenter.NotifyServiceError(ctx, err, extraCases...)` auto-matches core errors to Russian localized user notifications, collapsing repetitive switch-case error blocks across features into single-line handlers.
 
 ## 9. Preparation Pipeline & State Ownership
 - **Transfer Sole State Ownership**: `transfer` owns all state transitions and queue management. `cardprepare` is a calculation/validation engine with no separate database jobs.
@@ -86,20 +90,17 @@
 ## 10. Unified User Identity (Elimination of `Actor`)
 - **Single Source of Truth**: `internal/core/domain/actor.go` is deleted. The domain model `domain.User` (`internal/core/domain/user.go`) serves as the sole identity across the pipeline, ingestion, and transport layers.
 - **Minimal Codebase / Zero Bloat**: No redundant aliases (`TrustedActor`, `TrustedUser`) and no redundant helper methods on `domain.User`. `user.FullName` is used directly.
-- **Entity Lifecycle Factories**: `domain.CreateUser` serves as the in-memory factory (initializing default `RoleUser` with zero ID/timestamps prior to persistence), shared by `core_transport_telegram.UserFromContext` and `users_service.AddUser`. `domain.NewUser` reconstructs fully populated entities from storage rows.
-- **Telegram Context Extraction**: `core_transport_telegram.UserFromContext(ctx tele.Context)` extracts `domain.User` using `domain.CreateUser(telegramID, name)` with a fallback to `fmt.Sprintf("Telegram %d", telegramID)` (max 100 runes), ensuring `user.Validate()` invariants pass without bloated abstractions.
-- **Batch Author Ingestion**: `cardimport` and `cabinetcopy` bind batch lifecycle directly to `domain.User` (`AuthorSnapshot` populated with `user.TelegramID`, `user.FullName`, and optional `user.ID`).
+- **Entity Lifecycle Factories**: `domain.CreateUser` serves as the in-memory factory (initializing default `RoleUser` with zero ID/timestamps prior to persistence), shared by `core_tg_identity.UserFromContext` and `users_service.AddUser`. `domain.NewUser` reconstructs fully populated entities from storage rows.
+- **Telegram Context Extraction**: `core_tg_identity.UserFromContext(ctx tele.Context)` extracts `domain.User` using `domain.CreateUser(telegramID, name)` with a fallback to `fmt.Sprintf("Telegram %d", telegramID)` (max 100 runes), ensuring `user.Validate()` invariants pass without bloated abstractions.
+- **Batch Author Ingestion**: `cardimport` binds batch lifecycle directly to `domain.User` (`AuthorSnapshot` populated with `user.TelegramID`, `user.FullName`, and optional `user.ID`).
 
 ## 11. Canonical WB Identity Primitives (`internal/core/domain/wb_identity.go`)
-- **Minimal Primitives (Zero Bloat)**:
-  - `domain.CabinetID`: direct `string` type with `IsZero()` and a shared `Validate()` accepting nonempty, trimmed IDs up to 128 bytes (legacy non-UUID values remain supported). `domain.CabinetAccess` is the shared token-free access snapshot used by cabinet management and transfer registry; transfer-specific position, cohort and digest remain in transfer. Redundant intermediate alias `config.CabinetID` removed; feature packages import `domain.CabinetID` directly.
-  - `domain.SellerKey`: `[32]byte` canonical hash with `domain.NewSellerKey(sellerID)`, `IsZero()`, and `String()` (hex). Identity hashing stays stable; parsing/validation belongs at the input boundary.
-  - `domain.ClientGeneration`: `[32]byte` canonical token fingerprint with `domain.NewClientGeneration(token)`, `IsZero()`, and `String()` (hex).
-- **Elimination of Redundant Wrappers & Packages**:
-  - `internal/core/transport/wb/credentials.go` deleted entirely.
-  - Redundant wrappers `sellerKey` and `credentialGeneration` in `wbcabinet/service/token.go` deleted; services call domain constructors directly.
-- **Idiomatic Zero Checks**:
-  - Repetitive raw struct comparisons `k == (domain.SellerKey{})` and `g == (domain.ClientGeneration{})` across `transfer`, `cardpublication`, `cardedit`, and `wbcabinet` are replaced by idiomatic `.IsZero()`.
+- `domain.SellerID` is the sole stable seller/cabinet identity. It is the raw `sid` claim from the WB token after lowercase UUID normalization by `credentials.ParseToken`; the domain type is a string with canonical UUID validation. There is no seller-ID hash or second local cabinet ID.
+- `domain.CabinetAccess` is the shared token-free access snapshot. It carries one `SellerID` plus name, revisions, capabilities, expiry and `ClientGeneration`; transfer-specific position, cohort and digest remain in transfer.
+- `domain.ClientGeneration` remains a separate `[32]byte` canonical fingerprint of the exact API token. It changes on token rotation and pins executors and transfer/publication snapshots to the verified token generation; it is not a cabinet identity or encryption for the stored token.
+- `wbcabinet.Service.Add` parses `sid`, casts the normalized claim to `domain.SellerID`, verifies the token through Content `/ping`, persists `api_cabinets` by raw seller ID and activates the candidate. Restoration checks the same ID against the stored cabinet.
+- Transfer target-set root and snapshot revision use the `v4` domain tags and hash each raw `SellerID` once, together with generation, revisions, expiry and capabilities.
+
 
 ## 12. PostgreSQL Infrastructure & Observability (`internal/core/repository/postgres`)
 - **Connection Pool Tuning (`pool/config.go` & `pool/pool.go`)**:
@@ -124,9 +125,6 @@
 - **Consolidated Role & Action Mutators (`users/transport/telegram/user_actions.go`)**:
   - Deduplicated `setAdmin`, `setPartner`, `revokePartner` via higher-order function `mutateUserRole(ctx, targetID, page, prefix, action)`.
   - Merged standalone `delete_user.go` into `user_actions.go` and deleted the redundant file.
-- **Session Argument & Footer Controls Extraction (`cabinetcopy/transport/telegram/menu.go`)**:
-  - Unified repetitive step handlers (`selectSource`, `selectTarget`) via `selectCabinet(ctx, apply)`.
-  - Unified session button footers (`appendSessionControls`) and argument parsing (`parseSessionArgs`).
 - **Dead Code Cleanup (`cardimport/transport/telegram/helpers.go`)**:
   - Eliminated unused `recoverableFilesCount`.
 

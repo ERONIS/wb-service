@@ -8,7 +8,10 @@ import (
 	"strings"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
-	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
+	core_tg_identity "github.com/ERONIS/wb-service/internal/core/transport/telegram/identity"
+	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
+	core_tg_presenter "github.com/ERONIS/wb-service/internal/core/transport/telegram/presenter"
+	core_tg_ui "github.com/ERONIS/wb-service/internal/core/transport/telegram/ui"
 	wbcabinet_service "github.com/ERONIS/wb-service/internal/feature/wbcabinet/service"
 
 	tele "gopkg.in/telebot.v3"
@@ -17,14 +20,14 @@ import (
 const cabinetCallbackKeyBytes = 12
 
 func (handler *Handler) startDelete(ctx tele.Context) error {
-	ownerTelegramID, err := core_transport_telegram.SenderID(ctx)
+	ownerTelegramID, err := core_tg_identity.SenderID(ctx)
 	if err != nil {
 		return tele.ErrBadContext
 	}
 	handler.clearPending(ownerTelegramID)
 	cabinets, err := handler.service.ListByOwner(handler.ctx, ownerTelegramID)
 	if err != nil {
-		return core_transport_telegram.Notify(
+		return core_tg_menu.Notify(
 			ctx,
 			"wbcabinet.delete.list",
 			"❌ Не удалось загрузить кабинеты.",
@@ -40,7 +43,7 @@ func (handler *Handler) startDelete(ctx tele.Context) error {
 }
 
 func (handler *Handler) confirmDelete(ctx tele.Context) error {
-	ownerTelegramID, err := core_transport_telegram.SenderID(ctx)
+	ownerTelegramID, err := core_tg_identity.SenderID(ctx)
 	if err != nil {
 		return tele.ErrBadContext
 	}
@@ -61,7 +64,7 @@ func (handler *Handler) confirmDelete(ctx tele.Context) error {
 }
 
 func (handler *Handler) deleteCabinet(ctx tele.Context) error {
-	ownerTelegramID, err := core_transport_telegram.SenderID(ctx)
+	ownerTelegramID, err := core_tg_identity.SenderID(ctx)
 	if err != nil {
 		return tele.ErrBadContext
 	}
@@ -119,7 +122,7 @@ func deleteSelectionMarkup(cabinets []wbcabinet_service.Cabinet) *tele.ReplyMark
 	markup := &tele.ReplyMarkup{}
 	rows := make([]tele.Row, 0, len(cabinets)+1)
 	for _, cabinet := range cabinets {
-		name := core_transport_telegram.TruncateRunes(
+		name := core_tg_ui.TruncateRunes(
 			strings.TrimSpace(cabinet.Name),
 			48,
 		)
@@ -150,8 +153,8 @@ func confirmDeleteMarkup(cabinet wbcabinet_service.Cabinet) *tele.ReplyMarkup {
 	return markup
 }
 
-func cabinetCallbackKey(cabinetID wbcabinet_service.CabinetID) string {
-	digest := sha256.Sum256([]byte("wbcabinet-delete:v1:" + string(cabinetID)))
+func cabinetCallbackKey(sellerID wbcabinet_service.SellerID) string {
+	digest := sha256.Sum256([]byte("wbcabinet-delete:v1:" + string(sellerID)))
 	return base64.RawURLEncoding.EncodeToString(digest[:cabinetCallbackKeyBytes])
 }
 
@@ -169,11 +172,11 @@ func parseCabinetCallbackKey(arguments []string) (string, error) {
 }
 
 func cabinetCallbackError(ctx tele.Context, key string, err error) error {
-	return core_transport_telegram.NotifyError(
+	return core_tg_presenter.NotifyError(
 		ctx,
 		err,
-		core_transport_telegram.OnError(nil, key, "❌ Не удалось удалить кабинет."),
-		core_transport_telegram.OnError(core_errors.ErrNotFound, key+".not_found", "Кабинет не найден или уже удалён."),
-		core_transport_telegram.OnError(core_errors.ErrInvalidArgument, key+".invalid", "Кнопка устарела. Откройте профиль заново."),
+		core_tg_presenter.OnError(nil, key, "❌ Не удалось удалить кабинет."),
+		core_tg_presenter.OnError(core_errors.ErrNotFound, key+".not_found", "Кабинет не найден или уже удалён."),
+		core_tg_presenter.OnError(core_errors.ErrInvalidArgument, key+".invalid", "Кнопка устарела. Откройте профиль заново."),
 	)
 }

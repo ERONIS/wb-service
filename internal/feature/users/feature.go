@@ -4,7 +4,7 @@ import (
 	"context"
 
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
-	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
+	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
 	users_postgres_repository "github.com/ERONIS/wb-service/internal/feature/users/repository/postgres"
 	users_service "github.com/ERONIS/wb-service/internal/feature/users/service"
 	users_transport_tg "github.com/ERONIS/wb-service/internal/feature/users/transport/telegram"
@@ -44,7 +44,7 @@ func (f *Feature) Service() *users_service.UsersService {
 
 // RegisterTelegram регистрирует Telegram-команды модуля пользователей.
 func (f *Feature) RegisterTelegram(
-	menu *core_transport_telegram.Handler,
+	menu *core_tg_menu.Handler,
 ) {
 	f.telegramHandler.Register(menu)
 }

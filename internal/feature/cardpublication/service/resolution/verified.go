@@ -19,7 +19,7 @@ type VerifiedCardCommand struct {
 	ExpectedActionRevision int64
 	TransferItemTargetID   int64
 	AttemptID              int64
-	CabinetID              string
+	SellerID               string
 	VendorCode             string
 }
 
@@ -60,7 +60,7 @@ func (resolver *VerifiedCardResolver) Resolve(
 	if ctx == nil || command.TransferID <= 0 || command.ActionID <= 0 ||
 		command.ActionMemberID <= 0 || command.ExpectedActionRevision < 0 ||
 		command.TransferItemTargetID <= 0 || command.AttemptID <= 0 ||
-		command.CabinetID == "" || command.VendorCode == "" ||
+		command.SellerID == "" || command.VendorCode == "" ||
 		evidence.Card.VendorCode != command.VendorCode ||
 		evidence.Card.NMID <= 0 || evidence.Card.IMTID <= 0 ||
 		evidence.Card.SubjectID <= 0 || evidence.ObservedAt.IsZero() {
@@ -80,7 +80,7 @@ func (resolver *VerifiedCardResolver) Resolve(
 		}
 		if subject.TransferItemTargetID != command.TransferItemTargetID ||
 			subject.AttemptID != command.AttemptID ||
-			string(subject.CabinetID) != command.CabinetID ||
+			string(subject.SellerID) != command.SellerID ||
 			subject.VendorCode != command.VendorCode ||
 			evidence.ObservedAt.Before(subject.AttemptStartedAt) ||
 			(subject.IdentityNMID > 0 && subject.IdentityNMID != evidence.Card.NMID) {
@@ -89,7 +89,7 @@ func (resolver *VerifiedCardResolver) Resolve(
 
 		observation, err := catalog.DraftObservation(catalog.CatalogObservation{
 			TargetID:   subject.TargetID,
-			CabinetID:  subject.CabinetID,
+			SellerID:   subject.SellerID,
 			Normal:     []contentapi.Card{evidence.Card},
 			ObservedAt: evidence.ObservedAt,
 		})

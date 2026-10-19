@@ -3,8 +3,8 @@ CREATE TABLE wb.publication_observations (
 
     transfer_id             BIGINT NOT NULL,
     target_id               BIGINT NOT NULL,
-    cabinet_id              VARCHAR(128) NOT NULL
-                            CHECK (char_length(cabinet_id) > 0),
+    seller_id          VARCHAR(36) NOT NULL
+                            CHECK (seller_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
     kind                    TEXT NOT NULL
                             CHECK (kind IN (
                                 'normal_trash_preflight',
@@ -208,8 +208,8 @@ WHERE state NOT IN ('terminal', 'superseded');
 CREATE TABLE wb.product_identities (
     id                      BIGSERIAL PRIMARY KEY,
 
-    cabinet_id              VARCHAR(128) NOT NULL
-                            CHECK (char_length(cabinet_id) > 0),
+    seller_id          VARCHAR(36) NOT NULL
+                            CHECK (seller_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
     vendor_code_key         TEXT COLLATE "C" NOT NULL
                             CHECK (char_length(vendor_code_key) > 0),
     normalization_version   INTEGER NOT NULL
@@ -240,7 +240,7 @@ CREATE TABLE wb.product_identities (
     created_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (cabinet_id, vendor_code_key),
+    UNIQUE (seller_id, vendor_code_key),
 
     FOREIGN KEY (active_transfer_id, active_action_id)
         REFERENCES wb.publication_actions (transfer_id, id),
@@ -410,8 +410,8 @@ WHERE publication_plan_id IS NOT NULL;
 
 
 CREATE TABLE wb.publication_error_cursors (
-    cabinet_id              VARCHAR(128) PRIMARY KEY
-                            CHECK (char_length(cabinet_id) > 0),
+    seller_id          VARCHAR(36) PRIMARY KEY
+                            CHECK (seller_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
     cursor_updated_at       TIMESTAMPTZ,
     cursor_batch_uuid       VARCHAR(128) NOT NULL DEFAULT '',
     revision                BIGINT NOT NULL DEFAULT 0
@@ -431,8 +431,8 @@ CREATE TABLE wb.publication_error_cursors (
 CREATE TABLE wb.publication_error_batches (
     id                      BIGSERIAL PRIMARY KEY,
 
-    cabinet_id              VARCHAR(128) NOT NULL
-                            CHECK (char_length(cabinet_id) > 0),
+    seller_id          VARCHAR(36) NOT NULL
+                            CHECK (seller_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
     batch_uuid              VARCHAR(128) NOT NULL
                             CHECK (char_length(batch_uuid) > 0),
     batch_updated_at        TIMESTAMPTZ NOT NULL,
@@ -445,17 +445,17 @@ CREATE TABLE wb.publication_error_batches (
     observed_at             TIMESTAMPTZ NOT NULL,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (cabinet_id, batch_uuid, source_digest),
+    UNIQUE (seller_id, batch_uuid, source_digest),
 
-    FOREIGN KEY (cabinet_id)
-        REFERENCES wb.publication_error_cursors (cabinet_id),
+    FOREIGN KEY (seller_id)
+        REFERENCES wb.publication_error_cursors (seller_id),
 
     CHECK (observed_at <= created_at + INTERVAL '5 minutes')
 );
 
 CREATE INDEX publication_error_batches_correlation_idx
 ON wb.publication_error_batches (
-    cabinet_id,
+    seller_id,
     batch_updated_at,
     id
 );
@@ -542,8 +542,8 @@ CREATE TABLE wb.publication_attempts (
                             CHECK (authorization_id > 0),
     recheck_observation_id  BIGINT NOT NULL
                             CHECK (recheck_observation_id > 0),
-    baseline_cabinet_id     VARCHAR(128) NOT NULL
-                            CHECK (char_length(baseline_cabinet_id) > 0),
+    baseline_seller_id VARCHAR(36) NOT NULL
+                            CHECK (baseline_seller_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
     baseline_cursor_revision BIGINT NOT NULL
                             CHECK (baseline_cursor_revision >= 0),
     baseline_cursor_updated_at TIMESTAMPTZ,
@@ -611,8 +611,8 @@ CREATE TABLE wb.publication_attempts (
         ),
     FOREIGN KEY (transfer_id, recheck_observation_id)
         REFERENCES wb.publication_observations (transfer_id, id),
-    FOREIGN KEY (baseline_cabinet_id)
-        REFERENCES wb.publication_error_cursors (cabinet_id),
+    FOREIGN KEY (baseline_seller_id)
+        REFERENCES wb.publication_error_cursors (seller_id),
 
     CHECK (
         (baseline_cursor_updated_at IS NULL AND baseline_cursor_batch_uuid = '')
@@ -687,8 +687,8 @@ CREATE TABLE wb.publication_attributions (
     group_target_id         BIGINT NOT NULL,
     action_id               BIGINT NOT NULL,
     action_member_id        BIGINT NOT NULL,
-    cabinet_id              VARCHAR(128) NOT NULL
-                            CHECK (char_length(cabinet_id) > 0),
+    seller_id          VARCHAR(36) NOT NULL
+                            CHECK (seller_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
     nm_id                   BIGINT NOT NULL
                             CHECK (nm_id > 0),
     plan_digest             BYTEA NOT NULL
@@ -1054,7 +1054,7 @@ RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    IF NEW.cabinet_id IS DISTINCT FROM OLD.cabinet_id
+    IF NEW.seller_id IS DISTINCT FROM OLD.seller_id
        OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
         RAISE EXCEPTION 'publication error cursor identity is immutable'
             USING ERRCODE = '55000';
@@ -1172,7 +1172,7 @@ BEGIN
         NEW.action_id,
         NEW.authorization_id,
         NEW.recheck_observation_id,
-        NEW.baseline_cabinet_id,
+        NEW.baseline_seller_id,
         NEW.baseline_cursor_revision,
         NEW.baseline_cursor_updated_at,
         NEW.baseline_cursor_batch_uuid,
@@ -1186,7 +1186,7 @@ BEGIN
         OLD.action_id,
         OLD.authorization_id,
         OLD.recheck_observation_id,
-        OLD.baseline_cabinet_id,
+        OLD.baseline_seller_id,
         OLD.baseline_cursor_revision,
         OLD.baseline_cursor_updated_at,
         OLD.baseline_cursor_batch_uuid,

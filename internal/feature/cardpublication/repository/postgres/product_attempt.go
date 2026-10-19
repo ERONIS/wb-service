@@ -23,7 +23,7 @@ func (repository *Repository) BeginProductAttempt(
 		command.Baseline.Validate() != nil ||
 		command.Baseline.TransferID != action.TransferID ||
 		command.Baseline.ActionID != action.ActionID ||
-		command.Baseline.CabinetID != action.CabinetID ||
+		command.Baseline.SellerID != action.SellerID ||
 		command.RecheckObservationID <= 0 {
 		return cardpublication_service.ProductAttempt{}, errors.New(
 			"begin publication product attempt command is invalid",
@@ -36,7 +36,7 @@ func (repository *Repository) BeginProductAttempt(
 		    active_action_id = $4,
 		    revision = revision + 1,
 		    updated_at = CURRENT_TIMESTAMP
-		WHERE cabinet_id = $1
+		WHERE seller_id = $1
 			AND vendor_code_key = ANY($2::text[])
 			AND state = 'remote_missing'
 			AND active_action_id IS NULL;
@@ -44,7 +44,7 @@ func (repository *Repository) BeginProductAttempt(
 	result, err := tx.Exec(
 		ctx,
 		bindIdentities,
-		action.CabinetID,
+		action.SellerID,
 		action.VendorCodes(),
 		action.TransferID,
 		action.ActionID,
@@ -114,7 +114,7 @@ func (repository *Repository) BeginProductAttempt(
 			action_id,
 			authorization_id,
 			recheck_observation_id,
-			baseline_cabinet_id,
+			baseline_seller_id,
 			baseline_cursor_revision,
 			baseline_cursor_updated_at,
 			baseline_cursor_batch_uuid,
@@ -139,7 +139,7 @@ func (repository *Repository) BeginProductAttempt(
 		action.ActionID,
 		action.AuthorizationID,
 		command.RecheckObservationID,
-		command.Baseline.CabinetID,
+		command.Baseline.SellerID,
 		command.Baseline.CursorRevision,
 		nullableTime(command.Baseline.CursorUpdatedAt),
 		command.Baseline.CursorBatchUUID,
@@ -270,7 +270,7 @@ func (repository *Repository) RecordSubmission(
 				SET state = 'blocked_uncertain',
 				    revision = revision + 1,
 				    updated_at = CURRENT_TIMESTAMP
-				WHERE cabinet_id = $1
+				WHERE seller_id = $1
 					AND vendor_code_key = ANY($2::text[])
 					AND active_transfer_id = $3
 					AND active_action_id = $4
@@ -279,7 +279,7 @@ func (repository *Repository) RecordSubmission(
 			if _, err := tx.Exec(
 				ctx,
 				blockIdentities,
-				action.CabinetID,
+				action.SellerID,
 				action.VendorCodes(),
 				action.TransferID,
 				action.ActionID,
@@ -345,7 +345,7 @@ func (repository *Repository) RecordSubmission(
 			    active_action_id = CASE WHEN $6 THEN NULL ELSE active_action_id END,
 			    revision = revision + 1,
 			    updated_at = CURRENT_TIMESTAMP
-			WHERE cabinet_id = $1
+			WHERE seller_id = $1
 				AND vendor_code_key = $2
 				AND active_transfer_id = $3
 				AND active_action_id = $4;
@@ -353,7 +353,7 @@ func (repository *Repository) RecordSubmission(
 		update, err = tx.Exec(
 			ctx,
 			finishIdentity,
-			action.CabinetID,
+			action.SellerID,
 			member.VendorCode,
 			action.TransferID,
 			action.ActionID,

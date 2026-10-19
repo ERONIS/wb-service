@@ -3,7 +3,9 @@ package statistics_telegram_transport
 import (
 	"fmt"
 
-	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
+	core_tg_callback "github.com/ERONIS/wb-service/internal/core/transport/telegram/callback"
+	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
+	core_tg_presenter "github.com/ERONIS/wb-service/internal/core/transport/telegram/presenter"
 	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
 	statistics_service "github.com/ERONIS/wb-service/internal/feature/statistics/service"
 
@@ -97,7 +99,7 @@ func (handler *Handler) showDashboard(ctx tele.Context) error {
 			callbackInt(operation.TransferID),
 		)))
 	}
-	rows = append(rows, markup.Row(core_transport_telegram.MainMenuButton()))
+	rows = append(rows, markup.Row(core_tg_menu.MainMenuButton()))
 	markup.Inline(rows...)
 	return ctx.EditOrSend(text, markup)
 }
@@ -190,7 +192,7 @@ func (handler *Handler) renderOperation(
 		)))
 	}
 	rows = append(rows, markup.Row(buttonStatistics))
-	rows = append(rows, markup.Row(core_transport_telegram.MainMenuButton()))
+	rows = append(rows, markup.Row(core_tg_menu.MainMenuButton()))
 	markup.Inline(rows...)
 	return ctx.EditOrSend(text, markup)
 }
@@ -252,11 +254,11 @@ func operationStatus(row statistics_service.OperationRow) string {
 }
 
 func parsePositiveInt64(arguments []string, index, expected int) (int64, error) {
-	return core_transport_telegram.ParseBase36Argument(arguments, index, expected, 1)
+	return core_tg_callback.ParseBase36Argument(arguments, index, expected, 1)
 }
 
 func callbackInt(value int64) string {
-	return core_transport_telegram.EncodeID(value)
+	return core_tg_callback.EncodeID(value)
 }
 
 func parseTwoIDs(arguments []string) (int64, int64, error) {
@@ -269,9 +271,9 @@ func parseTwoIDs(arguments []string) (int64, int64, error) {
 }
 
 func staleCallback(ctx tele.Context) error {
-	return core_transport_telegram.Notify(ctx, "statistics.stale_callback", "Кнопка устарела. Откройте статистику заново.")
+	return core_tg_menu.Notify(ctx, "statistics.stale_callback", "Кнопка устарела. Откройте статистику заново.")
 }
 
 func presentError(ctx tele.Context, err error) error {
-	return core_transport_telegram.NotifyServiceError(ctx, err)
+	return core_tg_presenter.NotifyServiceError(ctx, err)
 }

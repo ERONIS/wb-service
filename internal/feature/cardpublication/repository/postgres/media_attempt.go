@@ -22,7 +22,7 @@ func (repository *Repository) BeginMediaAttempt(
 		command.Baseline.Validate() != nil ||
 		command.Baseline.TransferID != action.TransferID ||
 		command.Baseline.ActionID != action.ActionID ||
-		command.Baseline.CabinetID != action.CabinetID ||
+		command.Baseline.SellerID != action.SellerID ||
 		command.RecheckObservationID <= 0 || command.RequestDigest == (cardpublication_service.Digest{}) ||
 		len(command.RequestPayload) == 0 {
 		return cardpublication_service.MediaAttempt{},
@@ -40,7 +40,7 @@ func (repository *Repository) BeginMediaAttempt(
 		    active_action_id = $4,
 		    revision = revision + 1,
 		    updated_at = CURRENT_TIMESTAMP
-		WHERE cabinet_id = $1
+		WHERE seller_id = $1
 			AND vendor_code_key = $2
 			AND state = 'remote_present'
 			AND nm_id = $5
@@ -50,7 +50,7 @@ func (repository *Repository) BeginMediaAttempt(
 	result, err := tx.Exec(
 		ctx,
 		bindIdentity,
-		action.CabinetID,
+		action.SellerID,
 		action.Member.VendorCode,
 		action.TransferID,
 		action.ActionID,
@@ -117,7 +117,7 @@ func (repository *Repository) BeginMediaAttempt(
 	const insertAttempt = `
 		INSERT INTO wb.publication_attempts (
 			transfer_id, action_id, authorization_id, recheck_observation_id,
-			baseline_cabinet_id, baseline_cursor_revision,
+			baseline_seller_id, baseline_cursor_revision,
 			baseline_cursor_updated_at, baseline_cursor_batch_uuid,
 			baseline_captured_at, request_digest, request_payload,
 			attribution_id
@@ -141,7 +141,7 @@ func (repository *Repository) BeginMediaAttempt(
 		action.ActionID,
 		action.AuthorizationID,
 		command.RecheckObservationID,
-		command.Baseline.CabinetID,
+		command.Baseline.SellerID,
 		command.Baseline.CursorRevision,
 		nullableTime(command.Baseline.CursorUpdatedAt),
 		command.Baseline.CursorBatchUUID,

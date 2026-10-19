@@ -13,14 +13,10 @@ import (
 
 // Prepare проверяет и сериализует входные данные логического WB-запроса.
 func Prepare(
-	baseURL *url.URL,
 	operation policy.Operation,
 	query any,
 	body any,
 ) (Prepared, error) {
-	if baseURL == nil {
-		return Prepared{}, errRequestBaseURLRequired
-	}
 	if operation.ID() == "" {
 		return Prepared{}, errRequestOperationRequired
 	}
@@ -35,13 +31,12 @@ func Prepare(
 		return Prepared{}, err
 	}
 
-	requestURL := *baseURL
-	requestURL.Path = operation.Path()
-	requestURL.RawPath = ""
-	requestURL.RawQuery = queryString
-	requestURL.ForceQuery = false
-	requestURL.Fragment = ""
-	requestURL.RawFragment = ""
+	requestURL := url.URL{
+		Scheme:   "https",
+		Host:     operation.Host(),
+		Path:     operation.Path(),
+		RawQuery: queryString,
+	}
 
 	return Prepared{
 		method:      operation.Method(),

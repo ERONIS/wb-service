@@ -12,7 +12,7 @@ type ErrorTargetSource interface {
 }
 
 type ErrorFeedRepository interface {
-	LoadErrorCursor(context.Context, CabinetID) (ErrorCursor, error)
+	LoadErrorCursor(context.Context, SellerID) (ErrorCursor, error)
 
 	SaveErrorFeed(
 		context.Context,

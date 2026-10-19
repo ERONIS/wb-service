@@ -3,12 +3,11 @@
 -- Начальное наполнение кабинетов WB для администратора
 -- Идентификатор администратора передается через параметр psql :admin_tg_id
 INSERT INTO wb.api_cabinets (
-    cabinet_id,
+    seller_id,
     owner_tg_id,
     display_name,
     normalized_name,
     token,
-    seller_key,
     token_properties,
     binding_revision,
     capability_revision,
@@ -21,12 +20,11 @@ INSERT INTO wb.api_cabinets (
 )
 VALUES
 (
-    'shop_000',
+    'a723f78d-4d8f-45eb-a40b-3d46841d1688',
     :'admin_tg_id'::BIGINT,
     'Илка',
     'илка',
     'eyJhbGciOiJFUzI1NiIsImtpZCI6IjIwMjYwMzAydjEiLCJ0eXAiOiJKV1QifQ.eyJhY2MiOjMsImVudCI6MSwiZXhwIjoxODAzMzEyNjE3LCJmb3IiOiJzZWxmIiwiaWQiOiIwMWEwMzFmNi00MDQ1LTcyY2YtYjNkMC1iOTc4OTA5Y2U5M2UiLCJpaWQiOjE1MDMyMTA5LCJvaWQiOjI1MDEyMDI2MywicyI6MTgsInNpZCI6ImE3MjNmNzhkLTRkOGYtNDVlYi1hNDBiLTNkNDY4NDFkMTY4OCIsInQiOmZhbHNlLCJ1aWQiOjE1MDMyMTA5fQ.SFoWWpXmUDQDgX1ET6zZtLn1DFI_japaiGmalkCNx9crnOALma1E2dfmUr2QBqVaZFLsOzURSu-YfD9OunQRzg',
-    '\x2407fb57ec4b3dc40d3e26165b88f99debeb7bd416db93dd6e4bd9c80fc192bc'::BYTEA,
     18,
     1,
     1,
@@ -38,12 +36,11 @@ VALUES
     'active'
 ),
 (
-    'shop_001',
+    '6a5dd41a-5643-4bec-8f70-74f00ad3a998',
     :'admin_tg_id'::BIGINT,
     'Фло',
     'фло',
     'eyJhbGciOiJFUzI1NiIsImtpZCI6IjIwMjYwOTAzdjEiLCJ0eXAiOiJKV1QifQ.eyJhY2MiOjMsImVudCI6MSwiZXhwIjoxODA0NzQyNzUyLCJmb3IiOiJzZWxmIiwiaWQiOiIwMWEwODczNC02MTA4LTdmMDUtOTk5Zi1kYTQzOWI2ZWY2NDIiLCJpaWQiOjE1MDMyMTA5LCJvaWQiOjI1MDA5MjQzOSwicyI6ODI1NCwic2lkIjoiNmE1ZGQ0MWEtNTY0My00YmVjLThmNzAtNzRmMDBhZDNhOTk4IiwidCI6ZmFsc2UsInVpZCI6MTUwMzIxMDl9.NCEa87ZrUslSt0GRkefzLm7P4IuOXZNEJgxOuYGdzbdwyWXXfZMJY9A-FM8BuGyxKOodut_eib9y_Sp7gIZ6iQ',
-    '\x13c4f45b8a242a6569658cc9fcb0090e278d3e8cc041e65e38db4b2dc0b4f92f'::BYTEA,
     8254,
     1,
     1,
@@ -55,12 +52,11 @@ VALUES
     'active'
 ),
 (
-    'shop_002',
+    '13591301-c2ed-4bc9-963b-d597f7dfcfe9',
     :'admin_tg_id'::BIGINT,
     'Ип Абдылдаев',
     'ип абдылдаев',
     'eyJhbGciOiJFUzI1NiIsImtpZCI6IjIwMjYwOTAzdjEiLCJ0eXAiOiJKV1QifQ.eyJhY2MiOjMsImVudCI6MSwiZXhwIjoxODA0NzQyODA3LCJmb3IiOiJzZWxmIiwiaWQiOiIwMWEwODczNS0zOTk3LTc3NjgtYjEyMS02NzczZWE3ZDIzYmEiLCJpaWQiOjE1MDMyMTA5LCJvaWQiOjI1MDE4NDQ3MCwicyI6ODI0Niwic2lkIjoiMTM1OTEzMDEtYzJlZC00YmM5LTk2M2ItZDU5N2Y3ZGZjZmU5IiwidCI6ZmFsc2UsInVpZCI6MTUwMzIxMDl9.1eVl4q_jJBherAhfJMKBNR7Zyx1qmo_awBmxXAz2AHCHWxyONz8CvkU61ZnStLHK4tDEbMPVUUpqbUrp6ANY5g',
-    '\x0648a563abddac1e8f30c46fef275dfb4eb2b1f1746f266f2875e96e11fa8e6b'::BYTEA,
     8246,
     1,
     1,
@@ -71,13 +67,12 @@ VALUES
     CURRENT_TIMESTAMP,
     'active'
 )
-ON CONFLICT (cabinet_id)
+ON CONFLICT (seller_id)
 DO UPDATE SET
     owner_tg_id           = EXCLUDED.owner_tg_id,
     display_name          = EXCLUDED.display_name,
     normalized_name       = EXCLUDED.normalized_name,
     token                 = EXCLUDED.token,
-    seller_key            = EXCLUDED.seller_key,
     token_properties      = EXCLUDED.token_properties,
     content_read          = EXCLUDED.content_read,
     content_write         = EXCLUDED.content_write,

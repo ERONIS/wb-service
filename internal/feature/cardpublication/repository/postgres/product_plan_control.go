@@ -194,7 +194,7 @@ func (repository *Repository) AbortPlanAfterDispatch(
 				  AND product_action.plan_id = $2
 				  AND product_action.kind IN ('create_group', 'add_to_group')
 				  AND product_action.state = 'planned'
-				  AND identity.cabinet_id = target.cabinet_id
+				  AND identity.seller_id = target.seller_id
 				  AND identity.vendor_code_key = member.vendor_code
 			);
 	`

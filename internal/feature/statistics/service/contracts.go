@@ -36,5 +36,5 @@ type CardVerificationInfo struct {
 }
 
 type CardVerifier interface {
-	FindCardByVendorCode(ctx context.Context, cabinetID string, vendorCode string) (*CardVerificationInfo, error)
+	FindCardByVendorCode(ctx context.Context, sellerID string, vendorCode string) (*CardVerificationInfo, error)
 }

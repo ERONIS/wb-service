@@ -7,8 +7,8 @@
 ## Migration Architecture (`migration/`)
 Database schema is managed via `golang-migrate` (`migrate/migrate:v4.19.1`) partitioned into 7 domain-aligned layers (14 files: 7 `.up.sql` and 7 `.down.sql`):
 1. `000001_users`: Schema `wb`, `wb.users` with `BIGSERIAL` ID (roles: `user`, `partner`, `admin`), `wb.telegram_active_screens`.
-2. `000002_wbcabinet`: `wb.cabinet_identity_bindings`, `wb.api_cabinets` (with `token_properties`, owner FK, status index).
-3. `000003_card_import`: Ingestion pipeline & staging: `wb.card_import_*`, `wb.card_batches`, `wb.card_batch_items`, `wb.cabinet_copy_*`; both `author_user_id` foreign keys are `BIGINT` from creation.
+2. `000002_wbcabinet`: `wb.api_cabinets` keyed by `seller_id VARCHAR(36)` (with `token_properties`, owner FK, status index).
+3. `000003_card_import`: Ingestion pipeline & staging: `wb.card_import_*`, `wb.card_batches`, `wb.card_batch_items`; import `author_user_id` is `BIGINT` from creation. The source and purpose constraints allow only `xlsx` and `transfer`.
 4. `000004_transfer`: Pipeline master and targets: `wb.transfers`, `wb.transfer_targets`, `wb.transfer_groups`, `wb.transfer_items`, `wb.transfer_group_targets` (includes diagnostics `preparation_item_position`, `preparation_field`, `preparation_started_at`, `preparation_finished_at`), `wb.transfer_item_targets` and partial status/running indexes, including the pending keyset covering index `transfer_group_targets_pending_keyset_idx`.
 5. `000005_card_preparation`: Directly creates immutable WB proposal artifacts `wb.card_preparation_artifacts` bound to `wb.transfer_group_targets(transfer_id, id)`. The current fresh-install baseline omits old intermediate tables (`card_preparations`, `card_preparation_groups`, `card_preparation_items`). The user will reinitialize the database from scratch, so upgrading the old preparation schema and migrating its data are out of scope. Validate that all migrations apply cleanly to an empty database and that the resulting schema matches current code.
 6. `000006_card_publication`: Full publication cycle: `wb.publication_observations`, `wb.publication_plans`, `wb.publication_actions`, `wb.product_identities`, `wb.transfer_live_authorizations`, `wb.transfer_live_authorization_commands`, execution attempts, attributions, manual resolutions, error correlations/cursors/batches, media visibility, safe retries, and integrity triggers.
@@ -18,20 +18,18 @@ The fresh-install baseline folds the former user-ID widening and pending keyset 
 
 ### 1. Users, Access Control & Cabinets
 - `wb.users`: Primary key `id BIGINT`, Telegram ID (`tg_id BIGINT`), username, full name, role (`admin`, `partner`, `user`), timestamps.
-- `wb.cabinet_identity_bindings`: Links users to authorized cabinet identities.
-- `wb.api_cabinets`: Cabinet ID, token stored as TEXT, token properties, seller info, verification status, active revision. Current application writes the token directly; AES-GCM encryption is not implemented.
+- `wb.api_cabinets`: `seller_id VARCHAR(36)` primary key, token stored as TEXT, token properties, owner, verification status and revisions. Current application writes the token directly; AES-GCM encryption is not implemented.
 
 ### 2. Ingestion & Staging
 - `wb.card_import_sessions`: Upload sessions, status, `author_user_id BIGINT` (FK -> `wb.users(id) ON DELETE SET NULL`).
 - `wb.card_import_files`: Stored files, hash, size.
 - `wb.card_import_issues`: Parsing warnings and validation errors.
 - `wb.card_batches`: Finalized, deduplicated batches with canonical SHA-256 checksums.
-- `wb.card_batch_items`: Normalized card payload JSON per item.
-- `wb.cabinet_copy_sessions` & `wb.cabinet_copy_items`: Cross-cabinet card replication state, `author_user_id BIGINT` (FK -> `wb.users(id) ON DELETE SET NULL`).
+- `wb.card_batch_items`: Normalized card payload JSON per item; `source_file_id` is required. `wb.card_batches.source_session_id` is required, and both session and batch purpose are limited to `transfer`.
 
 ### 3. Transfer Pipeline & Orchestration
 - `wb.transfers`: Master transfer job, source batch, phase (`initializing`, `preparing`, `awaiting_authorization`, `publishing`, `reconciling`, `media`, `finished`), outcome, owner.
-- `wb.transfer_targets`: Cohort of target cabinets, snapshot revision, capabilities.
+- `wb.transfer_targets`: Cohort of target cabinets keyed per transfer by `seller_id VARCHAR(36)`, with token generation, revisions, expiry and capabilities.
 - `wb.transfer_items`: Items attached to the transfer job.
 - `wb.transfer_item_targets` & `wb.transfer_group_targets`: Granular item status per target cabinet with projections (`pending`, `running`, `terminal`). Keyset dispatch optimized via partial covering index `transfer_group_targets_pending_keyset_idx`.
 - `wb.transfer_live_authorizations`: Live token leases per transfer and publication plan.

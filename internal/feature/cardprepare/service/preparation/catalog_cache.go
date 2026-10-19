@@ -23,7 +23,7 @@ func (preparer *Preparer) ForBatch() *Preparer {
 }
 
 type catalogCacheKey struct {
-	cabinet   CabinetID
+	cabinet   SellerID
 	operation string
 	query     string
 }
@@ -84,11 +84,11 @@ func (cache *batchCatalog) stats() catalogCacheStats {
 	}
 }
 
-func cachedCatalogRead[T any](ctx context.Context, cache *batchCatalog, cabinet CabinetID, operation string, query any, read func() (T, error), cacheable func(T) bool) (T, error) {
+func cachedCatalogRead[T any](ctx context.Context, cache *batchCatalog, cabinet SellerID, operation string, query any, read func() (T, error), cacheable func(T) bool) (T, error) {
 	return cachedCatalogReadWithTTL(ctx, cache, cabinet, operation, query, 0, read, cacheable)
 }
 
-func cachedCatalogReadWithTTL[T any](ctx context.Context, cache *batchCatalog, cabinet CabinetID, operation string, query any, ttl time.Duration, read func() (T, error), cacheable func(T) bool) (T, error) {
+func cachedCatalogReadWithTTL[T any](ctx context.Context, cache *batchCatalog, cabinet SellerID, operation string, query any, ttl time.Duration, read func() (T, error), cacheable func(T) bool) (T, error) {
 	var zero T
 	if err := ctx.Err(); err != nil {
 		return zero, err
@@ -169,7 +169,7 @@ func cachedCatalogReadWithTTL[T any](ctx context.Context, cache *batchCatalog, c
 	}
 }
 
-func (cache *batchCatalog) CardsLimits(ctx context.Context, cabinet CabinetID) (contentapi.CardsLimitsResponse, error) {
+func (cache *batchCatalog) CardsLimits(ctx context.Context, cabinet SellerID) (contentapi.CardsLimitsResponse, error) {
 	return cachedCatalogReadWithTTL(
 		ctx,
 		cache,
@@ -184,7 +184,7 @@ func (cache *batchCatalog) CardsLimits(ctx context.Context, cabinet CabinetID) (
 	)
 }
 
-func (cache *batchCatalog) Subjects(ctx context.Context, cabinet CabinetID, query contentapi.SubjectsQuery) (contentapi.SubjectsResponse, error) {
+func (cache *batchCatalog) Subjects(ctx context.Context, cabinet SellerID, query contentapi.SubjectsQuery) (contentapi.SubjectsResponse, error) {
 	return cachedCatalogRead(ctx, cache, cabinet, "Subjects", query,
 		func() (contentapi.SubjectsResponse, error) {
 			return cache.CatalogTransport.Subjects(ctx, cabinet, query)
@@ -193,7 +193,7 @@ func (cache *batchCatalog) Subjects(ctx context.Context, cabinet CabinetID, quer
 	)
 }
 
-func (cache *batchCatalog) SubjectCharacteristics(ctx context.Context, cabinet CabinetID, subjectID int64, query contentapi.SubjectCharacteristicsQuery) (contentapi.SubjectCharacteristicsResponse, error) {
+func (cache *batchCatalog) SubjectCharacteristics(ctx context.Context, cabinet SellerID, subjectID int64, query contentapi.SubjectCharacteristicsQuery) (contentapi.SubjectCharacteristicsResponse, error) {
 	return cachedCatalogRead(ctx, cache, cabinet, "SubjectCharacteristics", struct {
 		SubjectID int64
 		Query     contentapi.SubjectCharacteristicsQuery
@@ -205,14 +205,14 @@ func (cache *batchCatalog) SubjectCharacteristics(ctx context.Context, cabinet C
 	)
 }
 
-func (cache *batchCatalog) Brands(ctx context.Context, cabinet CabinetID, query contentapi.BrandsQuery) (contentapi.BrandsResponse, error) {
+func (cache *batchCatalog) Brands(ctx context.Context, cabinet SellerID, query contentapi.BrandsQuery) (contentapi.BrandsResponse, error) {
 	return cachedCatalogRead(ctx, cache, cabinet, "Brands", query,
 		func() (contentapi.BrandsResponse, error) { return cache.CatalogTransport.Brands(ctx, cabinet, query) },
 		func(value contentapi.BrandsResponse) bool { return value.Next >= 0 && value.Total >= 0 },
 	)
 }
 
-func (cache *batchCatalog) Colors(ctx context.Context, cabinet CabinetID, query contentapi.DirectoryQuery) (contentapi.DirectoryColorsResponse, error) {
+func (cache *batchCatalog) Colors(ctx context.Context, cabinet SellerID, query contentapi.DirectoryQuery) (contentapi.DirectoryColorsResponse, error) {
 	return cachedCatalogRead(ctx, cache, cabinet, "Colors", query,
 		func() (contentapi.DirectoryColorsResponse, error) {
 			return cache.CatalogTransport.Colors(ctx, cabinet, query)
@@ -221,7 +221,7 @@ func (cache *batchCatalog) Colors(ctx context.Context, cabinet CabinetID, query 
 	)
 }
 
-func (cache *batchCatalog) Kinds(ctx context.Context, cabinet CabinetID, query contentapi.DirectoryQuery) (contentapi.DirectoryKindsResponse, error) {
+func (cache *batchCatalog) Kinds(ctx context.Context, cabinet SellerID, query contentapi.DirectoryQuery) (contentapi.DirectoryKindsResponse, error) {
 	return cachedCatalogRead(ctx, cache, cabinet, "Kinds", query,
 		func() (contentapi.DirectoryKindsResponse, error) {
 			return cache.CatalogTransport.Kinds(ctx, cabinet, query)
@@ -230,7 +230,7 @@ func (cache *batchCatalog) Kinds(ctx context.Context, cabinet CabinetID, query c
 	)
 }
 
-func (cache *batchCatalog) Countries(ctx context.Context, cabinet CabinetID, query contentapi.DirectoryQuery) (contentapi.DirectoryCountriesResponse, error) {
+func (cache *batchCatalog) Countries(ctx context.Context, cabinet SellerID, query contentapi.DirectoryQuery) (contentapi.DirectoryCountriesResponse, error) {
 	return cachedCatalogRead(ctx, cache, cabinet, "Countries", query,
 		func() (contentapi.DirectoryCountriesResponse, error) {
 			return cache.CatalogTransport.Countries(ctx, cabinet, query)
@@ -239,7 +239,7 @@ func (cache *batchCatalog) Countries(ctx context.Context, cabinet CabinetID, que
 	)
 }
 
-func (cache *batchCatalog) Seasons(ctx context.Context, cabinet CabinetID, query contentapi.DirectoryQuery) (contentapi.DirectorySeasonsResponse, error) {
+func (cache *batchCatalog) Seasons(ctx context.Context, cabinet SellerID, query contentapi.DirectoryQuery) (contentapi.DirectorySeasonsResponse, error) {
 	return cachedCatalogRead(ctx, cache, cabinet, "Seasons", query,
 		func() (contentapi.DirectorySeasonsResponse, error) {
 			return cache.CatalogTransport.Seasons(ctx, cabinet, query)
@@ -248,7 +248,7 @@ func (cache *batchCatalog) Seasons(ctx context.Context, cabinet CabinetID, query
 	)
 }
 
-func (cache *batchCatalog) VAT(ctx context.Context, cabinet CabinetID, query contentapi.DirectoryQuery) (contentapi.DirectoryVATResponse, error) {
+func (cache *batchCatalog) VAT(ctx context.Context, cabinet SellerID, query contentapi.DirectoryQuery) (contentapi.DirectoryVATResponse, error) {
 	return cachedCatalogRead(ctx, cache, cabinet, "VAT", query,
 		func() (contentapi.DirectoryVATResponse, error) {
 			return cache.CatalogTransport.VAT(ctx, cabinet, query)
@@ -257,7 +257,7 @@ func (cache *batchCatalog) VAT(ctx context.Context, cabinet CabinetID, query con
 	)
 }
 
-func (cache *batchCatalog) TNVED(ctx context.Context, cabinet CabinetID, query contentapi.DirectoryTNVEDQuery) (contentapi.DirectoryTNVEDResponse, error) {
+func (cache *batchCatalog) TNVED(ctx context.Context, cabinet SellerID, query contentapi.DirectoryTNVEDQuery) (contentapi.DirectoryTNVEDResponse, error) {
 	return cachedCatalogRead(ctx, cache, cabinet, "TNVED", query,
 		func() (contentapi.DirectoryTNVEDResponse, error) {
 			return cache.CatalogTransport.TNVED(ctx, cabinet, query)

@@ -35,7 +35,7 @@ Orchestrates the actual submission of product cards to Wildberries Content API, 
 - `wb.publication_manual_resolutions`: User intervention logs and resolution decisions.
 
 ## Shared Catalog Integration
-- Active/trash pagination is delegated to core `wb/catalog`. Publication retains observation capture, bulk-probe budgets, attribution, and reconciliation decisions. An incomplete probe falls back to targeted searches; incomplete targeted searches return errors.
+- `transport/wb/catalog.go` selects only the Content catalog, error-feed, and pinned publication/media mutation operations from the shared core executor registry; core still owns operation specs, retry policy and rate limiting. Active/trash pagination is delegated to core `wb/api/content/v1/catalog`. Publication retains observation capture, bulk-probe budgets, attribution, and reconciliation decisions. An incomplete probe falls back to targeted searches; incomplete targeted searches return errors.
 
 ## Invariants & Database Triggers
 - `reject_publication_fact_delete`: `DELETE` statements on attempts, correlations, and identities are rejected at database level.

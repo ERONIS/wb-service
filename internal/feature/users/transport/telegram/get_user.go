@@ -6,7 +6,8 @@ import (
 	"strings"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
-	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
+	core_tg_identity "github.com/ERONIS/wb-service/internal/core/transport/telegram/identity"
+	core_tg_ui "github.com/ERONIS/wb-service/internal/core/transport/telegram/ui"
 
 	tele "gopkg.in/telebot.v3"
 )
@@ -16,7 +17,7 @@ func (h *UsersTgHandler) getUser(
 	targetTelegramID int64,
 	page int,
 ) error {
-	adminTelegramID, err := core_transport_telegram.SenderID(ctx)
+	adminTelegramID, err := core_tg_identity.SenderID(ctx)
 	if err != nil {
 		return sendServiceError(ctx, err)
 	}
@@ -55,8 +56,8 @@ func userCardText(user domain.User) string {
 		user.TelegramID,
 		nickname,
 		user.Role,
-		core_transport_telegram.FormatDateTimeUTC(user.CreatedAt),
-		core_transport_telegram.FormatDateTimeUTC(user.UpdatedAt),
+		core_tg_ui.FormatDateTimeUTC(user.CreatedAt),
+		core_tg_ui.FormatDateTimeUTC(user.UpdatedAt),
 	)
 }
 

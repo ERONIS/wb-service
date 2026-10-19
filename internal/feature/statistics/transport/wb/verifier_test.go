@@ -8,7 +8,7 @@ import (
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
-	wb_catalog "github.com/ERONIS/wb-service/internal/core/transport/wb/catalog"
+	wb_catalog "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1/catalog"
 )
 
 type cardsSource struct {
@@ -16,7 +16,7 @@ type cardsSource struct {
 	ambiguous, stalled bool
 }
 
-func (s *cardsSource) CardsList(_ context.Context, _ domain.CabinetID, _ contentapi.CardsListQuery, request contentapi.CardsListRequest) (contentapi.CardsListResponse, error) {
+func (s *cardsSource) CardsList(_ context.Context, _ domain.SellerID, _ contentapi.CardsListQuery, request contentapi.CardsListRequest) (contentapi.CardsListResponse, error) {
 	s.calls++
 	if s.calls == 1 {
 		cards := make([]contentapi.Card, request.Settings.Cursor.Limit)
@@ -38,7 +38,7 @@ func (s *cardsSource) CardsList(_ context.Context, _ domain.CabinetID, _ content
 
 func TestVerifierSearchesBeyondFirstPage(t *testing.T) {
 	source := &cardsSource{}
-	card, err := NewVerifier(source).FindCardByVendorCode(context.Background(), "cabinet", "wanted")
+	card, err := (&Verifier{cards: source}).FindCardByVendorCode(context.Background(), "cabinet", "wanted")
 	if err != nil || card == nil || card.NMID != 101 || source.calls != 2 {
 		t.Fatalf("неполная проверка: %+v, %v", card, err)
 	}
@@ -52,7 +52,7 @@ func TestVerifierDoesNotTreatAmbiguousOrIncompleteSearchAsAbsence(t *testing.T) 
 		{cardsSource{ambiguous: true}, core_errors.ErrConflict},
 		{cardsSource{stalled: true}, wb_catalog.ErrCursorStalled},
 	} {
-		card, err := NewVerifier(&tc.source).FindCardByVendorCode(context.Background(), "cabinet", "wanted")
+		card, err := (&Verifier{cards: &tc.source}).FindCardByVendorCode(context.Background(), "cabinet", "wanted")
 		if card != nil || !errors.Is(err, tc.want) {
 			t.Fatalf("ошибка поиска потеряна: %+v, %v", card, err)
 		}

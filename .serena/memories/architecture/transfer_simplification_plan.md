@@ -42,7 +42,7 @@
 | `wb.card_preparation_groups` | **Remove (Phase 1)** | State, diagnostics (`outcome_code`, `outcome_field`, `outcome_item_position`), timestamps, and artifact links stored directly in `wb.transfer_group_targets`. |
 | `wb.card_preparation_items` | **Remove (Phase 1)** | Group membership and variant positions obtained directly from frozen `wb.transfer_items`. |
 | `wb.card_preparation_artifacts` | **Retain** | Re-bound directly to `wb.transfer_group_targets` (`group_target_id`). Preserves exact payload bytes, snapshots, digests, and uniqueness. |
-| `wb.transfer_items` | **Separate Evaluation (Phase 2)** | Evaluate referencing immutable `wb.card_batch_items` directly. Kept as separate stage due to cabinet-copy provenance (`SourceFileID`) and audit linkages. |
+| `wb.transfer_items` | **Separate Evaluation (Phase 2)** | Evaluate referencing immutable `wb.card_batch_items` directly. Kept as separate stage due to source provenance (`SourceFileID`) and audit linkages. |
 | `wb.transfer_groups` & targets | **Retain** | Retains group aggregation for Excel reporting and multi-level progress tracking. |
 
 ## Speedup & Optimization Mechanics
@@ -65,7 +65,7 @@
 - **Phase 3: Schema Migration & Table Pruning**: Rebind `card_preparation_artifacts` to `transfer_group_targets`. Switch proposal loading to `transfer_items`. Drop the 3 preparation tables via a sequential migration (`000008_...`).
 - **Phase 4: Chained Wake & Work Partitioning**: Implement paginated uncompleted queries and inter-stage wake signaling in `polling.go`.
 - **Phase 5: Unified Outcome Calculation & Cleanup**: Centralize outcome calculation logic; remove obsolete DTOs, mappers, and forwarding adapters.
-- **Phase 6: Independent Evaluation of `transfer_items`**: Assess direct references to `card_batch_items` without breaking cabinet-copy provenance or report schemas.
+- **Phase 6: Independent Evaluation of `transfer_items`**: Assess direct references to `card_batch_items` without breaking source provenance or report schemas.
 
 ## Invariants & Compliance Rules
 - **No Degradation of WB Client Safety**: Mutation endpoints (`/content/v2/cards/upload`) strictly prohibit automated retries (`RetryModeNever`).

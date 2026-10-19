@@ -42,8 +42,7 @@ func (repository *Repository) LockValidLive(
 
 	const targetQuery = `
 		SELECT
-			target.cabinet_id,
-			target.seller_key,
+			target.seller_id,
 			target.client_generation,
 			target.credential_expires_at,
 			target.content_read,
@@ -56,7 +55,6 @@ func (repository *Repository) LockValidLive(
 			plan.state,
 			plan.plan_digest,
 			plan.target_set_root,
-			batch.source_kind,
 			owner.role
 		FROM wb.publication_actions AS action
 		JOIN wb.publication_plans AS plan
@@ -67,10 +65,8 @@ func (repository *Repository) LockValidLive(
 		 AND target.id = action.target_id
 		JOIN wb.transfers AS transfer
 		  ON transfer.id = action.transfer_id
-		JOIN wb.card_batches AS batch
-		  ON batch.id = transfer.batch_id
 		JOIN wb.api_cabinets AS cabinet
-		  ON cabinet.cabinet_id = target.cabinet_id
+		  ON cabinet.seller_id = target.seller_id
 		JOIN wb.users AS owner
 		  ON owner.tg_id = cabinet.owner_tg_id
 		WHERE action.transfer_id = $1
@@ -80,8 +76,7 @@ func (repository *Repository) LockValidLive(
 		FOR UPDATE OF transfer;
 	`
 	var (
-		cabinetID        string
-		sellerKey        []byte
+		sellerID         string
 		clientGeneration []byte
 		expiresAt        time.Time
 		contentRead      bool
@@ -94,7 +89,6 @@ func (repository *Repository) LockValidLive(
 		planState        string
 		planDigest       []byte
 		planTargetRoot   []byte
-		batchSourceKind  string
 		ownerRole        string
 	)
 	if err := tx.QueryRow(
@@ -105,8 +99,7 @@ func (repository *Repository) LockValidLive(
 		authorization.PlanID,
 		check.TargetID,
 	).Scan(
-		&cabinetID,
-		&sellerKey,
+		&sellerID,
 		&clientGeneration,
 		&expiresAt,
 		&contentRead,
@@ -119,7 +112,6 @@ func (repository *Repository) LockValidLive(
 		&planState,
 		&planDigest,
 		&planTargetRoot,
-		&batchSourceKind,
 		&ownerRole,
 	); err != nil {
 		return transfer_service.LiveAuthorizationEvidence{}, fmt.Errorf(
@@ -127,8 +119,7 @@ func (repository *Repository) LockValidLive(
 			err,
 		)
 	}
-	if cabinetID != string(check.CabinetID) ||
-		!bytes.Equal(sellerKey, check.SellerKey[:]) ||
+	if sellerID != string(check.SellerID) ||
 		!bytes.Equal(clientGeneration, check.ClientGeneration[:]) ||
 		!bytes.Equal(targetSetRoot, check.TargetSetRoot[:]) ||
 		!bytes.Equal(planDigest, check.PlanDigest[:]) ||
@@ -140,7 +131,7 @@ func (repository *Repository) LockValidLive(
 		(planState != "awaiting_authorization" && planState != "executing") {
 		return transfer_service.LiveAuthorizationEvidence{}, transfer_service.ErrLiveAuthorization
 	}
-	if !targetOwnerMayMutate(batchSourceKind, ownerRole) {
+	if !targetOwnerMayMutate(ownerRole) {
 		return transfer_service.LiveAuthorizationEvidence{}, transfer_service.ErrLiveAuthorization
 	}
 	return transfer_service.LiveAuthorizationEvidence{
@@ -151,8 +142,7 @@ func (repository *Repository) LockValidLive(
 		PlanDigest:       authorization.PlanDigest,
 		TargetSetRoot:    authorization.TargetSetRoot,
 		TargetID:         check.TargetID,
-		CabinetID:        check.CabinetID,
-		SellerKey:        check.SellerKey,
+		SellerID:         check.SellerID,
 		ClientGeneration: check.ClientGeneration,
 		ActorDigest:      authorization.TrustedActorDigest,
 		ApprovedAt:       *authorization.ApprovedAt,
@@ -161,8 +151,7 @@ func (repository *Repository) LockValidLive(
 }
 
 // targetOwnerMayMutate проверяет права владельца кабинета на модификацию.
-func targetOwnerMayMutate(batchSourceKind, ownerRole string) bool {
-	return batchSourceKind == "wb_cabinet" ||
-		ownerRole == string(domain.RolePartner) ||
+func targetOwnerMayMutate(ownerRole string) bool {
+	return ownerRole == string(domain.RolePartner) ||
 		ownerRole == string(domain.RoleAdmin)
 }

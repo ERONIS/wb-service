@@ -1,6 +1,6 @@
 # Project Core: wb-service
 
-Go service automating multi-cabinet Wildberries product operations: card import (Excel), cross-cabinet copying, attribute & characteristic validation, publication planning, rate-limited execution, media polling, error reconciliation, and a Telegram bot interface.
+Go service automating multi-cabinet Wildberries product operations: card import (Excel), attribute & characteristic validation, publication planning, rate-limited execution, media polling, error reconciliation, and a Telegram bot interface.
 
 ## Tech Stack & Runtime
 - **Language**: Go 1.27.1 (`go.mod`)
@@ -24,6 +24,6 @@ Read specialized domain memories for details:
 - Telegram bot engine, screen persistence and routing: `mem:core/telegram`
 - Database schema, tables, transaction/UoW management: `mem:database/schema`
 - End-to-end card transfer state machine and lifecycle: `mem:pipeline/lifecycle`
-- Functional business modules (import, edit, prepare, copy, stats, users): `mem:features/modules`
+- Functional business modules (import, prepare, publication, transfer, stats, users): `mem:features/modules`
 - Environment setup, docker compose, migrations, build and make targets: `mem:operations/run_and_build`
 - Mandatory Serena usage, memory selection, safety, and maintenance rules: `mem:memory_maintenance`

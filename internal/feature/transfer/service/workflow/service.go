@@ -70,18 +70,18 @@ func (service *Service) Start(
 func (service *Service) StartToCabinet(
 	ctx context.Context,
 	batchID cardpipeline.BatchID,
-	cabinetID CabinetID,
+	sellerID SellerID,
 ) (TransferID, error) {
-	if strings.TrimSpace(string(cabinetID)) != string(cabinetID) || cabinetID == "" {
-		return 0, core_errors.InvalidArgument("invalid transfer cabinet ID %q", cabinetID)
+	if strings.TrimSpace(string(sellerID)) != string(sellerID) || sellerID == "" {
+		return 0, core_errors.InvalidArgument("invalid transfer seller ID %q", sellerID)
 	}
-	return service.start(ctx, batchID, []CabinetID{cabinetID})
+	return service.start(ctx, batchID, []SellerID{sellerID})
 }
 
 func (service *Service) start(
 	ctx context.Context,
 	batchID cardpipeline.BatchID,
-	targetCabinetIDs []CabinetID,
+	targetSellerIDs []SellerID,
 ) (TransferID, error) {
 	if batchID <= 0 {
 		return 0, core_errors.InvalidArgument("invalid transfer batch ID '%d'", batchID)
@@ -89,8 +89,8 @@ func (service *Service) start(
 
 	existing, err := service.repository.FindByBatch(ctx, batchID)
 	if err == nil {
-		if len(targetCabinetIDs) > 0 {
-			if err := service.verifyStoredTargets(ctx, existing.ID, targetCabinetIDs); err != nil {
+		if len(targetSellerIDs) > 0 {
+			if err := service.verifyStoredTargets(ctx, existing.ID, targetSellerIDs); err != nil {
 				return 0, err
 			}
 		}
@@ -109,13 +109,13 @@ func (service *Service) start(
 	}
 
 	var snapshot MutationTargetSnapshot
-	if len(targetCabinetIDs) == 0 {
+	if len(targetSellerIDs) == 0 {
 		snapshot, err = service.targetRegistry.FanoutMutationSnapshot(ctx)
 	} else {
 		snapshot, err = service.targetRegistry.MutationSnapshotForOwner(
 			ctx,
 			batch.AuthorSnapshot.TelegramUserID,
-			targetCabinetIDs,
+			targetSellerIDs,
 		)
 	}
 	if err != nil {
@@ -147,10 +147,10 @@ func (service *Service) start(
 					Capacity:      capacity,
 				},
 			)
-			if err != nil || created || len(targetCabinetIDs) == 0 {
+			if err != nil || created || len(targetSellerIDs) == 0 {
 				return err
 			}
-			return service.verifyStoredTargets(ctx, transfer.ID, targetCabinetIDs)
+			return service.verifyStoredTargets(ctx, transfer.ID, targetSellerIDs)
 		},
 	)
 	if err != nil {
@@ -163,21 +163,21 @@ func (service *Service) start(
 func (service *Service) verifyStoredTargets(
 	ctx context.Context,
 	transferID TransferID,
-	expected []CabinetID,
+	expected []SellerID,
 ) error {
-	stored, err := service.repository.ListTargetCabinetIDs(ctx, transferID)
+	stored, err := service.repository.ListTargetSellerIDs(ctx, transferID)
 	if err != nil {
 		return fmt.Errorf("read stored transfer targets: %w", err)
 	}
 	if len(stored) != len(expected) {
 		return core_errors.Conflict("transfer target set differs from requested target")
 	}
-	wanted := make(map[CabinetID]struct{}, len(expected))
-	for _, cabinetID := range expected {
-		wanted[cabinetID] = struct{}{}
+	wanted := make(map[SellerID]struct{}, len(expected))
+	for _, sellerID := range expected {
+		wanted[sellerID] = struct{}{}
 	}
-	for _, cabinetID := range stored {
-		if _, exists := wanted[cabinetID]; !exists {
+	for _, sellerID := range stored {
+		if _, exists := wanted[sellerID]; !exists {
 			return core_errors.Conflict("transfer target set differs from requested target")
 		}
 	}

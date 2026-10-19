@@ -27,7 +27,7 @@ func executeProductMutation(
 		var response contentapi.UploadCardsResponse
 		response, err = transport.UploadCards(
 			ctx,
-			action.CabinetID,
+			action.SellerID,
 			action.ClientGeneration,
 			request,
 		)
@@ -40,7 +40,7 @@ func executeProductMutation(
 		var response contentapi.UploadCardsAddResponse
 		response, err = transport.UploadCardsAdd(
 			ctx,
-			action.CabinetID,
+			action.SellerID,
 			action.ClientGeneration,
 			request,
 		)

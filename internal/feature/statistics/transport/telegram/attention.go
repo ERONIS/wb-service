@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"html"
 
-	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
+	core_tg_callback "github.com/ERONIS/wb-service/internal/core/transport/telegram/callback"
+	core_tg_identity "github.com/ERONIS/wb-service/internal/core/transport/telegram/identity"
+	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
 	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
 	statistics_service "github.com/ERONIS/wb-service/internal/feature/statistics/service"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
@@ -44,7 +46,7 @@ func (handler *Handler) listAttention(ctx tele.Context) error {
 		rows = append(rows, markup.Row(buttonCheckAllInWB))
 	}
 	rows = append(rows, markup.Row(buttonStatistics))
-	rows = append(rows, markup.Row(core_transport_telegram.MainMenuButton()))
+	rows = append(rows, markup.Row(core_tg_menu.MainMenuButton()))
 	markup.Inline(rows...)
 	return ctx.EditOrSend(text, markup)
 }
@@ -61,7 +63,7 @@ func (handler *Handler) openAttention(ctx tele.Context) error {
 			"Причина: %s\n\n"+
 			"Выберите действие или выполните автоматическую проверку в WB.",
 		html.EscapeString(item.VendorCode),
-		html.EscapeString(item.CabinetID),
+		html.EscapeString(item.SellerID),
 		html.EscapeString(attentionReason(item.OutcomeCode)),
 	)
 	markup := handler.bot.NewMarkup()
@@ -98,7 +100,7 @@ func (handler *Handler) openAttention(ctx tele.Context) error {
 		callbackInt(item.ActionRevision),
 	)))
 	rows = append(rows, markup.Row(buttonAttention))
-	rows = append(rows, markup.Row(core_transport_telegram.MainMenuButton()))
+	rows = append(rows, markup.Row(core_tg_menu.MainMenuButton()))
 	markup.Inline(rows...)
 	return ctx.EditOrSend(text, markup)
 }
@@ -127,7 +129,7 @@ func (handler *Handler) resolve(
 	if err != nil {
 		return staleCallback(ctx)
 	}
-	revision, err := core_transport_telegram.ParseInt64Argument(
+	revision, err := core_tg_callback.ParseInt64Argument(
 		ctx.Args(),
 		1,
 		expectedArguments,
@@ -180,7 +182,7 @@ func (handler *Handler) resolve(
 	markup.Inline(
 		markup.Row(buttonAttention),
 		markup.Row(buttonStatistics),
-		markup.Row(core_transport_telegram.MainMenuButton()),
+		markup.Row(core_tg_menu.MainMenuButton()),
 	)
 	return ctx.EditOrSend(fmt.Sprintf(
 		"✅ Решение сохранено.\n\n%s Повторная отправка в WB не выполнялась.",
@@ -200,7 +202,7 @@ func (handler *Handler) getAttention(itemTargetID int64) (statistics_service.Att
 }
 
 func manualActor(ctx tele.Context) (cardpublication_service.ManualTrustedActor, error) {
-	user, err := core_transport_telegram.UserFromContext(ctx)
+	user, err := core_tg_identity.UserFromContext(ctx)
 	if err != nil {
 		return cardpublication_service.ManualTrustedActor{}, err
 	}
@@ -253,14 +255,14 @@ func (handler *Handler) checkAttention(ctx tele.Context) error {
 		return err
 	}
 	if handler.cardVerifier == nil {
-		return core_transport_telegram.Notify(ctx, "stats.verifier_unavailable", "⚠️ Механизм проверки WB не настроен.")
+		return core_tg_menu.Notify(ctx, "stats.verifier_unavailable", "⚠️ Механизм проверки WB не настроен.")
 	}
-	info, err := handler.cardVerifier.FindCardByVendorCode(handler.ctx, item.CabinetID, item.VendorCode)
+	info, err := handler.cardVerifier.FindCardByVendorCode(handler.ctx, item.SellerID, item.VendorCode)
 	if err != nil {
-		return core_transport_telegram.Notify(ctx, "stats.verifier_error", fmt.Sprintf("❌ Ошибка при проверке в WB: %v", err))
+		return core_tg_menu.Notify(ctx, "stats.verifier_error", fmt.Sprintf("❌ Ошибка при проверке в WB: %v", err))
 	}
 	if info == nil {
-		return core_transport_telegram.Notify(ctx, "stats.card_not_found", "Карточка пока не найдена в WB. Она остаётся в списке внимания для дальнейшей проверки.")
+		return core_tg_menu.Notify(ctx, "stats.card_not_found", "Карточка пока не найдена в WB. Она остаётся в списке внимания для дальнейшей проверки.")
 	}
 
 	if err := handler.statistics.ResolveVerifiedCard(handler.ctx, item, *info); err != nil {
@@ -277,33 +279,33 @@ func (handler *Handler) checkAttention(ctx tele.Context) error {
 		html.EscapeString(item.VendorCode),
 		info.NMID,
 		html.EscapeString(info.Title),
-		html.EscapeString(item.CabinetID),
+		html.EscapeString(item.SellerID),
 	)
 	markup := handler.bot.NewMarkup()
 	markup.Inline(
 		markup.Row(buttonAttention),
 		markup.Row(buttonStatistics),
-		markup.Row(core_transport_telegram.MainMenuButton()),
+		markup.Row(core_tg_menu.MainMenuButton()),
 	)
 	return ctx.EditOrSend(text, markup)
 }
 
 func (handler *Handler) checkAllAttention(ctx tele.Context) error {
 	if handler.cardVerifier == nil {
-		return core_transport_telegram.Notify(ctx, "stats.verifier_unavailable", "⚠️ Механизм проверки WB не настроен.")
+		return core_tg_menu.Notify(ctx, "stats.verifier_unavailable", "⚠️ Механизм проверки WB не настроен.")
 	}
 	items, err := handler.statistics.ListAttention(handler.ctx, statistics_service.AttentionFilter{Limit: 100})
 	if err != nil {
 		return presentError(ctx, err)
 	}
 	if len(items) == 0 {
-		return core_transport_telegram.Notify(ctx, "stats.all_checked", "✅ Все карточки уже проверены.")
+		return core_tg_menu.Notify(ctx, "stats.all_checked", "✅ Все карточки уже проверены.")
 	}
 
 	foundCount := 0
 	unresolvedCount := 0
 	for _, item := range items {
-		info, err := handler.cardVerifier.FindCardByVendorCode(handler.ctx, item.CabinetID, item.VendorCode)
+		info, err := handler.cardVerifier.FindCardByVendorCode(handler.ctx, item.SellerID, item.VendorCode)
 		if err != nil {
 			unresolvedCount++
 			continue
@@ -331,7 +333,7 @@ func (handler *Handler) checkAllAttention(ctx tele.Context) error {
 	markup.Inline(
 		markup.Row(buttonAttention),
 		markup.Row(buttonStatistics),
-		markup.Row(core_transport_telegram.MainMenuButton()),
+		markup.Row(core_tg_menu.MainMenuButton()),
 	)
 	return ctx.EditOrSend(text, markup)
 }

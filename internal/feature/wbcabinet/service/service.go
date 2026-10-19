@@ -2,7 +2,6 @@ package wbcabinet_service
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"strings"
@@ -21,7 +20,7 @@ type Service struct {
 	verifier       Verifier
 	now            func() time.Time
 	mutationMu     sync.Mutex
-	restorePending map[CabinetID]ClientGeneration
+	restorePending map[SellerID]ClientGeneration
 }
 
 func New(
@@ -35,7 +34,7 @@ func New(
 		repository:     repository,
 		verifier:       verifier,
 		now:            time.Now,
-		restorePending: make(map[CabinetID]ClientGeneration),
+		restorePending: make(map[SellerID]ClientGeneration),
 	}
 }
 
@@ -64,21 +63,17 @@ func (service *Service) add(ctx context.Context, command AddCommand) (Cabinet, e
 	if err != nil {
 		return Cabinet{}, fmt.Errorf("find WB cabinet before verification: %w", err)
 	}
-	cabinetID := command.CabinetID
-	if found {
-		cabinetID = existing.ID
-	}
-	if cabinetID == "" {
-		cabinetID, err = newCabinetID()
-		if err != nil {
-			return Cabinet{}, err
-		}
-	}
-
 	now := service.now().UTC()
 	claims, err := credentials.ParseToken(command.Token, now)
 	if err != nil {
 		return Cabinet{}, err
+	}
+	sellerID := domain.SellerID(claims.SellerID)
+	if command.SellerID != "" && command.SellerID != sellerID {
+		return Cabinet{}, ErrIdentityMismatch
+	}
+	if found && existing.ID != sellerID {
+		return Cabinet{}, ErrIdentityMismatch
 	}
 	contentRead := claims.Properties.Has(credentials.PermissionContent)
 	contentWrite := !claims.Properties.Has(credentials.PermissionReadOnly)
@@ -86,7 +81,7 @@ func (service *Service) add(ctx context.Context, command AddCommand) (Cabinet, e
 		return Cabinet{}, ErrContentAccess
 	}
 
-	prepared, err := service.verifier.Prepare(ctx, cabinetID, command.Name, command.Token)
+	prepared, err := service.verifier.Prepare(ctx, sellerID, command.Name, command.Token)
 	if err != nil {
 		return Cabinet{}, fmt.Errorf(
 			"prepare and verify WB credential: %w",
@@ -97,15 +92,10 @@ func (service *Service) add(ctx context.Context, command AddCommand) (Cabinet, e
 	if generation != prepared.Generation() {
 		return Cabinet{}, fmt.Errorf("WB credential generation differs from prepared client: %w", ErrIdentityMismatch)
 	}
-	if found && existing.SellerKey != domain.NewSellerKey(claims.SellerID) {
-		return Cabinet{}, ErrIdentityMismatch
-	}
-
 	verified := VerifiedCredential{
-		CabinetID:           cabinetID,
+		SellerID:            sellerID,
 		OwnerTelegramID:     command.OwnerTelegramID,
 		Name:                command.Name,
-		SellerKey:           domain.NewSellerKey(claims.SellerID),
 		ContentRead:         contentRead,
 		ContentWrite:        contentWrite,
 		TokenProperties:     claims.Properties,
@@ -118,8 +108,8 @@ func (service *Service) add(ctx context.Context, command AddCommand) (Cabinet, e
 	if err != nil {
 		return Cabinet{}, err
 	}
-	if cabinet.ID != cabinetID {
-		return Cabinet{}, core_errors.Conflict("persisted WB cabinet ID differs from verified candidate")
+	if cabinet.ID != sellerID {
+		return Cabinet{}, core_errors.Conflict("persisted WB seller ID differs from verified candidate")
 	}
 	if err := prepared.Activate(); err != nil {
 		return Cabinet{}, fmt.Errorf("activate verified WB cabinet: %w", err)
@@ -141,30 +131,30 @@ func (service *Service) ListByOwner(
 func (service *Service) GetByOwner(
 	ctx context.Context,
 	ownerTelegramID int64,
-	cabinetID CabinetID,
+	sellerID SellerID,
 ) (Cabinet, error) {
-	if ctx == nil || ownerTelegramID <= 0 || strings.TrimSpace(string(cabinetID)) == "" {
+	if ctx == nil || ownerTelegramID <= 0 || sellerID.Validate() != nil {
 		return Cabinet{}, core_errors.ErrInvalidArgument
 	}
-	return service.repository.GetByOwner(ctx, ownerTelegramID, cabinetID)
+	return service.repository.GetByOwner(ctx, ownerTelegramID, sellerID)
 }
 
 func (service *Service) Delete(
 	ctx context.Context,
 	ownerTelegramID int64,
-	cabinetID CabinetID,
+	sellerID SellerID,
 ) error {
-	if ctx == nil || ownerTelegramID <= 0 || strings.TrimSpace(string(cabinetID)) == "" {
+	if ctx == nil || ownerTelegramID <= 0 || sellerID.Validate() != nil {
 		return core_errors.ErrInvalidArgument
 	}
 	service.mutationMu.Lock()
 	defer service.mutationMu.Unlock()
 
-	if err := service.repository.DeleteByOwner(ctx, ownerTelegramID, cabinetID); err != nil {
+	if err := service.repository.DeleteByOwner(ctx, ownerTelegramID, sellerID); err != nil {
 		return fmt.Errorf("delete owned WB cabinet: %w", err)
 	}
-	service.verifier.Remove(cabinetID)
-	delete(service.restorePending, cabinetID)
+	service.verifier.Remove(sellerID)
+	delete(service.restorePending, sellerID)
 	return nil
 }
 
@@ -241,7 +231,7 @@ func (service *Service) restoreCabinet(ctx context.Context, stored StoredCabinet
 			return nil
 		}
 	}
-	_, err = service.add(ctx, AddCommand{OwnerTelegramID: current.OwnerTelegramID, Name: current.Name, Token: stored.Token, CabinetID: current.ID})
+	_, err = service.add(ctx, AddCommand{OwnerTelegramID: current.OwnerTelegramID, Name: current.Name, Token: stored.Token, SellerID: current.ID})
 	if err == nil {
 		return nil
 	}
@@ -267,27 +257,10 @@ func validateAddCommand(command AddCommand) error {
 		command.Token == "" {
 		return core_errors.InvalidArgument("invalid add WB cabinet command")
 	}
-	if command.CabinetID != "" && command.CabinetID.Validate() != nil {
-		return core_errors.InvalidArgument("invalid bootstrap WB cabinet ID")
+	if command.SellerID != "" && command.SellerID.Validate() != nil {
+		return core_errors.InvalidArgument("invalid WB seller ID")
 	}
 	return nil
-}
-
-func newCabinetID() (CabinetID, error) {
-	var value [16]byte
-	if _, err := rand.Read(value[:]); err != nil {
-		return "", fmt.Errorf("generate WB cabinet ID: %w", err)
-	}
-	value[6] = (value[6] & 0x0f) | 0x40
-	value[8] = (value[8] & 0x3f) | 0x80
-	return CabinetID(fmt.Sprintf(
-		"%08x-%04x-%04x-%04x-%012x",
-		value[0:4],
-		value[4:6],
-		value[6:8],
-		value[8:10],
-		value[10:16],
-	)), nil
 }
 
 func (service *Service) RunRestoreRetry(
@@ -327,7 +300,7 @@ func (service *Service) retryTransientCabinets(ctx context.Context, logger *zap.
 		}
 		if err := service.restoreCabinet(ctx, cabinet, true); err != nil {
 			failures = append(failures, err)
-			logger.Warn("WB cabinet restore retry failed", zap.String("cabinet_id", string(cabinet.ID)), zap.Error(err))
+			logger.Warn("WB cabinet restore retry failed", zap.String("seller_id", string(cabinet.ID)), zap.Error(err))
 		}
 	}
 	return errors.Join(failures...)

@@ -37,7 +37,7 @@ type TargetRegistry interface {
 	MutationSnapshotForOwner(
 		ctx context.Context,
 		ownerTelegramID int64,
-		cabinetIDs []CabinetID,
+		sellerIDs []SellerID,
 	) (MutationTargetSnapshot, error)
 	AllTargets(context.Context) ([]MutationTarget, error)
 }
@@ -60,10 +60,10 @@ type Repository interface {
 		batchID cardpipeline.BatchID,
 	) (Transfer, error)
 
-	ListTargetCabinetIDs(
+	ListTargetSellerIDs(
 		ctx context.Context,
 		transferID TransferID,
-	) ([]CabinetID, error)
+	) ([]SellerID, error)
 
 	Create(
 		ctx context.Context,

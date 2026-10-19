@@ -72,7 +72,7 @@ func (dispatcher *MediaDispatcher) checkMediaVisibility(ctx context.Context, job
 	}
 	if time.Now().Before(job.DeadlineAt) {
 		checkCtx, cancel := context.WithDeadline(ctx, minTime(job.DeadlineAt, time.Now().Add(mediaVisibilityRequestTimeout)))
-		update.Observation, err = dispatcher.catalogReader.CheckMediaVisibility(checkCtx, action.CabinetID,
+		update.Observation, err = dispatcher.catalogReader.CheckMediaVisibility(checkCtx, action.SellerID,
 			action.Member.VendorCode, action.NMID, len(request.Data), false)
 		cancel()
 		if ctx.Err() != nil {

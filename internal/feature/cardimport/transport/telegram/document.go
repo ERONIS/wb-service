@@ -7,7 +7,8 @@ import (
 	"time"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
-	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
+	core_tg_identity "github.com/ERONIS/wb-service/internal/core/transport/telegram/identity"
+	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
 	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
 	cardimport_xlsx_transport "github.com/ERONIS/wb-service/internal/feature/cardimport/transport/xlsx"
 
@@ -15,18 +16,18 @@ import (
 )
 
 func (h *Handler) receiveDocument(ctx tele.Context) error {
-	authorTelegramID, err := core_transport_telegram.SenderID(ctx)
+	authorTelegramID, err := core_tg_identity.SenderID(ctx)
 	if err != nil {
 		return sendServiceError(ctx, err)
 	}
 
 	message := ctx.Message()
 	if message == nil || message.Document == nil {
-		return core_transport_telegram.Notify(ctx, "cardimport.document_unavailable", "⚠️ Не удалось прочитать документ.")
+		return core_tg_menu.Notify(ctx, "cardimport.document_unavailable", "⚠️ Не удалось прочитать документ.")
 	}
 	document := message.Document
 	if !cardimport_xlsx_transport.IsFile(document.FileName, document.MIME) {
-		return core_transport_telegram.Notify(ctx, "cardimport.invalid_xlsx", "⚠️ Нужен файл в формате .xlsx.")
+		return core_tg_menu.Notify(ctx, "cardimport.invalid_xlsx", "⚠️ Нужен файл в формате .xlsx.")
 	}
 
 	view, err := h.getOrBeginUploadView(authorTelegramID)
@@ -72,13 +73,13 @@ func (h *Handler) receiveDocument(ctx tele.Context) error {
 const staleParsingFileAge = 5 * time.Minute
 
 func (h *Handler) resumeFiles(ctx tele.Context) error {
-	authorTelegramID, err := core_transport_telegram.SenderID(ctx)
+	authorTelegramID, err := core_tg_identity.SenderID(ctx)
 	if err != nil {
 		return sendServiceError(ctx, err)
 	}
 	sessionID, err := parseSessionID(ctx.Args())
 	if err != nil {
-		return core_transport_telegram.Notify(ctx, "cardimport.session_argument", "⚠️ Не удалось определить текущую загрузку.")
+		return core_tg_menu.Notify(ctx, "cardimport.session_argument", "⚠️ Не удалось определить текущую загрузку.")
 	}
 
 	view, err := h.service.GetView(h.ctx, cardimport_service.SessionCommand{

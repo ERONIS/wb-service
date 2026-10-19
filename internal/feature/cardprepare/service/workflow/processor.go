@@ -185,7 +185,7 @@ func (processor *Processor) preparePendingGroup(
 	}
 	if source.SourceGroupID != group.SourceGroupID ||
 		source.TargetID != group.TargetID ||
-		source.CabinetID != group.CabinetID {
+		source.SellerID != group.SellerID {
 		return false, ErrPreparationMismatch
 	}
 
@@ -196,7 +196,7 @@ func (processor *Processor) preparePendingGroup(
 	}
 
 	startedAt := time.Now().UTC()
-	result, err := preparer.PrepareTarget(ctx, CabinetID(group.CabinetID), srcGroup)
+	result, err := preparer.PrepareTarget(ctx, SellerID(group.SellerID), srcGroup)
 	finishedAt := time.Now().UTC()
 	if err != nil {
 		return false, err

@@ -8,7 +8,11 @@ import (
 	"time"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
-	core_transport_telegram "github.com/ERONIS/wb-service/internal/core/transport/telegram"
+	core_tg_callback "github.com/ERONIS/wb-service/internal/core/transport/telegram/callback"
+	core_tg_identity "github.com/ERONIS/wb-service/internal/core/transport/telegram/identity"
+	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
+	core_tg_presenter "github.com/ERONIS/wb-service/internal/core/transport/telegram/presenter"
+	core_tg_ui "github.com/ERONIS/wb-service/internal/core/transport/telegram/ui"
 	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
 
 	tele "gopkg.in/telebot.v3"
@@ -17,12 +21,12 @@ import (
 const sessionViewFilesLimit = 10
 
 func parseSessionID(arguments []string) (cardimport_service.SessionID, error) {
-	value, err := core_transport_telegram.ParseInt64Argument(arguments, 0, 1, 10, 1)
+	value, err := core_tg_callback.ParseInt64Argument(arguments, 0, 1, 10, 1)
 	return cardimport_service.SessionID(value), err
 }
 
 func parseFinalizeCommand(arguments []string) (cardimport_service.FinalizeCommand, error) {
-	id, revision, err := core_transport_telegram.ParseIDAndRevision(arguments)
+	id, revision, err := core_tg_callback.ParseIDAndRevision(arguments)
 	if err != nil {
 		return cardimport_service.FinalizeCommand{}, err
 	}
@@ -34,7 +38,7 @@ func parseFinalizeCommand(arguments []string) (cardimport_service.FinalizeComman
 }
 
 func parseContinueCommand(arguments []string) (cardimport_service.ContinueCommand, error) {
-	id, revision, err := core_transport_telegram.ParseIDAndRevision(arguments)
+	id, revision, err := core_tg_callback.ParseIDAndRevision(arguments)
 	if err != nil {
 		return cardimport_service.ContinueCommand{}, err
 	}
@@ -87,7 +91,7 @@ func (h *Handler) sendUploadedSessionView(
 	delete(h.uploadScreenGeneration, chat.ID)
 	h.uploadScreenMu.Unlock()
 
-	authorTelegramID, err := core_transport_telegram.SenderID(ctx)
+	authorTelegramID, err := core_tg_identity.SenderID(ctx)
 	if err != nil {
 		return sendServiceError(ctx, err)
 	}
@@ -132,7 +136,7 @@ func (h *Handler) sessionView(
 			buttonCancel.Unique,
 			strconv.FormatInt(int64(view.ID), 10),
 		)),
-		markup.Row(core_transport_telegram.MainMenuButton()),
+		markup.Row(core_tg_menu.MainMenuButton()),
 	)
 	markup.Inline(rows...)
 	return sessionViewText(view), markup
@@ -168,7 +172,7 @@ func sessionViewText(view cardimport_service.SessionView) string {
 			&builder,
 			"\n%s %s — карточек: %d, ошибок: %d",
 			fileStatusIcon(file.Status),
-			html.EscapeString(core_transport_telegram.TruncateRunes(file.OriginalFilename, 64)),
+			html.EscapeString(core_tg_ui.TruncateRunes(file.OriginalFilename, 64)),
 			file.CardsCount,
 			file.ErrorsCount,
 		)
@@ -186,7 +190,7 @@ func sessionViewText(view cardimport_service.SessionView) string {
 			location := ""
 			if issue.Filename != "" {
 				location = html.EscapeString(
-					core_transport_telegram.TruncateRunes(issue.Filename, 64),
+					core_tg_ui.TruncateRunes(issue.Filename, 64),
 				)
 			}
 			if issue.Issue.Row > 0 {
@@ -199,7 +203,7 @@ func sessionViewText(view cardimport_service.SessionView) string {
 				&builder,
 				"\n• %s%s",
 				location,
-				html.EscapeString(core_transport_telegram.TruncateRunes(issue.Issue.Message, 220)),
+				html.EscapeString(core_tg_ui.TruncateRunes(issue.Issue.Message, 220)),
 			)
 		}
 	}
@@ -266,11 +270,11 @@ func fileStatusIcon(status cardimport_service.FileStatus) string {
 }
 
 func sendServiceError(ctx tele.Context, err error) error {
-	return core_transport_telegram.NotifyServiceError(
+	return core_tg_presenter.NotifyServiceError(
 		ctx,
 		err,
-		core_transport_telegram.OnError(core_errors.ErrNotFound, "cardimport.session_not_found", "⚠️ Сначала откройте «Карточки» → «Перенос карточек»."),
-		core_transport_telegram.OnError(core_errors.ErrConflict, "cardimport.session_conflict", "⚠️ Файл или текущая загрузка уже изменились. Обновите экран."),
-		core_transport_telegram.OnError(core_errors.ErrInvalidArgument, "cardimport.invalid_file", "⚠️ Файл не подходит: проверьте формат и размер."),
+		core_tg_presenter.OnError(core_errors.ErrNotFound, "cardimport.session_not_found", "⚠️ Сначала откройте «Карточки» → «Перенос карточек»."),
+		core_tg_presenter.OnError(core_errors.ErrConflict, "cardimport.session_conflict", "⚠️ Файл или текущая загрузка уже изменились. Обновите экран."),
+		core_tg_presenter.OnError(core_errors.ErrInvalidArgument, "cardimport.invalid_file", "⚠️ Файл не подходит: проверьте формат и размер."),
 	)
 }

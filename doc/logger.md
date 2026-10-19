@@ -228,7 +228,7 @@ subLogger.Info("dispatcher started")
 ```go
 taskLogger := logger.With(
     zap.Int64("transfer_id", transferID),
-    zap.String("cabinet_id", cabinetID),
+    zap.String("seller_id", string(sellerID)),
 )
 taskLogger.Info("card publication started")
 ```
