@@ -1,7 +1,6 @@
 package flowcontrol
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -14,10 +13,6 @@ const (
 	headerRateLimitRemaining = "X-Ratelimit-Remaining"
 	headerRateLimitRetry     = "X-Ratelimit-Retry"
 	headerRateLimitLimit     = "X-Ratelimit-Limit"
-)
-
-var errRateLimitResponseRequired = errors.New(
-	"rate-limit HTTP response is required",
 )
 
 type responseRateLimits struct {

@@ -28,6 +28,10 @@
 - `make cabinet-bootstrap`: Executes `scripts/bootstrap_cabinets.sql` to upsert initial WB cabinets for the admin user.
 - `make wb-service-run`: Applies migrations, starts the loopback PostgreSQL port forwarder, then runs the service locally (`go run cmd/wb-service/main.go`). The host-side `POSTGRES_HOST=127.0.0.1` connection requires that forwarder because the PostgreSQL service itself does not publish port 5432.
 
+## Repository Hygiene
+- New root-level Markdown is ignored by default; `README.md`, `AGENTS.md`, and `GEMINI.md` are exceptions. Project documentation under `doc/` and Serena memories under `.serena/memories/` remain eligible for tracking.
+- Root `notes/`, `drafts/`, and `scratch/` directories, personal Markdown suffixes (`.local.md`, `.draft.md`), and common editor backup files are ignored. Existing tracked files remain tracked.
+
 ## Testing & Verification Commands
 - Run all unit tests: `go test ./...`
 - Test specific module: `go test ./internal/feature/transfer/...`

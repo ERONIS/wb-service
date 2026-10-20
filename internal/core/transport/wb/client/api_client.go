@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -30,7 +29,6 @@ type APIClient struct {
 	token        string
 	httpClient   *http.Client
 	rateLimiters *flowcontrol.Registry
-	backoff      flowcontrol.Backoff
 	logger       *zap.Logger
 }
 
@@ -55,14 +53,6 @@ func NewAPIClient(
 		return nil, err
 	}
 
-	backoff, err := flowcontrol.NewBackoff(flowcontrol.DefaultRetryBaseDelay)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"create WB API retry backoff: %w",
-			err,
-		)
-	}
-
 	httpClientCopy := *httpClient
 
 	return &APIClient{
@@ -71,7 +61,6 @@ func NewAPIClient(
 		token:        token,
 		httpClient:   &httpClientCopy,
 		rateLimiters: rateLimiters,
-		backoff:      backoff,
 		logger:       logger,
 	}, nil
 }

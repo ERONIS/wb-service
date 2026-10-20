@@ -5,8 +5,6 @@ import (
 	"context"
 	"io"
 	"net/http"
-
-	policy "github.com/ERONIS/wb-service/internal/core/transport/wb/policy"
 )
 
 // Prepared — неизменяемое представление одного подготовленного WB-запроса.
@@ -14,7 +12,6 @@ import (
 type Prepared struct {
 	method      string
 	urlString   string
-	requestMode policy.BodyMode
 	bodyBytes   []byte
 	contentType string
 	headers     http.Header
@@ -24,19 +21,8 @@ type Prepared struct {
 func (prepared Prepared) NewHTTPRequest(
 	ctx context.Context,
 ) (*http.Request, error) {
-	if ctx == nil {
-		return nil, errRequestContextRequired
-	}
-	if prepared.method == "" || prepared.urlString == "" {
-		return nil, errRequestNotPrepared
-	}
-
 	var body io.Reader
-	if prepared.requestMode.IsJSON() || prepared.requestMode.IsMultipart() {
-		if prepared.bodyBytes == nil {
-			return nil, errRequestNotPrepared
-		}
-
+	if prepared.bodyBytes != nil {
 		body = bytes.NewReader(prepared.bodyBytes)
 	}
 

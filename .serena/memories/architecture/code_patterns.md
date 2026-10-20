@@ -2,6 +2,8 @@
 
 ## Go Source Layout
 - Package-level constants, variables, aliases, structs, and interfaces precede all functions and methods in each Go source file (`AGENTS.md`).
+- In WB policy, related small string types are grouped in one `type` block without repetitive per-type comments; this preserves distinct Go types while keeping declarations compact.
+- Mutex fields use value `sync.Mutex` or `sync.RWMutex` so their zero value is ready to use. A single generic lock is named `mu`; structures with several locks keep distinct purpose-based names.
 
 ## 1. Cryptographic Hashing (`internal/core/canonicalhash`)
 - **Structure**: `canonicalhash.NewSHA256(domain string) *Builder`.
@@ -25,10 +27,10 @@
   - Rate limits partitioned per cabinet and Content API bucket.
   - Response adaptation: observes `X-Ratelimit-*` headers, clamps available tokens to the reported remaining count, and sets `blockedUntil` on HTTP 429 (using `Retry-After` when present). Configured interval and burst remain fixed.
   - Bounded queue: uses `waiters chan struct{}` to reject callers with `ErrLimiterQueueFull` when backlog overflows.
-- **Operation routing (`policy/operation.go`)**: Each operation carries a validated lowercase WB API subdomain under `wildberries.ru` and a path; malformed labels, external domains, ports, userinfo, and schemes in the host are rejected. Request preparation combines them as HTTPS per call; the credential-bound executor and `Clientset` contain no fixed API URL. API bucket specs are supplied by the composition root at registry construction.
+- **Operation routing (`policy/operation.go`)**: Each operation carries a validated lowercase WB API subdomain under `wildberries.ru` and a path; malformed labels, external domains, ports, userinfo, and schemes in the host are rejected. Request preparation combines them as HTTPS per call; the credential-bound executor and `Clientset` contain no fixed API URL. `policy` owns the stable `BucketID`, `BucketSpec` rate parameters, and catalog validation; Content supplies the specs to the composition root, and `flowcontrol.NewRegistry` validates them through `policy.ValidateBucketSpecs` before constructing runtime limiters. `OperationSpec.Kind` is validated with the retry mode during construction but is not stored in the resulting `Operation`; runtime retry logic uses the validated retry mode. `Operation` copies allowed success statuses when built and exposes only `IsSuccessStatus`; unused getters for the raw status list and operation kind were removed.
 - **Strict Safe-Retry Policy (`policy/retry.go`)**:
   - Two modes: `RetryModeNever` and `RetryModeReadSafe`.
-  - Core retries require read semantics (`OperationKindRead`) and `RetryModeReadSafe`; this includes POST catalog reads. `policy.DefaultMaxReadAttempts` fixes three read attempts; `flowcontrol.DefaultRetryBaseDelay` fixes the 500 ms base delay. `APIClient` no longer accepts retry settings from `Clientset`.
+  - Core retries require read semantics (`OperationKindRead`) and `RetryModeReadSafe`; this includes POST catalog reads. `policy.DefaultMaxReadAttempts` fixes three read attempts; `policy.DefaultRetryBaseDelay` fixes the 500 ms base delay; the private client executor performs the cancellable retry wait after the retry decision. `APIClient` no longer accepts retry settings from `Clientset`.
   - Mutation operations use `RetryModeNever` inside the core executor. Publication sends link/file mutations once per business attempt; its local retry helper is restricted to downloading external media. Unknown delivery is handled by business reconciliation.
 - **Crash Recovery & Reconciliation**:
   - `ProductDispatcher.ProcessPending` begins by calling `ListInterruptedProductActions` to re-verify actions left in-flight during a service crash before picking up new work.
