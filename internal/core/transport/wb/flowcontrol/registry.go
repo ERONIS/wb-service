@@ -12,29 +12,6 @@ import (
 	policy "github.com/ERONIS/wb-service/internal/core/transport/wb/policy"
 )
 
-var (
-	errRegistryRequired = errors.New(
-		"rate limiter registry is required",
-	)
-	errRegistrySpecsRequired = errors.New(
-		"rate limiter registry bucket specs are required",
-	)
-	errRegistryContextRequired = errors.New(
-		"rate limiter registry context is required",
-	)
-	errRegistrySellerIDRequired = errors.New(
-		"rate limiter registry seller ID is required",
-	)
-	errRegistryBucketIDRequired = errors.New(
-		"rate limiter registry bucket ID is required",
-	)
-)
-
-// ErrBucketNotRegistered означает отсутствие BucketSpec в registry.
-var ErrBucketNotRegistered = errors.New(
-	"rate limiter bucket is not registered",
-)
-
 type limiterKey struct {
 	sellerID domain.SellerID
 	bucketID policy.BucketID
@@ -42,45 +19,31 @@ type limiterKey struct {
 
 // Registry хранит политики и limiter для каждой пары cabinet и bucket.
 type Registry struct {
-	mutex    sync.Mutex
-	policies map[policy.BucketID]policy.BucketSpec
-	limiters map[limiterKey]*Limiter
+	mu       sync.Mutex
+	specs    map[policy.BucketID]policy.BucketSpec
+	limiters map[limiterKey]*bucketLimiter
 }
 
 // NewRegistry создаёт registry из закрытого каталога bucket-политик.
 func NewRegistry(
 	specs []policy.BucketSpec,
 ) (*Registry, error) {
-	if len(specs) == 0 {
-		return nil, errRegistrySpecsRequired
+	if err := policy.ValidateBucketSpecs(specs); err != nil {
+		return nil, err
 	}
 
-	policies := make(
+	registeredSpecs := make(
 		map[policy.BucketID]policy.BucketSpec,
 		len(specs),
 	)
 
-	for index, spec := range specs {
-		if err := spec.Validate(); err != nil {
-			return nil, fmt.Errorf(
-				"invalid bucket spec at index %d: %w",
-				index,
-				err,
-			)
-		}
-		if _, exists := policies[spec.ID]; exists {
-			return nil, fmt.Errorf(
-				"duplicate rate limiter bucket ID %q",
-				spec.ID,
-			)
-		}
-
-		policies[spec.ID] = spec
+	for _, spec := range specs {
+		registeredSpecs[spec.ID] = spec
 	}
 
 	return &Registry{
-		policies: policies,
-		limiters: make(map[limiterKey]*Limiter),
+		specs:    registeredSpecs,
+		limiters: make(map[limiterKey]*bucketLimiter),
 	}, nil
 }
 
@@ -102,7 +65,7 @@ func (registry *Registry) Wait(
 		return err
 	}
 
-	return limiter.Wait(ctx)
+	return limiter.wait(ctx)
 }
 
 // Observe применяет разрешённые rate-limit headers ответа WB.
@@ -146,9 +109,9 @@ func (registry *Registry) Observe(
 func (registry *Registry) limiter(
 	sellerID domain.SellerID,
 	bucketID policy.BucketID,
-) (*Limiter, error) {
+) (*bucketLimiter, error) {
 	if registry == nil ||
-		registry.policies == nil ||
+		registry.specs == nil ||
 		registry.limiters == nil {
 		return nil, errRegistryRequired
 	}
@@ -159,10 +122,10 @@ func (registry *Registry) limiter(
 		return nil, errRegistryBucketIDRequired
 	}
 
-	registry.mutex.Lock()
-	defer registry.mutex.Unlock()
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
 
-	spec, exists := registry.policies[bucketID]
+	spec, exists := registry.specs[bucketID]
 	if !exists {
 		return nil, fmt.Errorf(
 			"%w: %q",
@@ -179,11 +142,7 @@ func (registry *Registry) limiter(
 		return limiter, nil
 	}
 
-	limiter, err := NewLimiter(spec)
-	if err != nil {
-		return nil, err
-	}
-
+	limiter := newBucketLimiter(spec)
 	registry.limiters[key] = limiter
 
 	return limiter, nil

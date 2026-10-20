@@ -32,7 +32,7 @@ func (client *APIClient) Execute(
 	body any,
 	target any,
 ) (executeErr error) {
-	attemptLimit := client.attemptLimit(operation)
+	attemptLimit := attemptLimit(operation)
 	trace := newRequestTrace(client, operation, attemptLimit)
 	result := executionResult{delivery: NotDispatched}
 
@@ -67,6 +67,7 @@ func (client *APIClient) Execute(
 	}
 	executionContext, cancelExecution := context.WithTimeout(ctx, client.httpClient.Timeout*time.Duration(attemptLimit))
 	defer cancelExecution()
+	executionDeadline, _ := executionContext.Deadline()
 
 	if operation.ResponseMode().IsJSON() {
 		if err := response.ValidateTarget(target); err != nil {
@@ -141,13 +142,10 @@ func (client *APIClient) Execute(
 		cancelAttempt := func() {}
 		remainingAttempts := attemptLimit - attemptNumber + 1
 		if remainingAttempts > 1 {
-			if deadline, exists := executionContext.Deadline(); exists {
-				remaining := time.Until(deadline)
-				attemptContext, cancelAttempt = context.WithTimeout(
-					executionContext,
-					remaining/time.Duration(remainingAttempts),
-				)
-			}
+			attemptContext, cancelAttempt = context.WithTimeout(
+				executionContext,
+				time.Until(executionDeadline)/time.Duration(remainingAttempts),
+			)
 		}
 
 		attemptResult := client.doAttempt(
@@ -161,9 +159,8 @@ func (client *APIClient) Execute(
 		trace.recordObservationError(attemptResult.observationErr)
 
 		result = attemptResult
-		if !client.shouldRetry(
+		if !shouldRetry(
 			executionContext,
-			operation,
 			result,
 			attemptNumber,
 			attemptLimit,
@@ -171,7 +168,7 @@ func (client *APIClient) Execute(
 			break
 		}
 
-		if err := client.backoff.Wait(
+		if err := waitRetry(
 			executionContext,
 			attemptNumber,
 			result.retryAfter,
@@ -206,30 +203,45 @@ func (client *APIClient) Execute(
 	return nil
 }
 
-func (client *APIClient) attemptLimit(
+func attemptLimit(
 	operation policy.Operation,
 ) int {
-	if client != nil &&
-		operation.Kind().IsRead() &&
-		operation.RetryMode().AllowsRetry() {
+	if operation.RetryMode().AllowsRetry() {
 		return policy.DefaultMaxReadAttempts
 	}
 
 	return 1
 }
 
-func (client *APIClient) shouldRetry(
+func shouldRetry(
 	ctx context.Context,
-	operation policy.Operation,
 	result executionResult,
 	attemptNumber int,
 	attemptLimit int,
 ) bool {
 	return ctx.Err() == nil &&
 		attemptNumber < attemptLimit &&
-		operation.Kind().IsRead() &&
-		operation.RetryMode().AllowsRetry() &&
 		result.retryable
+}
+
+func waitRetry(ctx context.Context, retryNumber int, retryAfter time.Duration) error {
+	delay := policy.DefaultRetryBaseDelay
+	for currentRetry := 1; currentRetry < retryNumber; currentRetry++ {
+		delay *= 2
+	}
+	if retryAfter > delay {
+		delay = retryAfter
+	}
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (client *APIClient) doAttempt(
@@ -275,19 +287,6 @@ func (client *APIClient) doAttempt(
 			dispatched,
 		)
 	}
-	if httpResponse == nil {
-		delivery := deliveryWithoutResponse(dispatched)
-
-		return executionResult{
-			err: newClassifiedError(
-				ErrorCodeTransport,
-				delivery,
-				0,
-				errHTTPResponseRequired,
-			),
-			delivery: delivery,
-		}
-	}
 
 	return client.responseResult(httpResponse, operation)
 }
@@ -308,9 +307,8 @@ func (client *APIClient) transportErrorResult(
 				0,
 				newSafeTransportError(transportErr),
 			),
-			delivery: delivery,
-			retryable: response.IsRetryableTransportError(transportErr) ||
-				errors.Is(transportErr, context.DeadlineExceeded),
+			delivery:  delivery,
+			retryable: response.IsRetryableTransportError(transportErr),
 		}
 	}
 
@@ -348,24 +346,13 @@ func (client *APIClient) responseResult(
 	)
 
 	var readErr error
-	switch {
-	case operation.ResponseMode().IsJSON():
+	if operation.ResponseMode().IsJSON() {
 		result.body, readErr = response.ReadAndClose(
 			httpResponse,
 			operation.MaxResponseBytes(),
 		)
-
-	case operation.ResponseMode().IsNone():
+	} else {
 		readErr = response.Close(httpResponse)
-
-	default:
-		readErr = fmt.Errorf(
-			"WB response has unsupported body mode %q",
-			operation.ResponseMode(),
-		)
-		if httpResponse.Body != nil {
-			readErr = errors.Join(readErr, httpResponse.Body.Close())
-		}
 	}
 
 	if readErr != nil {
@@ -375,8 +362,7 @@ func (client *APIClient) responseResult(
 			0,
 			readErr,
 		)
-		result.retryable = response.IsRetryableTransportError(readErr) ||
-			errors.Is(readErr, context.DeadlineExceeded)
+		result.retryable = response.IsRetryableTransportError(readErr)
 
 		return result
 	}
@@ -407,10 +393,6 @@ func retryInterruptedResult(
 	result executionResult,
 	cause error,
 ) executionResult {
-	if cause == nil {
-		return result
-	}
-
 	retryCause := cause
 	if result.err != nil {
 		retryCause = errors.Join(result.err, cause)
@@ -420,10 +402,7 @@ func retryInterruptedResult(
 		ErrorCodeRetryInterrupted,
 		result.delivery,
 		0,
-		newSafeWrappedError(
-			"WB read retry interrupted",
-			retryCause,
-		),
+		fmt.Errorf("WB read retry interrupted: %w", retryCause),
 	)
 	result.retryable = false
 

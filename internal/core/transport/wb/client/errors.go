@@ -36,9 +36,6 @@ var (
 	errRequestContextRequired = errors.New(
 		"WB request context is required",
 	)
-	errHTTPResponseRequired = errors.New(
-		"WB HTTP response is required",
-	)
 )
 
 const (
@@ -86,11 +83,6 @@ type classifiedError struct {
 	cause      error
 }
 
-type safeWrappedError struct {
-	message string
-	cause   error
-}
-
 func newClassifiedError(
 	code string,
 	delivery DeliveryState,
@@ -102,13 +94,6 @@ func newClassifiedError(
 		delivery:   delivery,
 		retryAfter: retryAfter,
 		cause:      cause,
-	}
-}
-
-func newSafeWrappedError(message string, cause error) error {
-	return &safeWrappedError{
-		message: message,
-		cause:   cause,
 	}
 }
 
@@ -125,7 +110,7 @@ func newSafeTransportError(cause error) error {
 		}
 	}
 
-	return newSafeWrappedError(message, cause)
+	return fmt.Errorf("%s: %w", message, cause)
 }
 
 func (state DeliveryState) String() string {
@@ -170,18 +155,6 @@ func (classifiedErr *classifiedError) HTTPStatus() int {
 
 func (classifiedErr *classifiedError) RetryAfter() time.Duration {
 	return classifiedErr.retryAfter
-}
-
-func (wrappedErr *safeWrappedError) Error() string {
-	if wrappedErr.cause != nil {
-		return fmt.Sprintf("%s: %v", wrappedErr.message, wrappedErr.cause)
-	}
-
-	return wrappedErr.message
-}
-
-func (wrappedErr *safeWrappedError) Unwrap() error {
-	return wrappedErr.cause
 }
 
 func classifiedErrorCode(err error) string {

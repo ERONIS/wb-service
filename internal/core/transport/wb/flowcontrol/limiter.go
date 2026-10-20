@@ -2,38 +2,17 @@ package flowcontrol
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"math"
 	"sync"
 	"time"
 
 	policy "github.com/ERONIS/wb-service/internal/core/transport/wb/policy"
-	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	"golang.org/x/time/rate"
 )
 
-var (
-	errLimiterRequired = errors.New(
-		"rate limiter is required",
-	)
-	errLimiterContextRequired = errors.New(
-		"rate limiter context is required",
-	)
-	errLimiterReservationFailed = errors.New(
-		"rate limiter could not reserve a request token",
-	)
-)
-
-// ErrLimiterQueueFull означает, что очередь ожидания заполнена.
-var ErrLimiterQueueFull = fmt.Errorf(
-	"rate limiter wait queue is full: %w",
-	core_errors.ErrQueueFull,
-)
-
-// Limiter ограничивает скорость запросов одного rate-limit bucket.
-type Limiter struct {
-	mutex        sync.Mutex
+// bucketLimiter ограничивает скорость запросов одного rate-limit bucket.
+type bucketLimiter struct {
+	mu           sync.Mutex
 	tokenBucket  *rate.Limiter
 	waiters      chan struct{}
 	admission    chan struct{}
@@ -42,18 +21,9 @@ type Limiter struct {
 	blockedUntil time.Time
 }
 
-// NewLimiter создаёт limiter из политики bucket.
-func NewLimiter(
-	spec policy.BucketSpec,
-) (*Limiter, error) {
-	if err := spec.Validate(); err != nil {
-		return nil, fmt.Errorf(
-			"invalid rate limiter bucket spec: %w",
-			err,
-		)
-	}
-
-	limiter := &Limiter{
+// newBucketLimiter создаёт limiter из проверенной политики bucket.
+func newBucketLimiter(spec policy.BucketSpec) *bucketLimiter {
+	limiter := &bucketLimiter{
 		tokenBucket: rate.NewLimiter(
 			rate.Every(spec.Interval),
 			spec.Burst,
@@ -68,20 +38,13 @@ func NewLimiter(
 	}
 	limiter.admission <- struct{}{}
 
-	return limiter, nil
+	return limiter
 }
 
-// Wait ожидает разрешение на отправку одного HTTP-запроса.
-func (limiter *Limiter) Wait(
+// wait ожидает разрешение на отправку одного HTTP-запроса.
+func (limiter *bucketLimiter) wait(
 	ctx context.Context,
 ) error {
-	if limiter == nil ||
-		limiter.tokenBucket == nil {
-		return errLimiterRequired
-	}
-	if ctx == nil {
-		return errLimiterContextRequired
-	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -138,9 +101,9 @@ func (limiter *Limiter) Wait(
 	}
 }
 
-func (limiter *Limiter) tryAllowNow() (bool, error) {
-	limiter.mutex.Lock()
-	defer limiter.mutex.Unlock()
+func (limiter *bucketLimiter) tryAllowNow() (bool, error) {
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
 
 	now := time.Now()
 	blockDelay, err := limiter.blockDelayLocked(
@@ -157,7 +120,7 @@ func (limiter *Limiter) tryAllowNow() (bool, error) {
 	return limiter.tokenBucket.AllowN(now, 1), nil
 }
 
-func (limiter *Limiter) acquireWaiter(
+func (limiter *bucketLimiter) acquireWaiter(
 	ctx context.Context,
 ) error {
 	select {
@@ -172,11 +135,11 @@ func (limiter *Limiter) acquireWaiter(
 	}
 }
 
-func (limiter *Limiter) releaseWaiter() {
+func (limiter *bucketLimiter) releaseWaiter() {
 	<-limiter.waiters
 }
 
-func (limiter *Limiter) acquireAdmission(
+func (limiter *bucketLimiter) acquireAdmission(
 	ctx context.Context,
 ) error {
 	select {
@@ -188,18 +151,18 @@ func (limiter *Limiter) acquireAdmission(
 	}
 }
 
-func (limiter *Limiter) releaseAdmission() {
+func (limiter *bucketLimiter) releaseAdmission() {
 	limiter.admission <- struct{}{}
 }
 
-func (limiter *Limiter) reserveToken() (
+func (limiter *bucketLimiter) reserveToken() (
 	*rate.Reservation,
 	time.Duration,
 	time.Duration,
 	error,
 ) {
-	limiter.mutex.Lock()
-	defer limiter.mutex.Unlock()
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
 
 	now := time.Now()
 	blockDelay, err := limiter.blockDelayLocked(
@@ -228,7 +191,7 @@ func (limiter *Limiter) reserveToken() (
 		nil
 }
 
-func (limiter *Limiter) waitReservation(
+func (limiter *bucketLimiter) waitReservation(
 	ctx context.Context,
 	reservation *rate.Reservation,
 	delay time.Duration,
@@ -245,9 +208,9 @@ func (limiter *Limiter) waitReservation(
 
 	select {
 	case <-ctx.Done():
-		limiter.mutex.Lock()
+		limiter.mu.Lock()
 		reservation.CancelAt(time.Now())
-		limiter.mutex.Unlock()
+		limiter.mu.Unlock()
 
 		return ctx.Err()
 
@@ -256,7 +219,7 @@ func (limiter *Limiter) waitReservation(
 	}
 }
 
-func (limiter *Limiter) waitForServerBlock(
+func (limiter *bucketLimiter) waitForServerBlock(
 	ctx context.Context,
 ) error {
 	for {
@@ -264,12 +227,12 @@ func (limiter *Limiter) waitForServerBlock(
 			return err
 		}
 
-		limiter.mutex.Lock()
+		limiter.mu.Lock()
 		blockDelay, err := limiter.blockDelayLocked(
 			time.Now(),
 			0,
 		)
-		limiter.mutex.Unlock()
+		limiter.mu.Unlock()
 		if err != nil {
 			return err
 		}
@@ -286,7 +249,7 @@ func (limiter *Limiter) waitForServerBlock(
 	}
 }
 
-func (limiter *Limiter) blockDelayLocked(
+func (limiter *bucketLimiter) blockDelayLocked(
 	now time.Time,
 	remainingAfterBlock int,
 ) (time.Duration, error) {
@@ -305,18 +268,13 @@ func (limiter *Limiter) blockDelayLocked(
 	)
 }
 
-func (limiter *Limiter) observe(
+func (limiter *bucketLimiter) observe(
 	limits responseRateLimits,
 ) error {
-	if limiter == nil ||
-		limiter.tokenBucket == nil {
-		return errLimiterRequired
-	}
-
 	now := time.Now()
 
-	limiter.mutex.Lock()
-	defer limiter.mutex.Unlock()
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
 
 	if limits.statusCode == 429 {
 		blockDuration := limiter.interval
@@ -349,7 +307,7 @@ func (limiter *Limiter) observe(
 	)
 }
 
-func (limiter *Limiter) clampRemainingLocked(
+func (limiter *bucketLimiter) clampRemainingLocked(
 	now time.Time,
 	remaining int,
 ) error {

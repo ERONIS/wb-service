@@ -76,8 +76,7 @@ func encodeQueryStruct(query any) (url.Values, error) {
 func parseQueryTag(
 	tag string,
 ) (string, bool, error) {
-	parts := strings.Split(tag, ",")
-	name := parts[0]
+	name, option, hasOption := strings.Cut(tag, ",")
 
 	if name == "" {
 		return "", false, fmt.Errorf(
@@ -87,29 +86,14 @@ func parseQueryTag(
 	if name == "-" {
 		return name, false, nil
 	}
-
-	omitEmpty := false
-
-	for _, option := range parts[1:] {
-		switch option {
-		case "omitempty":
-			if omitEmpty {
-				return "", false, fmt.Errorf(
-					"omitempty option is duplicated",
-				)
-			}
-
-			omitEmpty = true
-
-		default:
-			return "", false, fmt.Errorf(
-				"unsupported URL tag option %q",
-				option,
-			)
-		}
+	if hasOption && option != "omitempty" {
+		return "", false, fmt.Errorf(
+			"unsupported URL tag option %q",
+			option,
+		)
 	}
 
-	return name, omitEmpty, nil
+	return name, hasOption, nil
 }
 
 func encodeQueryField(

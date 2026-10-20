@@ -14,10 +14,6 @@ const slowLimiterWaitLogThreshold = time.Second
 
 var requestTraceSequence atomic.Uint64
 
-type attemptSummary struct {
-	statusCode int
-}
-
 type requestTrace struct {
 	requestID       string
 	sellerID        domain.SellerID
@@ -35,10 +31,8 @@ type requestTrace struct {
 	errorCode       string
 	err             error
 	observationErrs int
-	maxAttempts     int
-	attemptCount    int
 	dispatchCount   int
-	attempts        []attemptSummary
+	attempts        []int
 }
 
 func newRequestTrace(
@@ -46,24 +40,15 @@ func newRequestTrace(
 	operation policy.Operation,
 	maxAttempts int,
 ) *requestTrace {
-	if maxAttempts < 1 {
-		maxAttempts = 1
-	}
-
 	startedAt := time.Now()
 	trace := &requestTrace{
-		requestID:   newRequestID(startedAt),
-		operation:   operation.ID(),
-		method:      operation.Method(),
-		path:        operation.Path(),
-		bucketID:    operation.BucketID(),
-		startedAt:   startedAt,
-		maxAttempts: maxAttempts,
-		attempts: make(
-			[]attemptSummary,
-			0,
-			maxAttempts,
-		),
+		requestID: newRequestID(startedAt),
+		operation: operation.ID(),
+		method:    operation.Method(),
+		path:      operation.Path(),
+		bucketID:  operation.BucketID(),
+		startedAt: startedAt,
+		attempts:  make([]int, 0, maxAttempts),
 	}
 	if client != nil {
 		trace.sellerID = client.sellerID
@@ -85,39 +70,20 @@ func (trace *requestTrace) recordAttempt(
 	statusCode int,
 	dispatchCount int,
 ) {
-	if trace == nil {
-		return
-	}
-
-	trace.attemptCount++
 	trace.dispatchCount += dispatchCount
-	if len(trace.attempts) >= trace.maxAttempts {
-		return
-	}
-
-	trace.attempts = append(trace.attempts, attemptSummary{
-		statusCode: statusCode,
-	})
+	trace.attempts = append(trace.attempts, statusCode)
 }
 
 func (trace *requestTrace) addLimiterWait(duration time.Duration) {
-	if trace == nil || duration <= 0 {
-		return
-	}
-
 	trace.limiterWait += duration
 }
 
 func (trace *requestTrace) addResponseBytes(responseBytes int) {
-	if trace == nil || responseBytes <= 0 {
-		return
-	}
-
 	trace.responseBytes += responseBytes
 }
 
 func (trace *requestTrace) recordObservationError(err error) {
-	if trace == nil || err == nil {
+	if err == nil {
 		return
 	}
 
@@ -128,10 +94,6 @@ func (trace *requestTrace) complete(
 	result executionResult,
 	executeErr error,
 ) {
-	if trace == nil {
-		return
-	}
-
 	trace.statusCode = result.statusCode
 	trace.delivery = result.delivery
 	trace.errorCode = classifiedErrorCode(executeErr)
@@ -139,7 +101,7 @@ func (trace *requestTrace) complete(
 }
 
 func (trace *requestTrace) log(logger *zap.Logger) {
-	if trace == nil || logger == nil {
+	if logger == nil {
 		return
 	}
 
@@ -152,8 +114,8 @@ func (trace *requestTrace) log(logger *zap.Logger) {
 		zap.String("method", trace.method),
 		zap.String("path", trace.path),
 		zap.String("bucket_id", trace.bucketID.String()),
-		zap.Int("attempt_count", trace.attemptCount),
-		zap.Ints("attempt_statuses", trace.attemptStatuses()),
+		zap.Int("attempt_count", len(trace.attempts)),
+		zap.Ints("attempt_statuses", trace.attempts),
 		zap.Int("dispatch_count", trace.dispatchCount),
 		zap.Duration("limiter_wait", trace.limiterWait),
 		zap.Int("request_bytes", trace.requestBytes),
@@ -177,15 +139,6 @@ func (trace *requestTrace) log(logger *zap.Logger) {
 		return
 	}
 	logger.Debug("WB request completed", fields...)
-}
-
-func (trace *requestTrace) attemptStatuses() []int {
-	statuses := make([]int, len(trace.attempts))
-	for index, attempt := range trace.attempts {
-		statuses[index] = attempt.statusCode
-	}
-
-	return statuses
 }
 
 func (trace *requestTrace) resultLabel() string {
