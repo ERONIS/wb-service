@@ -1,28 +1,17 @@
 package v1
 
-type DirectoryQuery struct {
-	Locale Locale `url:"locale,omitempty"`
-}
+type DirectoryQuery = LocaleQuery
 
-type DirectoryColorsResponse struct {
-	Data []DirectoryColor `json:"data"`
-	ResponseMeta
-}
+type DirectoryColorsResponse = DataResponse[[]DirectoryColor]
 
 type DirectoryColor struct {
 	Name       string `json:"name"`
 	ParentName string `json:"parentName"`
 }
 
-type DirectoryKindsResponse struct {
-	Data []string `json:"data"`
-	ResponseMeta
-}
+type DirectoryKindsResponse = DataResponse[[]string]
 
-type DirectoryCountriesResponse struct {
-	Data []DirectoryCountry `json:"data"`
-	ResponseMeta
-}
+type DirectoryCountriesResponse = DataResponse[[]DirectoryCountry]
 
 type DirectoryCountry struct {
 	ID       int64  `json:"id"`
@@ -30,15 +19,9 @@ type DirectoryCountry struct {
 	FullName string `json:"fullName"`
 }
 
-type DirectorySeasonsResponse struct {
-	Data []string `json:"data"`
-	ResponseMeta
-}
+type DirectorySeasonsResponse = DataResponse[[]string]
 
-type DirectoryVATResponse struct {
-	Data []string `json:"data"`
-	ResponseMeta
-}
+type DirectoryVATResponse = DataResponse[[]string]
 
 type DirectoryTNVEDQuery struct {
 	SubjectID int64  `url:"subjectID"`
@@ -46,10 +29,7 @@ type DirectoryTNVEDQuery struct {
 	Locale    Locale `url:"locale,omitempty"`
 }
 
-type DirectoryTNVEDResponse struct {
-	Data []DirectoryTNVED `json:"data"`
-	ResponseMeta
-}
+type DirectoryTNVEDResponse = DataResponse[[]DirectoryTNVED]
 
 type DirectoryTNVED struct {
 	Code  string `json:"tnved"`

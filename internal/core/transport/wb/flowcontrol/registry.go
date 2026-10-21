@@ -2,7 +2,6 @@ package flowcontrol
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -12,42 +11,27 @@ import (
 	policy "github.com/ERONIS/wb-service/internal/core/transport/wb/policy"
 )
 
+// Registry хранит каталог правил и лимитеры для каждой пары кабинета и корзины.
+type Registry struct {
+	mu       sync.Mutex
+	catalog  policy.BucketCatalog
+	limiters map[limiterKey]*bucketLimiter
+}
+
 type limiterKey struct {
 	sellerID domain.SellerID
 	bucketID policy.BucketID
 }
 
-// Registry хранит политики и limiter для каждой пары cabinet и bucket.
-type Registry struct {
-	mu       sync.Mutex
-	specs    map[policy.BucketID]policy.BucketSpec
-	limiters map[limiterKey]*bucketLimiter
-}
-
-// NewRegistry создаёт registry из закрытого каталога bucket-политик.
-func NewRegistry(
-	specs []policy.BucketSpec,
-) (*Registry, error) {
-	if err := policy.ValidateBucketSpecs(specs); err != nil {
-		return nil, err
-	}
-
-	registeredSpecs := make(
-		map[policy.BucketID]policy.BucketSpec,
-		len(specs),
-	)
-
-	for _, spec := range specs {
-		registeredSpecs[spec.ID] = spec
-	}
-
+// NewRegistry создаёт реестр лимитеров из проверенного каталога.
+func NewRegistry(catalog policy.BucketCatalog) *Registry {
 	return &Registry{
-		specs:    registeredSpecs,
+		catalog:  catalog,
 		limiters: make(map[limiterKey]*bucketLimiter),
-	}, nil
+	}
 }
 
-// Wait ожидает admission для одной пары cabinet и bucket.
+// Wait ожидает разрешение лимитера для кабинета и корзины.
 func (registry *Registry) Wait(
 	ctx context.Context,
 	sellerID domain.SellerID,
@@ -68,16 +52,13 @@ func (registry *Registry) Wait(
 	return limiter.wait(ctx)
 }
 
-// Observe применяет разрешённые rate-limit headers ответа WB.
+// Observe учитывает заголовки ограничения запросов из ответа WB.
 func (registry *Registry) Observe(
 	sellerID domain.SellerID,
 	bucketID policy.BucketID,
 	response *http.Response,
 ) (time.Duration, error) {
-	limiter, err := registry.limiter(
-		sellerID,
-		bucketID,
-	)
+	limiter, err := registry.limiter(sellerID, bucketID)
 	if err != nil {
 		return 0, err
 	}
@@ -86,13 +67,9 @@ func (registry *Registry) Observe(
 	if parseErr != nil {
 		if response != nil &&
 			response.StatusCode == http.StatusTooManyRequests {
-			fallbackErr := limiter.observe(
-				responseRateLimits{
-					statusCode: http.StatusTooManyRequests,
-				},
-			)
-
-			return 0, errors.Join(parseErr, fallbackErr)
+			limiter.observe(responseRateLimits{
+				statusCode: http.StatusTooManyRequests,
+			})
 		}
 
 		return 0, parseErr
@@ -103,16 +80,16 @@ func (registry *Registry) Observe(
 		retryAfter = *limits.retryAfter
 	}
 
-	return retryAfter, limiter.observe(limits)
+	limiter.observe(limits)
+	return retryAfter, nil
 }
 
+// limiter возвращает существующий лимитер или создаёт новый для пары.
 func (registry *Registry) limiter(
 	sellerID domain.SellerID,
 	bucketID policy.BucketID,
 ) (*bucketLimiter, error) {
-	if registry == nil ||
-		registry.specs == nil ||
-		registry.limiters == nil {
+	if registry == nil || registry.limiters == nil {
 		return nil, errRegistryRequired
 	}
 	if sellerID == "" {
@@ -125,7 +102,7 @@ func (registry *Registry) limiter(
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
 
-	spec, exists := registry.specs[bucketID]
+	spec, exists := registry.catalog.Spec(bucketID)
 	if !exists {
 		return nil, fmt.Errorf(
 			"%w: %q",

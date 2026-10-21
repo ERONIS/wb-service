@@ -28,12 +28,16 @@ func ExecuteForCabinet[Response any](
 ) (Response, error) {
 	if executors == nil {
 		var response Response
-		return response, fmt.Errorf("get WB cabinet executor: registry is nil")
+		return response, client.ExecutorUnavailableError(
+			fmt.Errorf("get WB cabinet executor: registry is nil"),
+		)
 	}
 	executor, err := executors.ExecutorForCabinet(sellerID)
 	if err != nil {
 		var response Response
-		return response, fmt.Errorf("get WB cabinet executor: %w", err)
+		return response, client.ExecutorUnavailableError(
+			fmt.Errorf("get WB cabinet executor: %w", err),
+		)
 	}
 	return client.ExecuteResponse[Response](ctx, executor, operation, query, body)
 }
@@ -49,12 +53,16 @@ func ExecutePinnedForCabinet[Response any](
 ) (Response, error) {
 	if executors == nil {
 		var response Response
-		return response, fmt.Errorf("get pinned WB cabinet executor: registry is nil")
+		return response, client.ExecutorUnavailableError(
+			fmt.Errorf("get pinned WB cabinet executor: registry is nil"),
+		)
 	}
 	executor, err := executors.PinnedExecutor(sellerID, generation)
 	if err != nil {
 		var response Response
-		return response, fmt.Errorf("get pinned WB cabinet executor: %w", err)
+		return response, client.ExecutorUnavailableError(
+			fmt.Errorf("get pinned WB cabinet executor: %w", err),
+		)
 	}
 	return client.ExecuteResponse[Response](ctx, executor, operation, query, body)
 }

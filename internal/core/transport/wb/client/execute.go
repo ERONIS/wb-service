@@ -37,10 +37,6 @@ func (client *APIClient) Execute(
 	result := executionResult{delivery: NotDispatched}
 
 	defer func() {
-		var classified *classifiedError
-		if errors.As(executeErr, &classified) && classified.delivery == ResponseReceived {
-			classified.httpStatus = result.statusCode
-		}
 		trace.complete(result, executeErr)
 		trace.log(clientLogger(client))
 	}()
@@ -49,6 +45,7 @@ func (client *APIClient) Execute(
 		result.err = newClassifiedError(
 			ErrorCodeInvalidRequest,
 			NotDispatched,
+			0,
 			0,
 			errAPIClientRequired,
 		)
@@ -59,6 +56,7 @@ func (client *APIClient) Execute(
 		result.err = newClassifiedError(
 			ErrorCodeInvalidRequest,
 			NotDispatched,
+			0,
 			0,
 			errRequestContextRequired,
 		)
@@ -74,6 +72,7 @@ func (client *APIClient) Execute(
 			result.err = newClassifiedError(
 				ErrorCodeInvalidResultTarget,
 				NotDispatched,
+				0,
 				0,
 				err,
 			)
@@ -91,6 +90,7 @@ func (client *APIClient) Execute(
 		result.err = newClassifiedError(
 			ErrorCodeInvalidRequest,
 			NotDispatched,
+			0,
 			0,
 			err,
 		)
@@ -115,16 +115,11 @@ func (client *APIClient) Execute(
 		)
 		trace.addLimiterWait(time.Since(waitStartedAt))
 		if waitErr != nil {
-			code := ErrorCodeRateLimited
-			if errors.Is(waitErr, context.Canceled) {
-				code = ErrorCodeCanceled
-			} else if errors.Is(waitErr, context.DeadlineExceeded) {
-				code = ErrorCodeDeadlineExceeded
-			}
 			waitResult := executionResult{
 				err: newClassifiedError(
-					code,
+					waitErrorCode(waitErr),
 					NotDispatched,
+					0,
 					0,
 					waitErr,
 				),
@@ -192,6 +187,7 @@ func (client *APIClient) Execute(
 			result.err = newClassifiedError(
 				code,
 				result.delivery,
+				result.statusCode,
 				0,
 				err,
 			)
@@ -264,6 +260,7 @@ func (client *APIClient) doAttempt(
 				ErrorCodeInvalidRequest,
 				NotDispatched,
 				0,
+				0,
 				err,
 			),
 			delivery: NotDispatched,
@@ -305,6 +302,7 @@ func (client *APIClient) transportErrorResult(
 				ErrorCodeTransport,
 				delivery,
 				0,
+				0,
 				newSafeTransportError(transportErr),
 			),
 			delivery:  delivery,
@@ -321,6 +319,7 @@ func (client *APIClient) transportErrorResult(
 	result.err = newClassifiedError(
 		ErrorCodeTransport,
 		ResponseReceived,
+		result.statusCode,
 		result.retryAfter,
 		newSafeTransportError(cause),
 	)
@@ -359,6 +358,7 @@ func (client *APIClient) responseResult(
 		result.err = newClassifiedError(
 			ErrorCodeInvalidResponse,
 			ResponseReceived,
+			result.statusCode,
 			0,
 			readErr,
 		)
@@ -376,14 +376,16 @@ func (client *APIClient) responseResult(
 		code = ErrorCodeRateLimited
 	}
 	result.retryable = response.IsRetryableStatus(result.statusCode)
+	message := "WB API request failed"
+	if summary := response.ErrorSummary(result.body); summary != "" {
+		message += ": " + summary
+	}
 	result.err = newClassifiedError(
 		code,
 		ResponseReceived,
+		result.statusCode,
 		result.retryAfter,
-		fmt.Errorf(
-			"WB API returned HTTP status %d",
-			result.statusCode,
-		),
+		errors.New(message),
 	)
 
 	return result
@@ -401,6 +403,7 @@ func retryInterruptedResult(
 	result.err = newClassifiedError(
 		ErrorCodeRetryInterrupted,
 		result.delivery,
+		result.statusCode,
 		0,
 		fmt.Errorf("WB read retry interrupted: %w", retryCause),
 	)

@@ -31,6 +31,7 @@ type requestTrace struct {
 	errorCode       string
 	err             error
 	observationErrs int
+	observationErr  error
 	dispatchCount   int
 	attempts        []int
 }
@@ -88,6 +89,9 @@ func (trace *requestTrace) recordObservationError(err error) {
 	}
 
 	trace.observationErrs++
+	if trace.observationErr == nil {
+		trace.observationErr = err
+	}
 }
 
 func (trace *requestTrace) complete(
@@ -130,7 +134,14 @@ func (trace *requestTrace) log(logger *zap.Logger) {
 	if trace.err != nil {
 		fields = append(fields, zap.NamedError("error", trace.err))
 	}
-	if trace.errorCode != "" {
+	if trace.observationErr != nil {
+		fields = append(fields, zap.NamedError("rate_limit_observation_error", trace.observationErr))
+	}
+	if trace.errorCode == ErrorCodeCanceled && trace.observationErr == nil {
+		logger.Debug("WB request completed", fields...)
+		return
+	}
+	if trace.errorCode != "" || trace.observationErr != nil {
 		logger.Warn("WB request completed", fields...)
 		return
 	}

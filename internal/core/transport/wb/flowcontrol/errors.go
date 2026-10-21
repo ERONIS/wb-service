@@ -13,7 +13,6 @@ var (
 	errRegistrySellerIDRequired = errors.New("rate limiter registry seller ID is required")
 	errRegistryBucketIDRequired = errors.New("rate limiter registry bucket ID is required")
 	ErrBucketNotRegistered      = errors.New("rate limiter bucket is not registered")
-	errLimiterReservationFailed = errors.New("rate limiter could not reserve a request token")
 	ErrLimiterQueueFull         = fmt.Errorf(
 		"rate limiter wait queue is full: %w",
 		core_errors.ErrQueueFull,

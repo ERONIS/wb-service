@@ -64,7 +64,7 @@ func main() {
 	wbClientset, err := core_wb.NewClientset(
 		ctx,
 		logger.Logger,
-		contentapi.BucketSpecs(),
+		contentapi.BucketCatalog(),
 	)
 	if err != nil {
 		panic(fmt.Errorf("create WB clientset: %w", err))

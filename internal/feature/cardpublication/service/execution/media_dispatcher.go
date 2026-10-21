@@ -994,7 +994,9 @@ func partialMediaMutationResult() MediaMutationResult {
 
 func classifyMediaError(err error) MediaMutationResult {
 	var classified core_wb.ClassifiedError
-	if !errors.As(err, &classified) {
+	if !errors.As(err, &classified) ||
+		(classified.Delivery() == core_wb.NotDispatched &&
+			classified.Code() == core_wb.ErrorCodeExecutorUnavailable) {
 		return MediaMutationResult{
 			Delivery:          SubmissionNotDispatched,
 			ClassifierVersion: mediaClassifierVersion,

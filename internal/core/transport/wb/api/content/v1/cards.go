@@ -1,23 +1,13 @@
 package v1
 
-type CardsLimitsResponse struct {
-	Data CardsLimits `json:"data"`
-	ResponseMeta
-}
+type CardsLimitsResponse = DataResponse[CardsLimits]
 
 type CardsLimits struct {
 	FreeLimits int64 `json:"freeLimits"`
 	PaidLimits int64 `json:"paidLimits"`
 }
 
-type TagsResponse struct {
-	Data []CardTag `json:"data"`
-	ResponseMeta
-}
-
-type CardsListQuery struct {
-	Locale Locale `url:"locale,omitempty"`
-}
+type CardsListQuery = LocaleQuery
 
 type CardsListRequest struct {
 	Settings CardsListSettings `json:"settings"`
@@ -123,9 +113,7 @@ type CardTag struct {
 	Color string `json:"color"`
 }
 
-type TrashCardsListQuery struct {
-	Locale Locale `url:"locale,omitempty"`
-}
+type TrashCardsListQuery = LocaleQuery
 
 type TrashCardsListRequest struct {
 	Settings TrashCardsListSettings `json:"settings"`
@@ -173,9 +161,7 @@ type TrashCard struct {
 	TrashedAt   string         `json:"trashedAt"`
 }
 
-type CardsErrorListQuery struct {
-	Locale Locale `url:"locale,omitempty"`
-}
+type CardsErrorListQuery = LocaleQuery
 
 type CardsErrorListRequest struct {
 	Cursor CardsErrorListCursor `json:"cursor"`
@@ -192,10 +178,7 @@ type CardsErrorListOrder struct {
 	Ascending bool `json:"ascending"`
 }
 
-type CardsErrorListResponse struct {
-	Data CardsErrorListData `json:"data"`
-	ResponseMeta
-}
+type CardsErrorListResponse = DataResponse[CardsErrorListData]
 
 type CardsErrorListData struct {
 	Items  []CardsErrorBatch        `json:"items"`
@@ -234,32 +217,6 @@ type UploadCardsAddRequest struct {
 	CardsToAdd []UploadCard `json:"cardsToAdd"`
 }
 
-type UpdateCardsRequest []UpdateCard
-
-type UpdateCard struct {
-	NMID            int64                  `json:"nmID"`
-	VendorCode      string                 `json:"vendorCode"`
-	KIZMarked       bool                   `json:"kizMarked"`
-	Brand           string                 `json:"brand"`
-	Title           string                 `json:"title"`
-	Description     string                 `json:"description"`
-	Dimensions      UploadDimensions       `json:"dimensions"`
-	Characteristics []UploadCharacteristic `json:"characteristics"`
-	Sizes           []UpdateSize           `json:"sizes"`
-}
-
-type UpdateSize struct {
-	CHRTID   int64    `json:"chrtID"`
-	TechSize string   `json:"techSize,omitempty"`
-	WBSize   string   `json:"wbSize,omitempty"`
-	SKUs     []string `json:"skus"`
-}
-
-type UpdateCardsResponse struct {
-	Data EmptyObject `json:"data"`
-	ResponseMeta
-}
-
 type UploadCard struct {
 	VendorCode      string                 `json:"vendorCode"`
 	KIZMarked       bool                   `json:"kizMarked,omitempty"`
@@ -296,12 +253,6 @@ type UploadSize struct {
 	SKUs     []string `json:"skus"`
 }
 
-type UploadCardsResponse struct {
-	Data EmptyObject `json:"data"`
-	ResponseMeta
-}
+type UploadCardsResponse = DataResponse[EmptyObject]
 
-type UploadCardsAddResponse struct {
-	Data EmptyObject `json:"data"`
-	ResponseMeta
-}
+type UploadCardsAddResponse = DataResponse[EmptyObject]

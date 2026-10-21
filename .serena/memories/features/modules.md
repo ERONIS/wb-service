@@ -17,7 +17,7 @@ Only Excel import creates batches; external WB-cabinet batch creation was remove
   - `repository/postgres/repository.go`: Persists cabinet entities in `wb.api_cabinets`.
   - `transport/telegram/`: Menus for adding, listing, and deleting seller cabinets dynamically.
 - **Invariants**:
-  - Tokens are never logged in plain text.
+  - Tokens are never logged in plain text. Verification maps Content `/ping` HTTP 401/403 to token rejection, 429 to a rate-limit category, and HTTP 5xx, transport failures, and malformed successful ping payloads to transient failure. `service.Add` preserves the verifier's category; the Telegram menu shows a transient message separately from an invalid-token message. Restore keeps transient failures pending for retry.
   - Verified cabinets are dynamically registered into `wbClientset` without restarting the process.
   - Background loop `RunRestoreRetry` retries only cabinets whose startup restoration failed transiently, tracked by cabinet ID and generation. Active clients are not pinged/replaced every tick. Expiry still removes runtime access and marks the stored cabinet expired. Restoration rechecks the current persisted generation/name under the same mutation lock as Add/Delete, avoiding stale-token resurrection; successful Add and Delete clear pending restoration. Permanently failed cabinets require explicit onboarding. Regression tests cover pending-only retries, expiry, token rotation and deletion between listing and restoration; verification tests reject incomplete/ambiguous catalog matches.
   - Startup `Initialize(ctx)` performs `Restore(ctx)` from `wb.api_cabinets`. Static env cabinet parsing is removed.
