@@ -15,7 +15,7 @@ func ExecuteResponse[Response any](
 ) (Response, error) {
 	var response Response
 	if executor == nil {
-		return response, errAPIClientRequired
+		return response, ExecutorUnavailableError(errAPIClientRequired)
 	}
 	if err := executor.Execute(ctx, operation, query, body, &response); err != nil {
 		return response, err

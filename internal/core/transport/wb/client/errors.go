@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net"
 	"time"
+
+	flowcontrol "github.com/ERONIS/wb-service/internal/core/transport/wb/flowcontrol"
 )
 
 var (
@@ -44,6 +46,8 @@ const (
 	ErrorCodeEmptyResponse       = "empty_response"
 	ErrorCodeInvalidResponse     = "invalid_response"
 	ErrorCodeRateLimited         = "rate_limited"
+	ErrorCodeLimiterQueueFull    = "limiter_queue_full"
+	ErrorCodeExecutorUnavailable = "executor_unavailable"
 	ErrorCodeCanceled            = "context_canceled"
 	ErrorCodeDeadlineExceeded    = "context_deadline_exceeded"
 	ErrorCodeRetryInterrupted    = "retry_interrupted"
@@ -83,18 +87,30 @@ type classifiedError struct {
 	cause      error
 }
 
+type safeTransportError struct {
+	message string
+	cause   error
+}
+
 func newClassifiedError(
 	code string,
 	delivery DeliveryState,
+	httpStatus int,
 	retryAfter time.Duration,
 	cause error,
 ) ClassifiedError {
 	return &classifiedError{
 		code:       code,
 		delivery:   delivery,
+		httpStatus: httpStatus,
 		retryAfter: retryAfter,
 		cause:      cause,
 	}
+}
+
+// ExecutorUnavailableError классифицирует отсутствие исполнителя до HTTP-отправки.
+func ExecutorUnavailableError(cause error) ClassifiedError {
+	return newClassifiedError(ErrorCodeExecutorUnavailable, NotDispatched, 0, 0, cause)
 }
 
 func newSafeTransportError(cause error) error {
@@ -110,7 +126,20 @@ func newSafeTransportError(cause error) error {
 		}
 	}
 
-	return fmt.Errorf("%s: %w", message, cause)
+	return &safeTransportError{message: message, cause: cause}
+}
+
+func waitErrorCode(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return ErrorCodeCanceled
+	case errors.Is(err, context.DeadlineExceeded):
+		return ErrorCodeDeadlineExceeded
+	case errors.Is(err, flowcontrol.ErrLimiterQueueFull):
+		return ErrorCodeLimiterQueueFull
+	default:
+		return ErrorCodeInvalidRequest
+	}
 }
 
 func (state DeliveryState) String() string {
@@ -130,11 +159,23 @@ func (state DeliveryState) String() string {
 }
 
 func (classifiedErr *classifiedError) Error() string {
+	prefix := "WB " + classifiedErr.code
+	if classifiedErr.httpStatus != 0 {
+		prefix = fmt.Sprintf("%s (HTTP %d)", prefix, classifiedErr.httpStatus)
+	}
 	if classifiedErr.cause == nil {
-		return classifiedErr.code
+		return prefix
 	}
 
-	return classifiedErr.cause.Error()
+	return prefix + ": " + classifiedErr.cause.Error()
+}
+
+func (transportErr *safeTransportError) Error() string {
+	return transportErr.message
+}
+
+func (transportErr *safeTransportError) Unwrap() error {
+	return transportErr.cause
 }
 
 func (classifiedErr *classifiedError) Unwrap() error {

@@ -13,24 +13,34 @@ type BucketSpec struct {
 	MaxWaiters int
 }
 
-// ValidateBucketSpecs проверяет настройки всех групп перед созданием ограничителей.
-func ValidateBucketSpecs(specs []BucketSpec) error {
+// BucketCatalog хранит проверенные настройки групп запросов.
+type BucketCatalog struct {
+	specs map[BucketID]BucketSpec
+}
+
+// NewBucketCatalog проверяет настройки и создаёт каталог групп запросов.
+func NewBucketCatalog(specs []BucketSpec) (BucketCatalog, error) {
 	if len(specs) == 0 {
-		return fmt.Errorf("rate limiter registry bucket specs are required")
+		return BucketCatalog{}, fmt.Errorf("rate limiter registry bucket specs are required")
 	}
 
-	seen := make(map[BucketID]struct{}, len(specs))
+	registeredSpecs := make(map[BucketID]BucketSpec, len(specs))
 	for index, spec := range specs {
 		if err := spec.validate(); err != nil {
-			return fmt.Errorf("invalid bucket spec at index %d: %w", index, err)
+			return BucketCatalog{}, fmt.Errorf("invalid bucket spec at index %d: %w", index, err)
 		}
-		if _, exists := seen[spec.ID]; exists {
-			return fmt.Errorf("duplicate rate limiter bucket ID %q", spec.ID)
+		if _, exists := registeredSpecs[spec.ID]; exists {
+			return BucketCatalog{}, fmt.Errorf("duplicate rate limiter bucket ID %q", spec.ID)
 		}
-		seen[spec.ID] = struct{}{}
+		registeredSpecs[spec.ID] = spec
 	}
 
-	return nil
+	return BucketCatalog{specs: registeredSpecs}, nil
+}
+
+func (catalog BucketCatalog) Spec(id BucketID) (BucketSpec, bool) {
+	spec, exists := catalog.specs[id]
+	return spec, exists
 }
 
 func (spec BucketSpec) validate() error {

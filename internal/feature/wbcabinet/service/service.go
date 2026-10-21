@@ -83,10 +83,7 @@ func (service *Service) add(ctx context.Context, command AddCommand) (Cabinet, e
 
 	prepared, err := service.verifier.Prepare(ctx, sellerID, command.Name, command.Token)
 	if err != nil {
-		return Cabinet{}, fmt.Errorf(
-			"prepare and verify WB credential: %w",
-			errors.Join(ErrVerification, err),
-		)
+		return Cabinet{}, fmt.Errorf("prepare and verify WB credential: %w", err)
 	}
 	generation := domain.NewClientGeneration(command.Token)
 	if generation != prepared.Generation() {

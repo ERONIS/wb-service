@@ -23,6 +23,8 @@ const (
 	ErrorCodeInvalidResultTarget = client.ErrorCodeInvalidResultTarget
 	ErrorCodeInvalidResponse     = client.ErrorCodeInvalidResponse
 	ErrorCodeRateLimited         = client.ErrorCodeRateLimited
+	ErrorCodeLimiterQueueFull    = client.ErrorCodeLimiterQueueFull
+	ErrorCodeExecutorUnavailable = client.ErrorCodeExecutorUnavailable
 	ErrorCodeRetryInterrupted    = client.ErrorCodeRetryInterrupted
 	ErrorCodeUnexpectedStatus    = client.ErrorCodeUnexpectedStatus
 	ErrorCodeTransport           = client.ErrorCodeTransport

@@ -1,7 +1,6 @@
 package transport
 
 import (
-	"crypto/tls"
 	"errors"
 	"net/http"
 )
@@ -10,12 +9,12 @@ var errUnsupportedDefaultTransport = errors.New(
 	"unsupported default HTTP transport",
 )
 
-// SharedTransport владеет общим connection pool всех WB-клиентов.
+// SharedTransport владеет общим пулом соединений всех клиентов WB.
 type SharedTransport struct {
 	base *http.Transport
 }
 
-// NewSharedTransport создаёт принадлежащую WB Core копию стандартного transport.
+// NewSharedTransport создаёт копию стандартного HTTP-транспорта для WB.
 func NewSharedTransport() (*SharedTransport, error) {
 	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
@@ -30,31 +29,26 @@ func NewSharedTransport() (*SharedTransport, error) {
 	}, nil
 }
 
-func configureWBTransport(transport *http.Transport) {
-	if transport == nil {
-		return
-	}
-	transport.ForceAttemptHTTP2 = false
-	transport.TLSNextProto = make(map[string]func(string, *tls.Conn) http.RoundTripper)
-	if transport.TLSClientConfig == nil {
-		transport.TLSClientConfig = &tls.Config{}
-	} else {
-		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
-	}
-	transport.TLSClientConfig.NextProtos = []string{"http/1.1"}
-	if transport.MaxIdleConns < 200 {
-		transport.MaxIdleConns = 200
-	}
-	if transport.MaxIdleConnsPerHost < 50 {
-		transport.MaxIdleConnsPerHost = 50
-	}
-}
-
-// CloseIdleConnections закрывает простаивающие соединения общего pool.
+// CloseIdleConnections закрывает простаивающие соединения общего пула.
 func (transport *SharedTransport) CloseIdleConnections() {
 	if transport == nil || transport.base == nil {
 		return
 	}
 
 	transport.base.CloseIdleConnections()
+}
+
+// configureWBTransport включает согласование HTTP/2 и настраивает пул соединений.
+func configureWBTransport(transport *http.Transport) {
+	if transport == nil {
+		return
+	}
+	transport.ForceAttemptHTTP2 = true
+	transport.TLSNextProto = nil
+	if transport.MaxIdleConns < 200 {
+		transport.MaxIdleConns = 200
+	}
+	if transport.MaxIdleConnsPerHost < 50 {
+		transport.MaxIdleConnsPerHost = 50
+	}
 }

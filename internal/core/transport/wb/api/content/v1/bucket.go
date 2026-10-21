@@ -8,7 +8,7 @@ import (
 
 const maxWaitersPerBucket = 256
 
-var contentBucketSpecs = []policy.BucketSpec{
+var contentBuckets = mustBucketCatalog([]policy.BucketSpec{
 	contentBucket(bucketIDContentPing, 10*time.Second, 3),
 	contentBucket(bucketIDContentCommon, 600*time.Millisecond, 5),
 	contentBucket(bucketIDBrands, time.Second, 5),
@@ -17,13 +17,12 @@ var contentBucketSpecs = []policy.BucketSpec{
 	contentBucket(bucketIDCardsList, 600*time.Millisecond, 5),
 	contentBucket(bucketIDCardsUpload, 6*time.Second, 5),
 	contentBucket(bucketIDCardsUploadAdd, 6*time.Second, 5),
-	contentBucket(bucketIDCardsUpdate, 6*time.Second, 5),
 	contentBucket(bucketIDMediaFiles, 600*time.Millisecond, 5),
-}
+})
 
-// BucketSpecs возвращает независимую копию политик Content API v1.
-func BucketSpecs() []policy.BucketSpec {
-	return append([]policy.BucketSpec(nil), contentBucketSpecs...)
+// BucketCatalog возвращает проверенные настройки лимитов Content API v1.
+func BucketCatalog() policy.BucketCatalog {
+	return contentBuckets
 }
 
 func contentBucket(id policy.BucketID, interval time.Duration, burst int) policy.BucketSpec {
@@ -33,4 +32,12 @@ func contentBucket(id policy.BucketID, interval time.Duration, burst int) policy
 		Burst:      burst,
 		MaxWaiters: maxWaitersPerBucket,
 	}
+}
+
+func mustBucketCatalog(specs []policy.BucketSpec) policy.BucketCatalog {
+	catalog, err := policy.NewBucketCatalog(specs)
+	if err != nil {
+		panic(err)
+	}
+	return catalog
 }

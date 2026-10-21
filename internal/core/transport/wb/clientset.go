@@ -11,12 +11,13 @@ import (
 	"time"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
-	client "github.com/ERONIS/wb-service/internal/core/transport/wb/client"
 	"github.com/ERONIS/wb-service/internal/core/transport/wb/credentials"
+	"go.uber.org/zap"
+
+	client "github.com/ERONIS/wb-service/internal/core/transport/wb/client"
 	flowcontrol "github.com/ERONIS/wb-service/internal/core/transport/wb/flowcontrol"
 	policy "github.com/ERONIS/wb-service/internal/core/transport/wb/policy"
 	transport "github.com/ERONIS/wb-service/internal/core/transport/wb/transport"
-	"go.uber.org/zap"
 )
 
 const defaultClientTimeout = 45 * time.Second
@@ -58,7 +59,7 @@ func (candidate *CredentialCandidate) Executor() client.Executor {
 func NewClientset(
 	ctx context.Context,
 	logger *zap.Logger,
-	bucketSpecs []policy.BucketSpec,
+	bucketCatalog policy.BucketCatalog,
 ) (*Clientset, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("WB startup context is required")
@@ -66,10 +67,7 @@ func NewClientset(
 	if logger == nil {
 		return nil, fmt.Errorf("WB logger is required")
 	}
-	rateLimiters, err := flowcontrol.NewRegistry(bucketSpecs)
-	if err != nil {
-		return nil, fmt.Errorf("create WB rate limiter registry: %w", err)
-	}
+	rateLimiters := flowcontrol.NewRegistry(bucketCatalog)
 	sharedTransport, err := transport.NewSharedTransport()
 	if err != nil {
 		return nil, fmt.Errorf("create WB shared HTTP transport: %w", err)
