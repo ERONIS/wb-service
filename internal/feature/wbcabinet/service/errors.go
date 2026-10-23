@@ -15,8 +15,7 @@ var (
 	ErrIdentityMismatch  = core_errors.ErrConflict
 	ErrDuplicateSeller   = core_errors.ErrConflict
 	ErrCabinetNameTaken  = core_errors.ErrConflict
-	// ErrVerification не доказывает отклонение токена: проверка может завершиться
-	// ошибкой из-за таймаута или временной недоступности WB.
+	// ErrVerification означает, что WB отклонил проверку токена.
 	ErrVerification            = core_errors.ErrUnauthorized
 	ErrVerificationRateLimited = core_errors.ErrRateLimited
 	ErrVerificationTransient   = core_errors.ErrUnavailable

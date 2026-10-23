@@ -26,9 +26,9 @@ func New(
 	uow core_postgres_transaction.UnitOfWork,
 	runtime wbcabinet_wb_transport.Runtime,
 ) (*Feature, error) {
-	repository := wbcabinet_postgres_repository.New(pool, uow)
+	repository := wbcabinet_postgres_repository.New(pool)
 	verifier := wbcabinet_wb_transport.NewVerifier(runtime)
-	service := wbcabinet_service.New(repository, verifier)
+	service := wbcabinet_service.New(repository, verifier, uow)
 	return &Feature{
 		service:  service,
 		telegram: wbcabinet_telegram_transport.New(ctx, service),

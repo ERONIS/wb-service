@@ -26,6 +26,24 @@
 /.vscode/
 /.idea/
 
+# Личные заметки и черновики
+/*.md
+!/README.md
+!/AGENTS.md
+!/GEMINI.md
+/notes/
+/drafts/
+/scratch/
+*.local.md
+*.draft.md
+
+# Временные файлы редакторов
+*~
+*.swp
+*.swo
+*.tmp
+*.bak
+
 # Файлы операционных систем
 .DS_Store
 Thumbs.db

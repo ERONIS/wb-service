@@ -45,6 +45,7 @@ func NewConnectionPool(
 	}
 	query := u.Query()
 	query.Set("sslmode", config.SSLMode)
+	query.Set("application_name", config.ApplicationName)
 	u.RawQuery = query.Encode()
 
 	pgxconfig, err := pgxpool.ParseConfig(u.String())

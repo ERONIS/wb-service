@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
+	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 )
 
 type PreparedCredential interface {
@@ -17,9 +18,10 @@ type Verifier interface {
 }
 
 type Repository interface {
+	OperationContext(context.Context) (context.Context, context.CancelFunc)
 	FindByOwnerAndName(context.Context, int64, string) (Cabinet, bool, error)
 	GetByOwner(context.Context, int64, SellerID) (Cabinet, error)
-	UpsertVerified(context.Context, VerifiedCredential) (Cabinet, error)
+	UpsertVerified(context.Context, core_postgres_transaction.DBTX, VerifiedCredential) (Cabinet, error)
 	ListByOwner(context.Context, int64) ([]Cabinet, error)
 	ListStored(context.Context) ([]StoredCabinet, error)
 	ListTargets(context.Context, int64) ([]TargetCredential, error)

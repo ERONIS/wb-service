@@ -42,6 +42,48 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
+// listTransfers выбирает страницу переносов по внутреннему статическому условию.
+func (repository *Repository) listTransfers(
+	ctx context.Context,
+	afterID transfer_service.TransferID,
+	limit int,
+	condition string,
+	operation string,
+) ([]transfer_service.Transfer, error) {
+	if afterID < 0 || limit <= 0 || limit > initializationListPageLimit {
+		return nil, core_errors.ErrInvalidArgument
+	}
+	ctx, cancel := repository.pool.OperationContext(ctx)
+	defer cancel()
+
+	query := `
+		SELECT ` + transferColumns + `
+		FROM wb.transfers AS transfer
+		WHERE ` + condition + `
+			AND transfer.id > $1
+		ORDER BY transfer.id
+		LIMIT $2;
+	`
+	rows, err := repository.pool.Query(ctx, query, afterID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list %s transfers: %w", operation, err)
+	}
+	defer rows.Close()
+
+	transfers := make([]transfer_service.Transfer, 0)
+	for rows.Next() {
+		transfer, err := scanTransfer(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan %s transfer: %w", operation, err)
+		}
+		transfers = append(transfers, transfer)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate %s transfers: %w", operation, err)
+	}
+	return transfers, nil
+}
+
 func (repository *Repository) FindByBatch(
 	ctx context.Context,
 	batchID cardpipeline.BatchID,
@@ -87,13 +129,32 @@ func (repository *Repository) ListTargetSellerIDs(
 ) ([]transfer_service.SellerID, error) {
 	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
+	return listTargetSellerIDs(ctx, repository.pool, transferID)
+}
+
+func (repository *Repository) ListTargetSellerIDsWithin(
+	ctx context.Context,
+	tx core_postgres_transaction.DBTX,
+	transferID transfer_service.TransferID,
+) ([]transfer_service.SellerID, error) {
+	if tx == nil {
+		return nil, errors.New("list transfer targets: DBTX is nil")
+	}
+	return listTargetSellerIDs(ctx, tx, transferID)
+}
+
+func listTargetSellerIDs(
+	ctx context.Context,
+	db core_postgres_transaction.DBTX,
+	transferID transfer_service.TransferID,
+) ([]transfer_service.SellerID, error) {
 	const query = `
 		SELECT seller_id
 		FROM wb.transfer_targets
 		WHERE transfer_id = $1
 		ORDER BY position;
 	`
-	rows, err := repository.pool.Query(ctx, query, transferID)
+	rows, err := db.Query(ctx, query, transferID)
 	if err != nil {
 		return nil, fmt.Errorf("select transfer targets: %w", err)
 	}

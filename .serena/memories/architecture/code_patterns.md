@@ -2,6 +2,13 @@
 
 ## Go Source Layout
 - Package-level constants, variables, aliases, structs, and interfaces precede all functions and methods in each Go source file (`AGENTS.md`).
+- In WB policy, related small string types are grouped in one `type` block without repetitive per-type comments; this preserves distinct Go types while keeping declarations compact.
+- Mutex fields use value `sync.Mutex` or `sync.RWMutex` so their zero value is ready to use. A single generic lock is named `mu`; structures with several locks keep distinct purpose-based names.
+- `flowcontrol/limiter.go` places its entry points (`newBucketLimiter`, `wait`, `observe`) before the helpers they call; helpers follow caller-before-callee order and each function has a short Russian purpose comment.
+- `flowcontrol/response.go` places `parseResponseRateLimits` first, followed by header-level readers and low-level value parsers in caller-before-callee order; each function has a short Russian purpose comment.
+- `flowcontrol/registry.go` keeps `NewRegistry`, `Wait`, and `Observe` above the private limiter lookup/creation helper; declarations and functions have short Russian purpose comments.
+- `credentials/token.go` places public token parsing, shape validation, and permission checking before private claim/UUID parsing helpers; each declaration and function has a short Russian purpose comment.
+- `transport/transport.go` keeps public shared-transport creation and idle-connection closing above private HTTP/2 negotiation and idle-pool tuning; each function has a short Russian purpose comment.
 
 ## 1. Cryptographic Hashing (`internal/core/canonicalhash`)
 - **Structure**: `canonicalhash.NewSHA256(domain string) *Builder`.
@@ -16,8 +23,11 @@
 - **Mechanics**:
   - Begins transaction via `beginner.BeginTx(ctx, options)`.
   - Injects `DBTX` interface (`Exec`, `Query`, `QueryRow`, `CopyFrom`).
-  - Automatic `defer tx.Rollback(rollbackCtx)` with isolated 5-second timeout on error or panic.
+  - UoW rolls back with an isolated 5-second context on error or panic; panic is rethrown after cleanup. Core tests cover the panic path, rollback count, and lifecycle stats.
   - Commits atomically on `fn` returning `nil`.
+  - `PGXUnitOfWork.WithinTransactionWithSettings` adds an optional operation budget, per-transaction `statement_timeout`/`lock_timeout` via `set_config(..., true)`, and optional `pgx.TxOptions` override. The existing `UnitOfWork` interface remains unchanged; `ConfigurableUnitOfWork` exposes the extended operation to callers that need it. A transaction context marker rejects nested UoW calls when the callback context is propagated. `Stats()` exposes cumulative atomic lifecycle counters and elapsed time, with no automatic retries.
+  - `PrepareTx`, `PrepareTxWithStatementTimeout` and callback UoW share the private `beginPreparedTransaction` → `Configure` → `Commit`/`Rollback` lifecycle. Prepared helpers expose explicit commit/rollback closures; UoW retains callback ownership and atomic lifecycle counters. `DeferRollback` uses a detached bounded context and treats `pgx.ErrTxClosed` as completed cleanup.
+  - Pool tracer measures connection acquisition as well as SQL/CopyFrom; errors are logged only as bounded categories and SQLSTATE, without arbitrary error text or SQL arguments. `ConnectionPool` exposes pgxpool's `Stat()` through embedding.
 
 ## 3. WB Client Flow Control & Safety Policy (`internal/core/transport/wb`)
 - **Token Bucket Rate Limiter (`flowcontrol/limiter.go`)**:
@@ -25,10 +35,10 @@
   - Rate limits partitioned per cabinet and Content API bucket.
   - Response adaptation: observes `X-Ratelimit-*` headers, clamps available tokens to the reported remaining count, and sets `blockedUntil` on HTTP 429 (using `Retry-After` when present). Configured interval and burst remain fixed.
   - Bounded queue: uses `waiters chan struct{}` to reject callers with `ErrLimiterQueueFull` when backlog overflows.
-- **Operation routing (`policy/operation.go`)**: Each operation carries a validated lowercase WB API subdomain under `wildberries.ru` and a path; malformed labels, external domains, ports, userinfo, and schemes in the host are rejected. Request preparation combines them as HTTPS per call; the credential-bound executor and `Clientset` contain no fixed API URL. API bucket specs are supplied by the composition root at registry construction.
+- **Operation routing (`policy/operation.go`)**: Each operation carries a validated lowercase WB API subdomain under `wildberries.ru` and a path; malformed labels, external domains, ports, userinfo, and schemes in the host are rejected. Request preparation combines them as HTTPS per call; the credential-bound executor and `Clientset` contain no fixed API URL. `policy` owns the stable `BucketID`, `BucketSpec` rate parameters, and `BucketCatalog` construction/validation. Content builds the validated catalog at package initialization, the composition root supplies it to `Clientset`, and `flowcontrol.NewRegistry` uses it without static-config validation before constructing runtime limiters. `OperationSpec.Kind` is validated with the retry mode during construction but is not stored in the resulting `Operation`; runtime retry logic uses the validated retry mode. `Operation` copies allowed success statuses when built and exposes only `IsSuccessStatus`; unused getters for the raw status list and operation kind were removed.
 - **Strict Safe-Retry Policy (`policy/retry.go`)**:
   - Two modes: `RetryModeNever` and `RetryModeReadSafe`.
-  - Core retries require read semantics (`OperationKindRead`) and `RetryModeReadSafe`; this includes POST catalog reads. `policy.DefaultMaxReadAttempts` fixes three read attempts; `flowcontrol.DefaultRetryBaseDelay` fixes the 500 ms base delay. `APIClient` no longer accepts retry settings from `Clientset`.
+  - Core retries require read semantics (`OperationKindRead`) and `RetryModeReadSafe`; this includes POST catalog reads. `policy.DefaultMaxReadAttempts` fixes three read attempts; `policy.DefaultRetryBaseDelay` fixes the 500 ms base delay; the private client executor performs the cancellable retry wait after the retry decision. `APIClient` no longer accepts retry settings from `Clientset`.
   - Mutation operations use `RetryModeNever` inside the core executor. Publication sends link/file mutations once per business attempt; its local retry helper is restricted to downloading external media. Unknown delivery is handled by business reconciliation.
 - **Crash Recovery & Reconciliation**:
   - `ProductDispatcher.ProcessPending` begins by calling `ListInterruptedProductActions` to re-verify actions left in-flight during a service crash before picking up new work.

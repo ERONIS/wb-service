@@ -4,7 +4,7 @@
 Every feature module is encapsulated in `internal/feature/<name>` and follows a strict 3-tier internal layout:
 - `transport/`: External adapters — either Telegram menus/handlers (`transport/telegram/`) or WB client adapters (`transport/wb/`).
 - `service/`: Core business logic, domain models, validations, and state machines.
-- `repository/`: PostgreSQL queries. Target convention is explicit DBTX with service-owned UoW for multi-write scenarios; actual exceptions remain: cardimport parsing/continue use repository-owned Begin, while wbcabinet opens UoW inside its repository. Statistics repository is read-only; positive verification goes through publication-owned UoW. Standalone reads and some single-statement writes use the pool.
+- `repository/`: PostgreSQL queries. Multi-write cardimport parsing/continue/finalize and wbcabinet verified upsert use service-owned UoW with explicit repository `DBTX`. The cardimport and wbcabinet repositories supply `OperationContext` so connection acquisition and their short write transactions retain the pool operation budget. Statistics repository is read-only; positive verification goes through publication-owned UoW. Standalone reads and some single-statement writes use the pool.
 Only Excel import creates batches; external WB-cabinet batch creation was removed. Features expose public facades via `feature.go` and interact solely through Go interfaces defined in the composition root (`cmd/wb-service/main.go`).
 
 ---
@@ -17,7 +17,8 @@ Only Excel import creates batches; external WB-cabinet batch creation was remove
   - `repository/postgres/repository.go`: Persists cabinet entities in `wb.api_cabinets`.
   - `transport/telegram/`: Menus for adding, listing, and deleting seller cabinets dynamically.
 - **Invariants**:
-  - Tokens are never logged in plain text.
+  - Tokens are never logged in plain text. Verification maps Content `/ping` HTTP 401/403 to token rejection, 429 to a rate-limit category, and HTTP 5xx, transport failures, and malformed successful ping payloads to transient failure. `service.Add` preserves the verifier's category; the Telegram menu shows a transient message separately from an invalid-token message. Restore keeps transient failures pending for retry.
+  - `Service.Add` verifies WB before its UoW, calls `Repository.UpsertVerified(ctx, DBTX, credential)` inside the transaction, and activates the prepared runtime client only after successful commit. The repository no longer owns a UoW.
   - Verified cabinets are dynamically registered into `wbClientset` without restarting the process.
   - Background loop `RunRestoreRetry` retries only cabinets whose startup restoration failed transiently, tracked by cabinet ID and generation. Active clients are not pinged/replaced every tick. Expiry still removes runtime access and marks the stored cabinet expired. Restoration rechecks the current persisted generation/name under the same mutation lock as Add/Delete, avoiding stale-token resurrection; successful Add and Delete clear pending restoration. Permanently failed cabinets require explicit onboarding. Regression tests cover pending-only retries, expiry, token rotation and deletion between listing and restoration; verification tests reject incomplete/ambiguous catalog matches.
   - Startup `Initialize(ctx)` performs `Restore(ctx)` from `wb.api_cabinets`. Static env cabinet parsing is removed.
@@ -32,6 +33,7 @@ Only Excel import creates batches; external WB-cabinet batch creation was remove
   - `repository/postgres/`: Tables `wb.card_import_sessions`, `wb.card_import_files`, `wb.card_import_issues`, `wb.card_batches`, `wb.card_batch_items`.
 - **Invariants**:
   - The cards menu exposes only Excel transfer; the extension button hook for removed features is gone.
+  - Parsing and continue writes run through service UoW; a failed CopyFrom or canceled continue transaction must roll back file/session/issue changes together. Concurrent saves for different files of one session serialize the session revision update. Dedicated PostgreSQL integration tests require `POSTGRES_TEST_DSN` and the migrated schema.
   - Committed batches are assigned a deterministic `canonicalhash.Digest`. Once finalized, batch items are strictly immutable.
 
 ## 3. `cardprepare` (WB Schema Adaptation & Validation)
@@ -39,7 +41,7 @@ Only Excel import creates batches; external WB-cabinet batch creation was remove
 - **Key Subsystems**:
   - `service/preparation/catalog.go` & `catalog_cache.go`: Queries WB category rules, required characteristics, and constraint dictionaries, caching responses in memory. `transport/wb/catalog.go` selects only the required Content operations through the shared core executor registry.
   - `service/preparation/upload_validation.go`: Validates product characteristics, dimensions, and barcodes against target cabinet category constraints. Rejected preparation is logged with bounded product context (vendor code, source rows, category, group size); long titles include normalized actual/max rune counts, unsupported `18+` includes parsed input, and invalid directory values include characteristic identity, offending value, directory count and a bounded sample. The log remains diagnostic only; no source or outcome is changed. Diagnostic strings and directory samples are rune-bounded to keep log entries manageable; a focused unit test covers the invalid-directory diagnostic payload. Formatting is Go-standard.
-  - `service/workflow/processor.go`: Implements `Processor()` invoked by transfer poller; processes `PreparationPendingGroup` directly with `fairPendingGroupOrder`, eliminating `PreparationWork`, `WorkStatus`, `PreparationID`, and `PreparationGroupID`.
+  - `service/workflow/processor.go`: Implements `Processor()` invoked by transfer poller; processes `PreparationPendingGroup` directly using bounded keyset batches and a per-transfer in-memory cursor, eliminating `PreparationWork`, `WorkStatus`, `PreparationID`, and `PreparationGroupID`.
   - `repository/postgres/`: Pure read repository (`proposal.go`) loading proposals for planning; zero write queries (result persistence and artifact storage are managed atomically by `transfer`).
   - `repository/postgres/`: Manages immutable proposal artifacts in `wb.card_preparation_artifacts (group_target_id)` and reads proposals directly from `wb.transfer_items` without intermediate tables.
 - **Invariants**:

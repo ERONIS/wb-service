@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 )
 
@@ -16,6 +17,7 @@ const slowQueryThreshold = 500 * time.Millisecond
 
 type queryTraceKey struct{}
 type copyTraceKey struct{}
+type acquireTraceKey struct{}
 
 type queryTraceData struct {
 	startTime time.Time
@@ -27,7 +29,11 @@ type copyTraceData struct {
 	tableName string
 }
 
-// queryTracer реализует интерфейсы pgx.QueryTracer и pgx.CopyFromTracer для безопасного логирования.
+type acquireTraceData struct {
+	startTime time.Time
+}
+
+// queryTracer регистрирует SQL, CopyFrom и ожидание соединения без текста ошибок и аргументов.
 type queryTracer struct {
 	logger *zap.Logger
 }
@@ -82,7 +88,7 @@ func (t *queryTracer) TraceQueryEnd(
 		if errors.As(data.Err, &pgErr) {
 			fields = append(fields, zap.String("sqlstate", pgErr.Code))
 		}
-		fields = append(fields, zap.Error(data.Err))
+		fields = append(fields, zap.String("error_kind", safeErrorKind(data.Err)))
 		t.logger.Warn("ошибка выполнения SQL запроса", fields...)
 		return
 	}
@@ -135,7 +141,7 @@ func (t *queryTracer) TraceCopyFromEnd(
 		if errors.As(data.Err, &pgErr) {
 			fields = append(fields, zap.String("sqlstate", pgErr.Code))
 		}
-		fields = append(fields, zap.Error(data.Err))
+		fields = append(fields, zap.String("error_kind", safeErrorKind(data.Err)))
 		t.logger.Warn("ошибка выполнения CopyFrom", fields...)
 		return
 	}
@@ -148,7 +154,56 @@ func (t *queryTracer) TraceCopyFromEnd(
 	t.logger.Debug("операция CopyFrom завершена", fields...)
 }
 
-// extractOperation извлекает краткую сигнатуру команды (первые 2 слова) без параметров.
+// TraceAcquireStart запоминает начало ожидания соединения из пула.
+func (t *queryTracer) TraceAcquireStart(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	data pgxpool.TraceAcquireStartData,
+) context.Context {
+	return context.WithValue(ctx, acquireTraceKey{}, acquireTraceData{startTime: time.Now()})
+}
+
+// TraceAcquireEnd записывает длительность ожидания соединения и безопасный тип ошибки.
+func (t *queryTracer) TraceAcquireEnd(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	data pgxpool.TraceAcquireEndData,
+) {
+	traceData, ok := ctx.Value(acquireTraceKey{}).(acquireTraceData)
+	if !ok {
+		return
+	}
+	duration := time.Since(traceData.startTime)
+	fields := []zap.Field{zap.Duration("duration", duration)}
+	if data.Err != nil {
+		fields = append(fields, zap.String("error_kind", safeErrorKind(data.Err)))
+		t.logger.Warn("ошибка получения соединения PostgreSQL", fields...)
+		return
+	}
+	if duration > slowQueryThreshold {
+		t.logger.Warn("долгое ожидание соединения PostgreSQL", fields...)
+		return
+	}
+	t.logger.Debug("соединение PostgreSQL получено", fields...)
+}
+
+// safeErrorKind возвращает ограниченную категорию ошибки без её произвольного текста.
+func safeErrorKind(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	default:
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) {
+			return "postgres"
+		}
+		return "other"
+	}
+}
+
+// extractOperation извлекает только ключевое слово SQL без параметров и имён объектов.
 func extractOperation(sql string) string {
 	trimmed := strings.TrimSpace(sql)
 	if trimmed == "" {
@@ -158,8 +213,12 @@ func extractOperation(sql string) string {
 	if len(parts) == 0 {
 		return "UNKNOWN"
 	}
-	if len(parts) == 1 {
-		return strings.ToUpper(parts[0])
+	for _, character := range parts[0] {
+		if character < 'A' || character > 'Z' {
+			if character < 'a' || character > 'z' {
+				return "UNKNOWN"
+			}
+		}
 	}
-	return strings.ToUpper(parts[0] + " " + parts[1])
+	return strings.ToUpper(parts[0])
 }

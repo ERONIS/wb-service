@@ -10,6 +10,7 @@ import (
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	transfer "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	"github.com/ERONIS/wb-service/internal/feature/transfer/service/preparation"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -76,7 +77,7 @@ func TestPreparationReplayAfterCompletion(t *testing.T) {
 				Status: transfer.PreparationResultSucceeded, OutcomeCode: "prepared", StartedAt: now, FinishedAt: now,
 				Artifact: artifact, ProposalRoot: artifact.ProposalRoot}
 			if tc.status == "rejected" || tc.status == "unresolved" {
-				cmd.Status = transfer.PreparationResultStatus(tc.status)
+				cmd.Status = preparation.PreparationResultStatus(tc.status)
 				cmd.OutcomeCode = "invalid"
 				cmd.Artifact = nil
 				cmd.ProposalRoot = transfer.Digest{}

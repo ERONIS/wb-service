@@ -16,48 +16,18 @@ func (repository *Repository) ListPreparing(
 	afterID transfer_service.TransferID,
 	limit int,
 ) ([]transfer_service.Transfer, error) {
-	if afterID < 0 || limit <= 0 || limit > initializationListPageLimit {
-		return nil, core_errors.ErrInvalidArgument
-	}
-	ctx, cancel := repository.pool.OperationContext(ctx)
-	defer cancel()
-
-	query := `
-		SELECT ` + transferColumns + `
-		FROM wb.transfers AS transfer
-		WHERE transfer.phase IN (
+	const condition = `transfer.phase IN (
 				'preparing', 'awaiting_authorization', 'publishing',
 				'reconciling', 'media'
 			)
 			AND transfer.outcome = 'running'
-			AND transfer.id > $1
 			AND EXISTS (
 				SELECT 1
 				FROM wb.transfer_group_targets AS pending_group
 				WHERE pending_group.transfer_id = transfer.id
 				  AND pending_group.preparation_status IN ('not_started', 'running')
-			)
-		ORDER BY transfer.id
-		LIMIT $2;
-	`
-	rows, err := repository.pool.Query(ctx, query, afterID, limit)
-	if err != nil {
-		return nil, fmt.Errorf("list preparing transfers: %w", err)
-	}
-	defer rows.Close()
-
-	transfers := make([]transfer_service.Transfer, 0)
-	for rows.Next() {
-		transfer, err := scanTransfer(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan preparing transfer: %w", err)
-		}
-		transfers = append(transfers, transfer)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate preparing transfers: %w", err)
-	}
-	return transfers, nil
+			)`
+	return repository.listTransfers(ctx, afterID, limit, condition, "preparing")
 }
 
 func (repository *Repository) BeginPreparation(

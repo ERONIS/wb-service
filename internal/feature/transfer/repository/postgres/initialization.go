@@ -20,39 +20,8 @@ func (repository *Repository) ListInitializing(
 	afterID transfer_service.TransferID,
 	limit int,
 ) ([]transfer_service.Transfer, error) {
-	if afterID < 0 || limit <= 0 || limit > initializationListPageLimit {
-		return nil, core_errors.ErrInvalidArgument
-	}
-	ctx, cancel := repository.pool.OperationContext(ctx)
-	defer cancel()
-
-	query := `
-		SELECT ` + transferColumns + `
-		FROM wb.transfers AS transfer
-		WHERE transfer.phase = 'initializing'
-			AND transfer.outcome = 'running'
-			AND transfer.id > $1
-		ORDER BY transfer.id
-		LIMIT $2;
-	`
-	rows, err := repository.pool.Query(ctx, query, afterID, limit)
-	if err != nil {
-		return nil, fmt.Errorf("list initializing transfers: %w", err)
-	}
-	defer rows.Close()
-
-	transfers := make([]transfer_service.Transfer, 0)
-	for rows.Next() {
-		transfer, err := scanTransfer(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan initializing transfer: %w", err)
-		}
-		transfers = append(transfers, transfer)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate initializing transfers: %w", err)
-	}
-	return transfers, nil
+	const condition = `transfer.phase = 'initializing' AND transfer.outcome = 'running'`
+	return repository.listTransfers(ctx, afterID, limit, condition, "initializing")
 }
 
 func (repository *Repository) Initialize(

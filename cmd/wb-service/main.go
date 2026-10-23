@@ -64,7 +64,7 @@ func main() {
 	wbClientset, err := core_wb.NewClientset(
 		ctx,
 		logger.Logger,
-		contentapi.BucketSpecs(),
+		contentapi.BucketCatalog(),
 	)
 	if err != nil {
 		panic(fmt.Errorf("create WB clientset: %w", err))
@@ -207,9 +207,9 @@ func main() {
 			},
 			cardprepareFeature.Processor(),
 			cardpublicationFeature.Processor(),
-			cardpublicationFeature.ErrorFeed(),
 			transferFeature.AutomaticAuthorizationProcessor(),
 			cardpublicationFeature.ProductDispatcher(),
+			cardpublicationFeature.ErrorFeed(),
 		); err != nil && ctx.Err() == nil {
 			logger.Logger.Error("run transfer polling", zap.Error(err))
 			cancel()

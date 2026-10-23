@@ -1,27 +1,13 @@
 package client
 
 import (
-	"context"
-	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	flowcontrol "github.com/ERONIS/wb-service/internal/core/transport/wb/flowcontrol"
-	policy "github.com/ERONIS/wb-service/internal/core/transport/wb/policy"
 	"go.uber.org/zap"
 )
-
-// Executor — узкий контракт выполнения для типизированных клиентов.
-type Executor interface {
-	Execute(
-		ctx context.Context,
-		operation policy.Operation,
-		query any,
-		body any,
-		target any,
-	) error
-}
 
 // APIClient содержит общие зависимости для выполнения WB-запросов.
 type APIClient struct {
@@ -30,11 +16,8 @@ type APIClient struct {
 	token        string
 	httpClient   *http.Client
 	rateLimiters *flowcontrol.Registry
-	backoff      flowcontrol.Backoff
 	logger       *zap.Logger
 }
-
-var _ Executor = (*APIClient)(nil)
 
 // NewAPIClient создаёт внутренний клиент WB API.
 func NewAPIClient(
@@ -55,27 +38,17 @@ func NewAPIClient(
 		return nil, err
 	}
 
-	backoff, err := flowcontrol.NewBackoff(flowcontrol.DefaultRetryBaseDelay)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"create WB API retry backoff: %w",
-			err,
-		)
-	}
-
-	httpClientCopy := *httpClient
-
 	return &APIClient{
 		sellerID:     sellerID,
 		cabinetName:  cabinetName,
 		token:        token,
-		httpClient:   &httpClientCopy,
+		httpClient:   httpClient,
 		rateLimiters: rateLimiters,
-		backoff:      backoff,
 		logger:       logger,
 	}, nil
 }
 
+// validateAPIClientDependencies проверяет данные кабинета и общие зависимости клиента.
 func validateAPIClientDependencies(
 	sellerID domain.SellerID,
 	cabinetName string,

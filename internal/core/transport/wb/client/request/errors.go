@@ -12,15 +12,6 @@ var (
 	errRequestBodyModeUnsupported = errors.New(
 		"WB request has unsupported body mode",
 	)
-	errRequestOperationRequired = errors.New(
-		"WB request operation is required",
-	)
-	errRequestContextRequired = errors.New(
-		"WB request context is required",
-	)
-	errRequestNotPrepared = errors.New(
-		"WB request is not prepared",
-	)
 	errHTTPRequestBuildFailed = errors.New(
 		"build WB HTTP request",
 	)

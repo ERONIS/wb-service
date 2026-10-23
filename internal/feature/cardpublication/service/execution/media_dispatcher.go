@@ -787,27 +787,10 @@ func (dispatcher *MediaDispatcher) closeAuthorizationIfPlanTerminal(
 	tx core_postgres_transaction.DBTX,
 	action MediaAction,
 ) error {
-	terminal, err := dispatcher.repository.PublicationPlanTerminal(
-		ctx,
-		tx,
-		action.TransferID,
-		action.PlanID,
+	return closeTerminalPlanAuthorization(
+		ctx, tx, dispatcher.repository, dispatcher.authorization,
+		action.ProductActionCandidate, action.PlanID,
 	)
-	if err != nil || !terminal {
-		return err
-	}
-	_, err = dispatcher.authorization.CloseWithin(
-		ctx,
-		tx,
-		transfer_service.ChangeLiveAuthorizationStateCommand{
-			TransferID:         action.TransferID,
-			AuthorizationID:    action.AuthorizationID,
-			ExpectedRevision:   action.AuthorizationRevision,
-			ExpectedPlanDigest: transfer_service.Digest(action.PlanDigest),
-			SafeReasonCode:     "publication_plan_terminal",
-		},
-	)
-	return err
 }
 
 func (dispatcher *MediaDispatcher) loadLockedAction(
@@ -994,7 +977,9 @@ func partialMediaMutationResult() MediaMutationResult {
 
 func classifyMediaError(err error) MediaMutationResult {
 	var classified core_wb.ClassifiedError
-	if !errors.As(err, &classified) {
+	if !errors.As(err, &classified) ||
+		(classified.Delivery() == core_wb.NotDispatched &&
+			classified.Code() == core_wb.ErrorCodeExecutorUnavailable) {
 		return MediaMutationResult{
 			Delivery:          SubmissionNotDispatched,
 			ClassifierVersion: mediaClassifierVersion,

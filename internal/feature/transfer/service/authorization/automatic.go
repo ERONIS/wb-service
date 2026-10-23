@@ -13,20 +13,26 @@ import (
 
 const automaticAuthorizationPageSize = 100
 
+type AutomaticAuthorizationPlanSource interface {
+	ListAutomaticAuthorizationPlans(context.Context, TransferID, int64, int) ([]AuthorizationPlanSummary, error)
+}
+
 type AutomaticLiveAuthorization interface {
 	LiveEnabled() bool
 	Authorize(context.Context, LiveTrustedActor, RequestLiveCommand) (LiveAuthorization, error)
 }
 
 type AutomaticAuthorizationProcessor struct {
-	plans         LivePlanSource
-	authorization AutomaticLiveAuthorization
-	logger        *zap.Logger
-	processMu     sync.Mutex
+	plans           AutomaticAuthorizationPlanSource
+	authorization   AutomaticLiveAuthorization
+	logger          *zap.Logger
+	processMu       sync.Mutex
+	afterTransferID TransferID
+	afterPlanID     int64
 }
 
 func NewAutomaticAuthorizationProcessor(
-	plans LivePlanSource,
+	plans AutomaticAuthorizationPlanSource,
 	authorization AutomaticLiveAuthorization,
 	loggers ...*zap.Logger,
 ) *AutomaticAuthorizationProcessor {
@@ -41,6 +47,13 @@ func NewAutomaticAuthorizationProcessor(
 }
 
 func (processor *AutomaticAuthorizationProcessor) ProcessPending(ctx context.Context) error {
+	return processor.ProcessPendingWithNotify(ctx, nil)
+}
+
+func (processor *AutomaticAuthorizationProcessor) ProcessPendingWithNotify(
+	ctx context.Context,
+	onProgress func(),
+) error {
 	if ctx == nil {
 		return errors.New("process automatic live authorization: context is nil")
 	}
@@ -52,20 +65,50 @@ func (processor *AutomaticAuthorizationProcessor) ProcessPending(ctx context.Con
 
 	plans, err := processor.plans.ListAutomaticAuthorizationPlans(
 		ctx,
+		processor.afterTransferID,
+		processor.afterPlanID,
 		automaticAuthorizationPageSize,
 	)
 	if err != nil {
 		return fmt.Errorf("list automatic live authorization plans: %w", err)
 	}
+	if len(plans) == 0 && processor.afterTransferID != 0 {
+		processor.afterTransferID = 0
+		processor.afterPlanID = 0
+		plans, err = processor.plans.ListAutomaticAuthorizationPlans(
+			ctx,
+			0,
+			0,
+			automaticAuthorizationPageSize,
+		)
+		if err != nil {
+			return fmt.Errorf("list automatic live authorization plans: %w", err)
+		}
+	}
+
 	var firstErr error
 	for _, plan := range plans {
-		if err := processor.authorize(ctx, plan); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf(
-				"authorize publication plan for transfer ID='%d': %w",
-				plan.TransferID,
-				err,
-			)
+		if err := processor.authorize(ctx, plan); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf(
+					"authorize publication plan for transfer ID='%d': %w",
+					plan.TransferID,
+					err,
+				)
+			}
+			continue
 		}
+		if onProgress != nil {
+			onProgress()
+		}
+	}
+	if len(plans) == automaticAuthorizationPageSize {
+		last := plans[len(plans)-1]
+		processor.afterTransferID = last.TransferID
+		processor.afterPlanID = last.PlanID
+	} else {
+		processor.afterTransferID = 0
+		processor.afterPlanID = 0
 	}
 	return firstErr
 }

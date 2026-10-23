@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -55,10 +56,10 @@ func (verifier *Verifier) Prepare(
 		return nil, fmt.Errorf("check WB Content API token: %w", classifyVerificationError(err))
 	}
 	if strings.TrimSpace(ping.Status) != "OK" {
-		return nil, errors.New("WB Content API ping returned invalid status")
+		return nil, fmt.Errorf("WB Content API ping returned invalid status: %w", wbcabinet_service.ErrVerificationTransient)
 	}
 	if _, err := time.Parse(time.RFC3339, ping.Timestamp); err != nil {
-		return nil, errors.New("WB Content API ping returned invalid timestamp")
+		return nil, fmt.Errorf("WB Content API ping returned invalid timestamp: %w", wbcabinet_service.ErrVerificationTransient)
 	}
 	return &preparedCredential{
 		runtime:   verifier.runtime,
@@ -69,15 +70,26 @@ func (verifier *Verifier) Prepare(
 func classifyVerificationError(err error) error {
 	var classified client.ClassifiedError
 	if errors.As(err, &classified) {
+		switch status := classified.HTTPStatus(); {
+		case status == http.StatusUnauthorized || status == http.StatusForbidden:
+			return fmt.Errorf("%w: %w", wbcabinet_service.ErrVerification, err)
+		case status == http.StatusTooManyRequests:
+			return fmt.Errorf("%w: %w", wbcabinet_service.ErrVerificationRateLimited, err)
+		case status >= http.StatusInternalServerError && status <= 599:
+			return fmt.Errorf("%w: %w", wbcabinet_service.ErrVerificationTransient, err)
+		}
 		switch classified.Code() {
-		case client.ErrorCodeRateLimited:
-			return errors.Join(wbcabinet_service.ErrVerificationRateLimited, err)
-		case client.ErrorCodeTransport, client.ErrorCodeCanceled, client.ErrorCodeDeadlineExceeded, client.ErrorCodeRetryInterrupted:
-			return errors.Join(wbcabinet_service.ErrVerificationTransient, err)
+		case client.ErrorCodeTransport,
+			client.ErrorCodeCanceled,
+			client.ErrorCodeDeadlineExceeded,
+			client.ErrorCodeRetryInterrupted,
+			client.ErrorCodeEmptyResponse,
+			client.ErrorCodeInvalidResponse:
+			return fmt.Errorf("%w: %w", wbcabinet_service.ErrVerificationTransient, err)
 		}
 	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		return errors.Join(wbcabinet_service.ErrVerificationTransient, err)
+		return fmt.Errorf("%w: %w", wbcabinet_service.ErrVerificationTransient, err)
 	}
 	return err
 }

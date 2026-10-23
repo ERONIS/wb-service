@@ -5,10 +5,10 @@ Orchestrates the actual submission of product cards to Wildberries Content API, 
 
 ## Subsystems & Layout
 1. **Planning (`service/planning/`)**:
-   - `planner.go` & `processor.go`: Slices prepared card proposals into discrete upload actions grouped into `wb.publication_plans` and `wb.publication_actions`, enforcing WB batch limits (e.g., max items per request).
+   - `planner.go` & `processor.go`: Slices prepared card proposals into discrete upload actions grouped into `wb.publication_plans` and `wb.publication_actions`, enforcing WB batch limits (e.g., max items per request). The processor implements `ProcessPendingWithNotify`; it notifies downstream after a planning save succeeds for a nonempty source wave.
    - Incremental planning ensures new proposals can be planned as they finish preparation without waiting for the whole transfer.
 2. **Product Execution (`service/execution/`)**:
-   - `product_dispatcher.go`: Transmits card upload payloads to `/content/v2/cards/upload`.
+   - `product_dispatcher.go`: Transmits card upload payloads to `/content/v2/cards/upload`. Product and media dispatchers share `execution/authorization_terminal.go` for closing a live authorization only when its publication plan is terminal; their mutation and recovery flows remain separate.
    - `product_classifier.go`: Classifies WB responses into `accepted`, `rejected_proven`, or `uncertain`.
    - `product_reconciliation.go`: Correlates WB upload task IDs and maps barcodes/vendorCodes to WB NMID in `wb.product_identities`.
    - **Empty-Response Safe Retry**: Tracks dropped connections or unacknowledged responses in `wb.publication_product_retries` with delivery classification before retry.
