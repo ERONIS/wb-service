@@ -128,6 +128,8 @@ func (summary AuthorizationPlanSummary) ActionsCount() int {
 type LivePlanSource interface {
 	ListAutomaticAuthorizationPlans(
 		ctx context.Context,
+		afterTransferID TransferID,
+		afterPlanID int64,
 		limit int,
 	) ([]AuthorizationPlanSummary, error)
 

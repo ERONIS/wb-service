@@ -79,6 +79,7 @@ type ClassifiedError interface {
 	RetryAfter() time.Duration
 }
 
+// classifiedError хранит код, доставку и причину ошибки WB-запроса.
 type classifiedError struct {
 	code       string
 	delivery   DeliveryState
@@ -87,11 +88,20 @@ type classifiedError struct {
 	cause      error
 }
 
+// safeTransportError скрывает адрес запроса в тексте сетевой ошибки.
 type safeTransportError struct {
 	message string
 	cause   error
 }
 
+var _ ClassifiedError = (*classifiedError)(nil)
+
+// ExecutorUnavailableError классифицирует отсутствие исполнителя до HTTP-отправки.
+func ExecutorUnavailableError(cause error) ClassifiedError {
+	return newClassifiedError(ErrorCodeExecutorUnavailable, NotDispatched, 0, 0, cause)
+}
+
+// newClassifiedError создаёт ошибку с данными для обработки вызывающим кодом.
 func newClassifiedError(
 	code string,
 	delivery DeliveryState,
@@ -108,40 +118,45 @@ func newClassifiedError(
 	}
 }
 
-// ExecutorUnavailableError классифицирует отсутствие исполнителя до HTTP-отправки.
-func ExecutorUnavailableError(cause error) ClassifiedError {
-	return newClassifiedError(ErrorCodeExecutorUnavailable, NotDispatched, 0, 0, cause)
-}
-
-func newSafeTransportError(cause error) error {
-	message := "WB HTTP transport failed"
-	if errors.Is(cause, context.Canceled) {
-		message = "WB HTTP transport canceled"
-	} else if errors.Is(cause, context.DeadlineExceeded) {
-		message = "WB HTTP transport timed out"
-	} else {
-		var networkErr net.Error
-		if errors.As(cause, &networkErr) && networkErr.Timeout() {
-			message = "WB HTTP transport timed out"
-		}
+// Error собирает читаемый текст классифицированной ошибки.
+func (classifiedErr *classifiedError) Error() string {
+	prefix := "WB " + classifiedErr.code
+	if classifiedErr.httpStatus != 0 {
+		prefix = fmt.Sprintf("%s (HTTP %d)", prefix, classifiedErr.httpStatus)
+	}
+	if classifiedErr.cause == nil {
+		return prefix
 	}
 
-	return &safeTransportError{message: message, cause: cause}
+	return prefix + ": " + classifiedErr.cause.Error()
 }
 
-func waitErrorCode(err error) string {
-	switch {
-	case errors.Is(err, context.Canceled):
-		return ErrorCodeCanceled
-	case errors.Is(err, context.DeadlineExceeded):
-		return ErrorCodeDeadlineExceeded
-	case errors.Is(err, flowcontrol.ErrLimiterQueueFull):
-		return ErrorCodeLimiterQueueFull
-	default:
-		return ErrorCodeInvalidRequest
-	}
+// Unwrap сохраняет доступ к исходной причине ошибки.
+func (classifiedErr *classifiedError) Unwrap() error {
+	return classifiedErr.cause
 }
 
+// Code возвращает код ошибки для программной обработки.
+func (classifiedErr *classifiedError) Code() string {
+	return classifiedErr.code
+}
+
+// Delivery возвращает состояние отправки запроса.
+func (classifiedErr *classifiedError) Delivery() DeliveryState {
+	return classifiedErr.delivery
+}
+
+// HTTPStatus возвращает полученный HTTP-статус, если он известен.
+func (classifiedErr *classifiedError) HTTPStatus() int {
+	return classifiedErr.httpStatus
+}
+
+// RetryAfter возвращает задержку до повтора, сообщённую сервером.
+func (classifiedErr *classifiedError) RetryAfter() time.Duration {
+	return classifiedErr.retryAfter
+}
+
+// String возвращает текстовое состояние доставки для журнала.
 func (state DeliveryState) String() string {
 	switch state {
 	case NotDispatched:
@@ -158,46 +173,48 @@ func (state DeliveryState) String() string {
 	}
 }
 
-func (classifiedErr *classifiedError) Error() string {
-	prefix := "WB " + classifiedErr.code
-	if classifiedErr.httpStatus != 0 {
-		prefix = fmt.Sprintf("%s (HTTP %d)", prefix, classifiedErr.httpStatus)
-	}
-	if classifiedErr.cause == nil {
-		return prefix
+// newSafeTransportError заменяет подробный текст сетевой ошибки безопасным.
+func newSafeTransportError(cause error) error {
+	message := "WB HTTP transport failed"
+	if errors.Is(cause, context.Canceled) {
+		message = "WB HTTP transport canceled"
+	} else if errors.Is(cause, context.DeadlineExceeded) {
+		message = "WB HTTP transport timed out"
+	} else {
+		var networkErr net.Error
+		if errors.As(cause, &networkErr) && networkErr.Timeout() {
+			message = "WB HTTP transport timed out"
+		}
 	}
 
-	return prefix + ": " + classifiedErr.cause.Error()
+	return &safeTransportError{message: message, cause: cause}
 }
 
+// Error возвращает безопасный текст сетевой ошибки.
 func (transportErr *safeTransportError) Error() string {
 	return transportErr.message
 }
 
+// Unwrap сохраняет доступ к исходной сетевой ошибке.
 func (transportErr *safeTransportError) Unwrap() error {
 	return transportErr.cause
 }
 
-func (classifiedErr *classifiedError) Unwrap() error {
-	return classifiedErr.cause
+// waitErrorCode выбирает код ошибки ожидания лимитера или контекста.
+func waitErrorCode(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return ErrorCodeCanceled
+	case errors.Is(err, context.DeadlineExceeded):
+		return ErrorCodeDeadlineExceeded
+	case errors.Is(err, flowcontrol.ErrLimiterQueueFull):
+		return ErrorCodeLimiterQueueFull
+	default:
+		return ErrorCodeInvalidRequest
+	}
 }
 
-func (classifiedErr *classifiedError) Code() string {
-	return classifiedErr.code
-}
-
-func (classifiedErr *classifiedError) Delivery() DeliveryState {
-	return classifiedErr.delivery
-}
-
-func (classifiedErr *classifiedError) HTTPStatus() int {
-	return classifiedErr.httpStatus
-}
-
-func (classifiedErr *classifiedError) RetryAfter() time.Duration {
-	return classifiedErr.retryAfter
-}
-
+// classifiedErrorCode достаёт код из ошибки для записи в журнал.
 func classifiedErrorCode(err error) string {
 	if err == nil {
 		return ""
@@ -210,5 +227,3 @@ func classifiedErrorCode(err error) string {
 
 	return "unclassified"
 }
-
-var _ ClassifiedError = (*classifiedError)(nil)

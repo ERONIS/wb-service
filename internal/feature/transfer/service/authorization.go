@@ -1,12 +1,6 @@
 package transfer_service
 
-import (
-	"time"
-
-	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	"github.com/ERONIS/wb-service/internal/feature/transfer/service/authorization"
-	"go.uber.org/zap"
-)
+import "github.com/ERONIS/wb-service/internal/feature/transfer/service/authorization"
 
 type LiveAuthorizationID = authorization.LiveAuthorizationID
 type LiveAuthorizationState = authorization.LiveAuthorizationState
@@ -21,9 +15,6 @@ type ChangeLiveAuthorizationStateCommand = authorization.ChangeLiveAuthorization
 type LiveAuthorizationCheck = authorization.LiveAuthorizationCheck
 type LiveAuthorizationEvidence = authorization.LiveAuthorizationEvidence
 type LiveAuthorizationRepository = authorization.LiveAuthorizationRepository
-type LiveAuthorizationService = authorization.LiveAuthorizationService
-type AutomaticLiveAuthorization = authorization.AutomaticLiveAuthorization
-type AutomaticAuthorizationProcessor = authorization.AutomaticAuthorizationProcessor
 
 const (
 	MaxLiveIdempotencyKeyLength = authorization.MaxLiveIdempotencyKeyLength
@@ -43,21 +34,3 @@ var (
 	ErrLiveIdempotency     = authorization.ErrLiveIdempotency
 	ErrLivePlanUnavailable = authorization.ErrLivePlanUnavailable
 )
-
-func NewLiveAuthorizationService(
-	repository LiveAuthorizationRepository,
-	plans LivePlanSource,
-	uow core_postgres_transaction.UnitOfWork,
-	live bool,
-	ttl time.Duration,
-) *LiveAuthorizationService {
-	return authorization.NewLiveAuthorizationService(repository, plans, uow, live, ttl)
-}
-
-func NewAutomaticAuthorizationProcessor(
-	plans LivePlanSource,
-	authorizationService AutomaticLiveAuthorization,
-	loggers ...*zap.Logger,
-) *AutomaticAuthorizationProcessor {
-	return authorization.NewAutomaticAuthorizationProcessor(plans, authorizationService, loggers...)
-}

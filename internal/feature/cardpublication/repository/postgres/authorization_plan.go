@@ -105,9 +105,12 @@ const authorizationPlanColumns = `
 
 func (repository *Repository) ListAutomaticAuthorizationPlans(
 	ctx context.Context,
+	afterTransferID transfer_service.TransferID,
+	afterPlanID int64,
 	limit int,
 ) ([]transfer_service.AuthorizationPlanSummary, error) {
-	if limit <= 0 || limit > 100 {
+	if limit <= 0 || limit > 100 || afterTransferID < 0 || afterPlanID < 0 ||
+		(afterTransferID == 0) != (afterPlanID == 0) {
 		return nil, core_errors.ErrInvalidArgument
 	}
 	ctx, cancel := repository.pool.OperationContext(ctx)
@@ -126,6 +129,7 @@ func (repository *Repository) ListAutomaticAuthorizationPlans(
 				'reconciling', 'media'
 			)
 			AND transfer.outcome = 'running'
+			AND (transfer.id, plan.id) > ($1::bigint, $2::bigint)
 			AND plan.state IN ('awaiting_authorization', 'executing')
 			AND EXISTS (
 				SELECT 1
@@ -143,9 +147,9 @@ func (repository *Repository) ListAutomaticAuthorizationPlans(
 				  AND live_auth.expires_at > CURRENT_TIMESTAMP
 			)
 		ORDER BY transfer.id, plan.id
-		LIMIT $1;
+		LIMIT $3;
 	`
-	rows, err := repository.pool.Query(ctx, query, limit)
+	rows, err := repository.pool.Query(ctx, query, afterTransferID, afterPlanID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list automatic authorization plans: %w", err)
 	}

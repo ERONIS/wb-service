@@ -1,6 +1,10 @@
 package cardimport_postgres_repository
 
-import core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
+import (
+	"context"
+
+	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
+)
 
 type Repository struct {
 	pool core_postgres_pool.Pool
@@ -12,4 +16,8 @@ func New(pool core_postgres_pool.Pool) *Repository {
 	}
 
 	return &Repository{pool: pool}
+}
+
+func (r *Repository) OperationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return r.pool.OperationContext(ctx)
 }

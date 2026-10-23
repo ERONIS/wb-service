@@ -22,37 +22,20 @@ import (
 
 const defaultClientTimeout = 45 * time.Second
 
-type SellerID = domain.SellerID
-type ClientGeneration = domain.ClientGeneration
-
 type CredentialCandidate struct {
-	ID         SellerID
+	ID         domain.SellerID
 	Name       string
-	generation ClientGeneration
-	executor   client.Executor
+	generation domain.ClientGeneration
+	executor   *client.APIClient
 }
 
 type Clientset struct {
 	mu              sync.RWMutex
-	cabinets        map[SellerID]CredentialCandidate
-	baseHTTPClient  *http.Client
+	cabinets        map[domain.SellerID]CredentialCandidate
+	httpClient      *http.Client
 	rateLimiters    *flowcontrol.Registry
 	logger          *zap.Logger
 	sharedTransport *transport.SharedTransport
-}
-
-func (candidate *CredentialCandidate) Generation() ClientGeneration {
-	if candidate == nil {
-		return ClientGeneration{}
-	}
-	return candidate.generation
-}
-
-func (candidate *CredentialCandidate) Executor() client.Executor {
-	if candidate == nil {
-		return nil
-	}
-	return candidate.executor
 }
 
 // NewClientset создаёт реестр клиентов WB с политиками ограничений запросов.
@@ -72,17 +55,22 @@ func NewClientset(
 	if err != nil {
 		return nil, fmt.Errorf("create WB shared HTTP transport: %w", err)
 	}
+	httpClient, err := sharedTransport.NewHTTPClient(defaultClientTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("create WB HTTP client: %w", err)
+	}
 	return &Clientset{
-		cabinets:        make(map[SellerID]CredentialCandidate),
-		baseHTTPClient:  &http.Client{Timeout: defaultClientTimeout},
+		cabinets:        make(map[domain.SellerID]CredentialCandidate),
+		httpClient:      httpClient,
 		rateLimiters:    rateLimiters,
 		logger:          logger,
 		sharedTransport: sharedTransport,
 	}, nil
 }
 
+// NewCandidate готовит клиента кабинета без добавления в реестр.
 func (clientset *Clientset) NewCandidate(
-	id SellerID,
+	id domain.SellerID,
 	name string,
 	token string,
 ) (*CredentialCandidate, error) {
@@ -93,44 +81,29 @@ func (clientset *Clientset) NewCandidate(
 		return nil, err
 	}
 	name = strings.TrimSpace(name)
-	httpClient, err := clientset.sharedTransport.NewHTTPClient(clientset.baseHTTPClient)
-	if err != nil {
-		return nil, fmt.Errorf("create WB HTTP client for cabinet %q: %w", id, err)
-	}
 	candidate := &CredentialCandidate{
 		ID:         id,
 		Name:       name,
 		generation: domain.NewClientGeneration(token),
 	}
-	candidate.executor, err = client.NewAPIClient(
+	executor, err := client.NewAPIClient(
 		id,
 		name,
 		token,
-		httpClient,
+		clientset.httpClient,
 		clientset.rateLimiters,
 		clientset.logger,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create WB API client for cabinet %q: %w", id, err)
 	}
+	candidate.executor = executor
 	return candidate, nil
 }
 
-func validateCandidate(id SellerID, name string, token string) error {
-	if err := id.Validate(); err != nil {
-		return err
-	}
-	normalizedName := strings.TrimSpace(name)
-	if normalizedName == "" {
-		return fmt.Errorf("validate cabinet %q name: cabinet name is empty", id)
-	}
-	if err := credentials.ValidateTokenShape(token); err != nil {
-		return fmt.Errorf("validate cabinet %q token: %w", id, err)
-	}
-	return nil
-}
-
-func (clientset *Clientset) ActivateCandidate(candidate *CredentialCandidate) error {
+// ActivateCandidate добавляет подготовленный кабинет в реестр.
+func (clientset *Clientset) ActivateCandidate(
+	candidate *CredentialCandidate) error {
 	if clientset == nil {
 		return errors.New("WB clientset is required")
 	}
@@ -144,7 +117,8 @@ func (clientset *Clientset) ActivateCandidate(candidate *CredentialCandidate) er
 	return nil
 }
 
-func (clientset *Clientset) RemoveCabinet(id SellerID) {
+// RemoveCabinet удаляет кабинет из реестра.
+func (clientset *Clientset) RemoveCabinet(id domain.SellerID) {
 	if clientset == nil {
 		return
 	}
@@ -153,6 +127,7 @@ func (clientset *Clientset) RemoveCabinet(id SellerID) {
 	delete(clientset.cabinets, id)
 }
 
+// Cabinets возвращает активные кабинеты, отсортированные по ID.
 func (clientset *Clientset) Cabinets() []CredentialCandidate {
 	if clientset == nil {
 		return nil
@@ -167,17 +142,47 @@ func (clientset *Clientset) Cabinets() []CredentialCandidate {
 	return result
 }
 
-func (clientset *Clientset) ExecutorForCabinet(id SellerID) (client.Executor, error) {
+// ExecutorForCabinet находит клиент кабинета по его ID.
+func (clientset *Clientset) ExecutorForCabinet(id domain.SellerID) (*client.APIClient, error) {
 	entry, err := clientset.cabinet(id, nil)
 	return entry.executor, err
 }
 
-func (clientset *Clientset) PinnedExecutor(id SellerID, generation ClientGeneration) (client.Executor, error) {
+// PinnedExecutor возвращает клиент только при совпадении поколения.
+func (clientset *Clientset) PinnedExecutor(id domain.SellerID, generation domain.ClientGeneration) (*client.APIClient, error) {
 	entry, err := clientset.cabinet(id, &generation)
 	return entry.executor, err
 }
 
-func (clientset *Clientset) cabinet(id SellerID, generation *ClientGeneration) (CredentialCandidate, error) {
+// CloseIdleConnections закрывает простаивающие соединения общего транспорта.
+func (clientset *Clientset) CloseIdleConnections() {
+	if clientset == nil || clientset.sharedTransport == nil {
+		return
+	}
+	clientset.sharedTransport.CloseIdleConnections()
+}
+
+// Generation возвращает поколение токена кандидата.
+func (candidate *CredentialCandidate) Generation() domain.ClientGeneration {
+	if candidate == nil {
+		return domain.ClientGeneration{}
+	}
+	return candidate.generation
+}
+
+// Executor возвращает клиент подготовленного кандидата.
+func (candidate *CredentialCandidate) Executor() *client.APIClient {
+	if candidate == nil {
+		return nil
+	}
+	return candidate.executor
+}
+
+// cabinet ищет кабинет и при необходимости проверяет поколение.
+func (clientset *Clientset) cabinet(
+	id domain.SellerID,
+	generation *domain.ClientGeneration) (
+	CredentialCandidate, error) {
 	if clientset == nil {
 		return CredentialCandidate{}, errors.New("WB clientset is required")
 	}
@@ -193,9 +198,17 @@ func (clientset *Clientset) cabinet(id SellerID, generation *ClientGeneration) (
 	return entry, nil
 }
 
-func (clientset *Clientset) CloseIdleConnections() {
-	if clientset == nil || clientset.sharedTransport == nil {
-		return
+// validateCandidate проверяет ID, имя и форму токена кандидата.
+func validateCandidate(id domain.SellerID, name string, token string) error {
+	if err := id.Validate(); err != nil {
+		return err
 	}
-	clientset.sharedTransport.CloseIdleConnections()
+	normalizedName := strings.TrimSpace(name)
+	if normalizedName == "" {
+		return fmt.Errorf("validate cabinet %q name: cabinet name is empty", id)
+	}
+	if err := credentials.ValidateTokenShape(token); err != nil {
+		return fmt.Errorf("validate cabinet %q token: %w", id, err)
+	}
+	return nil
 }

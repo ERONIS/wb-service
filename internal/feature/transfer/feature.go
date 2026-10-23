@@ -9,7 +9,11 @@ import (
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	transfer_postgres_repository "github.com/ERONIS/wb-service/internal/feature/transfer/repository/postgres"
 	transfer_server "github.com/ERONIS/wb-service/internal/feature/transfer/server"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	"github.com/ERONIS/wb-service/internal/feature/transfer/service/authorization"
+	"github.com/ERONIS/wb-service/internal/feature/transfer/service/preparation"
+	"github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
+	"github.com/ERONIS/wb-service/internal/feature/transfer/service/registry"
+	"github.com/ERONIS/wb-service/internal/feature/transfer/service/workflow"
 	transfer_config_transport "github.com/ERONIS/wb-service/internal/feature/transfer/transport/config"
 	"go.uber.org/zap"
 )
@@ -24,6 +28,21 @@ const (
 
 type Config = transfer_config_transport.Config
 
+type Feature struct {
+	service                     *workflow.Service
+	preparationResultApplier    *preparation.PreparationResultApplier
+	publicationResultApplier    *publication.PublicationPlanResultApplier
+	publicationExecutionApplier *publication.PublicationExecutionResultApplier
+	repository                  *transfer_postgres_repository.Repository
+	uow                         core_postgres_transaction.UnitOfWork
+	liveMode                    bool
+	authorizationTTL            time.Duration
+	liveAuthorization           *authorization.LiveAuthorizationService
+	automaticAuthorization      *authorization.AutomaticAuthorizationProcessor
+	pollingInterval             time.Duration
+	pollingWake                 chan struct{}
+}
+
 func NewConfig() (Config, error) {
 	return transfer_config_transport.New()
 }
@@ -32,27 +51,12 @@ func NewConfigMust() Config {
 	return transfer_config_transport.Must()
 }
 
-type Feature struct {
-	service                     *transfer_service.Service
-	preparationResultApplier    *transfer_service.PreparationResultApplier
-	publicationResultApplier    *transfer_service.PublicationPlanResultApplier
-	publicationExecutionApplier *transfer_service.PublicationExecutionResultApplier
-	repository                  *transfer_postgres_repository.Repository
-	uow                         core_postgres_transaction.UnitOfWork
-	liveMode                    bool
-	authorizationTTL            time.Duration
-	liveAuthorization           *transfer_service.LiveAuthorizationService
-	automaticAuthorization      *transfer_service.AutomaticAuthorizationProcessor
-	pollingInterval             time.Duration
-	pollingWake                 chan struct{}
-}
-
 func New(
 	ctx context.Context,
 	postgresPool core_postgres_pool.Pool,
 	uow core_postgres_transaction.UnitOfWork,
-	batchReader transfer_service.BatchReader,
-	targetTransport transfer_service.TargetTransport,
+	batchReader workflow.BatchReader,
+	targetTransport registry.TargetTransport,
 	config Config,
 	loggers ...*zap.Logger,
 ) (*Feature, error) {
@@ -70,11 +74,11 @@ func New(
 	}
 
 	repository := transfer_postgres_repository.New(postgresPool)
-	targets := transfer_service.NewMutationTargetRegistry(
+	targets := registry.NewMutationTargetRegistry(
 		targetTransport,
 		config.CohortName,
 	)
-	service := transfer_service.New(
+	service := workflow.New(
 		repository,
 		batchReader,
 		targets,
@@ -84,14 +88,14 @@ func New(
 	)
 	return &Feature{
 		service: service,
-		preparationResultApplier: transfer_service.NewPreparationResultApplier(
+		preparationResultApplier: preparation.NewPreparationResultApplier(
 			repository,
 			uow,
 		),
-		publicationResultApplier: transfer_service.NewPublicationPlanResultApplier(
+		publicationResultApplier: publication.NewPublicationPlanResultApplier(
 			repository,
 		),
-		publicationExecutionApplier: transfer_service.NewPublicationExecutionResultApplier(
+		publicationExecutionApplier: publication.NewPublicationExecutionResultApplier(
 			repository,
 		),
 		repository:       repository,
@@ -104,12 +108,12 @@ func New(
 }
 
 func (feature *Feature) ConfigureLiveAuthorization(
-	plans transfer_service.LivePlanSource,
+	plans authorization.LivePlanSource,
 ) {
 	if feature.liveAuthorization != nil {
 		panic("transfer live authorization is already configured")
 	}
-	service := transfer_service.NewLiveAuthorizationService(
+	service := authorization.NewLiveAuthorizationService(
 		feature.repository,
 		plans,
 		feature.uow,
@@ -117,14 +121,14 @@ func (feature *Feature) ConfigureLiveAuthorization(
 		feature.authorizationTTL,
 	)
 	feature.liveAuthorization = service
-	feature.automaticAuthorization = transfer_service.NewAutomaticAuthorizationProcessor(
+	feature.automaticAuthorization = authorization.NewAutomaticAuthorizationProcessor(
 		plans,
 		service,
 		feature.service.Logger(),
 	)
 }
 
-func (feature *Feature) AutomaticAuthorizationProcessor() *transfer_service.AutomaticAuthorizationProcessor {
+func (feature *Feature) AutomaticAuthorizationProcessor() *authorization.AutomaticAuthorizationProcessor {
 	if feature.automaticAuthorization == nil {
 		panic("transfer automatic authorization is not configured")
 	}
@@ -138,26 +142,26 @@ func (feature *Feature) NotifyFinalized() {
 	}
 }
 
-func (feature *Feature) LiveAuthorizationVerifier() *transfer_service.LiveAuthorizationService {
+func (feature *Feature) LiveAuthorizationVerifier() *authorization.LiveAuthorizationService {
 	if feature.liveAuthorization == nil {
 		panic("transfer live authorization is not configured")
 	}
 	return feature.liveAuthorization
 }
 
-func (feature *Feature) Service() *transfer_service.Service {
+func (feature *Feature) Service() *workflow.Service {
 	return feature.service
 }
 
-func (feature *Feature) PreparationResultApplier() *transfer_service.PreparationResultApplier {
+func (feature *Feature) PreparationResultApplier() *preparation.PreparationResultApplier {
 	return feature.preparationResultApplier
 }
 
-func (feature *Feature) PublicationResultApplier() *transfer_service.PublicationPlanResultApplier {
+func (feature *Feature) PublicationResultApplier() *publication.PublicationPlanResultApplier {
 	return feature.publicationResultApplier
 }
 
-func (feature *Feature) PublicationExecutionResultApplier() *transfer_service.PublicationExecutionResultApplier {
+func (feature *Feature) PublicationExecutionResultApplier() *publication.PublicationExecutionResultApplier {
 	return feature.publicationExecutionApplier
 }
 

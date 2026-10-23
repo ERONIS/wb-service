@@ -3,12 +3,14 @@ package wbcabinet_service
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
+	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	"go.uber.org/zap"
 )
 
@@ -23,6 +25,21 @@ type restoreRepository struct {
 	Repository
 	stored *StoredCabinet
 	writes int
+}
+
+type restoreUnitOfWork struct {
+	commitErr error
+}
+
+func (u restoreUnitOfWork) WithinTransaction(ctx context.Context, fn func(context.Context, core_postgres_transaction.DBTX) error) error {
+	if err := fn(ctx, nil); err != nil {
+		return err
+	}
+	return u.commitErr
+}
+
+func (r *restoreRepository) OperationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithCancel(ctx)
 }
 
 func (r *restoreRepository) ListStored(context.Context) ([]StoredCabinet, error) {
@@ -43,7 +60,7 @@ func (r *restoreRepository) FindByOwnerAndName(context.Context, int64, string) (
 	}
 	return r.stored.Cabinet, true, nil
 }
-func (r *restoreRepository) UpsertVerified(_ context.Context, credential VerifiedCredential) (Cabinet, error) {
+func (r *restoreRepository) UpsertVerified(_ context.Context, _ core_postgres_transaction.DBTX, credential VerifiedCredential) (Cabinet, error) {
 	r.writes++
 	r.stored.Token = credential.Token
 	r.stored.ClientGeneration = credential.ClientGeneration
@@ -86,9 +103,27 @@ func newRestoreTestService() (*Service, *restoreRepository, *restoreVerifier, ti
 	token := testToken(expiry, "first")
 	repository := &restoreRepository{stored: &StoredCabinet{Cabinet: Cabinet{ID: domain.SellerID(testSeller), Name: "Кабинет", OwnerTelegramID: 1, Status: StatusActive, ClientGeneration: domain.NewClientGeneration(token), CredentialExpiresAt: expiry}, Token: token}}
 	verifier := &restoreVerifier{}
-	service := New(repository, verifier)
+	service := New(repository, verifier, restoreUnitOfWork{})
 	service.now = func() time.Time { return now }
 	return service, repository, verifier, now
+}
+
+func TestAddActivatesOnlyAfterCommit(t *testing.T) {
+	service, repository, verifier, now := newRestoreTestService()
+	commitErr := errors.New("commit failed")
+	service.uow = restoreUnitOfWork{commitErr: commitErr}
+
+	_, err := service.Add(context.Background(), AddCommand{
+		OwnerTelegramID: 1,
+		Name:            repository.stored.Name,
+		Token:           testToken(now.Add(time.Hour), "second"),
+	})
+	if !errors.Is(err, commitErr) {
+		t.Fatalf("ошибка commit потеряна: %v", err)
+	}
+	if verifier.activated != 0 {
+		t.Fatalf("клиент активирован до commit: %d", verifier.activated)
+	}
 }
 
 func TestRestoreRetriesOnlyFailedCabinetsAndExpiresActive(t *testing.T) {

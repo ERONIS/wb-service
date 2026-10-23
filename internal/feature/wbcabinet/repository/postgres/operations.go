@@ -87,38 +87,25 @@ func (repository *Repository) GetByOwner(
 
 func (repository *Repository) UpsertVerified(
 	ctx context.Context,
+	tx core_postgres_transaction.DBTX,
 	credential wbcabinet_service.VerifiedCredential,
 ) (wbcabinet_service.Cabinet, error) {
-	ctx, cancel := repository.pool.OperationContext(ctx)
-	defer cancel()
-	var result wbcabinet_service.Cabinet
-	err := repository.uow.WithinTransaction(
+	existing, found, err := lockByOwnerAndName(
 		ctx,
-		func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
-			existing, found, err := lockByOwnerAndName(
-				ctx,
-				tx,
-				credential.OwnerTelegramID,
-				credential.Name,
-			)
-			if err != nil {
-				return err
-			}
-			if found {
-				if existing.ID != credential.SellerID {
-					return wbcabinet_service.ErrIdentityMismatch
-				}
-				result, err = updateVerified(ctx, tx, existing, credential)
-				return err
-			}
-			result, err = insertVerified(ctx, tx, credential)
-			return err
-		},
+		tx,
+		credential.OwnerTelegramID,
+		credential.Name,
 	)
 	if err != nil {
-		return wbcabinet_service.Cabinet{}, fmt.Errorf("persist verified WB cabinet: %w", err)
+		return wbcabinet_service.Cabinet{}, err
 	}
-	return result, nil
+	if found {
+		if existing.ID != credential.SellerID {
+			return wbcabinet_service.Cabinet{}, wbcabinet_service.ErrIdentityMismatch
+		}
+		return updateVerified(ctx, tx, existing, credential)
+	}
+	return insertVerified(ctx, tx, credential)
 }
 
 func lockByOwnerAndName(

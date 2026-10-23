@@ -10,12 +10,12 @@ import (
 )
 
 type ExecutorRegistry interface {
-	ExecutorForCabinet(domain.SellerID) (client.Executor, error)
+	ExecutorForCabinet(domain.SellerID) (*client.APIClient, error)
 }
 
 type PinnedExecutorRegistry interface {
 	ExecutorRegistry
-	PinnedExecutor(domain.SellerID, ClientGeneration) (client.Executor, error)
+	PinnedExecutor(domain.SellerID, domain.ClientGeneration) (*client.APIClient, error)
 }
 
 func ExecuteForCabinet[Response any](
@@ -46,7 +46,7 @@ func ExecutePinnedForCabinet[Response any](
 	ctx context.Context,
 	executors PinnedExecutorRegistry,
 	sellerID domain.SellerID,
-	generation ClientGeneration,
+	generation domain.ClientGeneration,
 	operation policy.Operation,
 	query any,
 	body any,

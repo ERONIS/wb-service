@@ -11,6 +11,7 @@ import (
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
+	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	credentials "github.com/ERONIS/wb-service/internal/core/transport/wb/credentials"
 	"go.uber.org/zap"
 )
@@ -18,6 +19,7 @@ import (
 type Service struct {
 	repository     Repository
 	verifier       Verifier
+	uow            core_postgres_transaction.UnitOfWork
 	now            func() time.Time
 	mutationMu     sync.Mutex
 	restorePending map[SellerID]ClientGeneration
@@ -26,13 +28,15 @@ type Service struct {
 func New(
 	repository Repository,
 	verifier Verifier,
+	uow core_postgres_transaction.UnitOfWork,
 ) *Service {
-	if repository == nil || verifier == nil {
+	if repository == nil || verifier == nil || uow == nil {
 		panic("wbcabinet service dependency is nil")
 	}
 	return &Service{
 		repository:     repository,
 		verifier:       verifier,
+		uow:            uow,
 		now:            time.Now,
 		restorePending: make(map[SellerID]ClientGeneration),
 	}
@@ -101,9 +105,16 @@ func (service *Service) add(ctx context.Context, command AddCommand) (Cabinet, e
 		VerifiedAt:          now,
 		Token:               command.Token,
 	}
-	cabinet, err := service.repository.UpsertVerified(ctx, verified)
+	txCtx, cancel := service.repository.OperationContext(ctx)
+	defer cancel()
+	var cabinet Cabinet
+	err = service.uow.WithinTransaction(txCtx, func(txCtx context.Context, tx core_postgres_transaction.DBTX) error {
+		var persistErr error
+		cabinet, persistErr = service.repository.UpsertVerified(txCtx, tx, verified)
+		return persistErr
+	})
 	if err != nil {
-		return Cabinet{}, err
+		return Cabinet{}, fmt.Errorf("persist verified WB cabinet: %w", err)
 	}
 	if cabinet.ID != sellerID {
 		return Cabinet{}, core_errors.Conflict("persisted WB seller ID differs from verified candidate")
