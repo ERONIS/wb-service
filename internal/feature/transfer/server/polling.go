@@ -102,11 +102,13 @@ func (polling *Polling) Run(ctx context.Context, onError ErrorHandler, loggers .
 	}
 
 	wakeDownstream := func(currentIndex int) {
-		for next := currentIndex + 1; next < len(stageWakes); next++ {
-			select {
-			case stageWakes[next] <- struct{}{}:
-			default:
-			}
+		next := currentIndex + 1
+		if next >= len(stageWakes) {
+			return
+		}
+		select {
+		case stageWakes[next] <- struct{}{}:
+		default:
 		}
 	}
 

@@ -8,6 +8,7 @@ import (
 	"io"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
+	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 )
 
 func (s *Service) ReserveFile(
@@ -167,7 +168,14 @@ func (s *Service) ParseFile(
 	}
 
 	result := AggregateParsedFile(parsed)
-	file, err := s.repository.SaveParsedFile(ctx, command, result)
+	txCtx, cancel := s.repository.OperationContext(ctx)
+	defer cancel()
+	var file File
+	err = s.uow.WithinTransaction(txCtx, func(txCtx context.Context, tx core_postgres_transaction.DBTX) error {
+		var saveErr error
+		file, saveErr = s.repository.SaveParsedFile(txCtx, tx, command, result)
+		return saveErr
+	})
 	if err != nil {
 		return SessionView{}, fmt.Errorf(
 			"save parsed cardimport file: %w",

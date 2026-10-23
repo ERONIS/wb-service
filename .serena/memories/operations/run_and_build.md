@@ -10,6 +10,7 @@
   - `POSTGRES_MAX_CONN_LIFETIME`: max connection lifetime (default `1h`)
   - `POSTGRES_MAX_CONN_IDLE_TIME`: max connection idle duration (default `30m`)
   - `POSTGRES_HEALTHCHECK_PERIOD`: background healthcheck interval (default `1m`)
+  - `POSTGRES_APPLICATION_NAME`: stable PostgreSQL session name for `pg_stat_activity` (default `wb-service`; ASCII letters, digits, `-`, `_`, `.`, up to 63 bytes)
   - `TELEGRAM_TOKEN`, `TELEGRAM_POLL_TIMEOUT`, etc.
   - `ADMIN_TG_ID`, `ADMIN_FULL_NAME` (required for bootstrapping admin and admin cabinets)
   - `LOG_LEVEL` / `LOGGER_LEVEL`
@@ -26,6 +27,8 @@
 - `make migrate-create seq=<name>`: Creates a new SQL migration pair in `migration/`.
 - `make admin-bootstrap`: Executes `scripts/bootstrap_admin.sql` to upsert admin user from `.env`.
 - `make cabinet-bootstrap`: Executes `scripts/bootstrap_cabinets.sql` to upsert initial WB cabinets for the admin user.
+- `make postgres-integration-test`: Requires `POSTGRES_TEST_DSN`, then runs cardimport and transfer PostgreSQL integration tests with cache disabled (`-count=1`); use a separate migrated database. A missing DSN fails the target.
+- `make postgres-integration-test-local`: Uses Python 3 and Docker Compose to start local PostgreSQL, create a uniquely named isolated database, apply all migrations, start the loopback port forwarder, run the strict integration test target with an encoded DSN, and drop the database after success. On failure, leaves the test database for diagnosis. It reads Compose-resolved credentials without printing them.
 - `make wb-service-run`: Applies migrations, starts the loopback PostgreSQL port forwarder, then runs the service locally (`go run cmd/wb-service/main.go`). The host-side `POSTGRES_HOST=127.0.0.1` connection requires that forwarder because the PostgreSQL service itself does not publish port 5432.
 
 ## Repository Hygiene
@@ -36,6 +39,7 @@
 - Run all unit tests: `go test ./...`
 - Test specific module: `go test ./internal/feature/transfer/...`
 - Check code compilation: `go build ./cmd/wb-service`
+- Cardimport and transfer PostgreSQL integration tests require an isolated migrated database via `POSTGRES_TEST_DSN`; absent DSN skips direct `go test` integration cases, while a configured but unavailable database fails. `make postgres-integration-test` is the strict entry point. Cardimport covers rollback after CopyFrom failure/cancellation and concurrent session revision updates; cancellation assertions rely on the canceled operation context and persisted state, not a driver-specific error string. Transfer's fixture uses the current schema and checks every required write; its integration cases also assert that an aborted preparation UoW removes both the proposal artifact and group projection. Successful preparation fixtures must compute the metadata digest from `json.RawMessage(snapshot)`, matching `ApplyPreparationResultCommand.Validate`; hashing plain `[]byte` marshals it as a base64 JSON string and rejects the command before any database write. The rollback test validates its command before entering UoW.
 
 ## Related Memories
 - Overall architecture: `mem:architecture/overview`

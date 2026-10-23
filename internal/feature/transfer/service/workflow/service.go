@@ -150,7 +150,11 @@ func (service *Service) start(
 			if err != nil || created || len(targetSellerIDs) == 0 {
 				return err
 			}
-			return service.verifyStoredTargets(ctx, transfer.ID, targetSellerIDs)
+			stored, err := service.repository.ListTargetSellerIDsWithin(ctx, tx, transfer.ID)
+			if err != nil {
+				return fmt.Errorf("read stored transfer targets: %w", err)
+			}
+			return verifyTargetSellerIDs(stored, targetSellerIDs)
 		},
 	)
 	if err != nil {
@@ -169,6 +173,10 @@ func (service *Service) verifyStoredTargets(
 	if err != nil {
 		return fmt.Errorf("read stored transfer targets: %w", err)
 	}
+	return verifyTargetSellerIDs(stored, expected)
+}
+
+func verifyTargetSellerIDs(stored, expected []SellerID) error {
 	if len(stored) != len(expected) {
 		return core_errors.Conflict("transfer target set differs from requested target")
 	}

@@ -27,8 +27,8 @@
   3. `cardpublicationFeature.RunMediaPolling(ctx)`: Polls until published cards register on WB, then uploads media files (photos/videos) to `/content/v2/cards/upload/add`.
   4. `transferFeature.RunPolling(ctx, processors...)`: Master polling loop executing 5 chained pipeline stages:
      - `cardprepareFeature.Processor()`: Evaluates pending transfers and builds WB-ready payloads.
-     - `transferFeature.AutomaticAuthorizationProcessor()`: Verifies live credentials before dispatch.
      - `cardpublicationFeature.Processor()`: Plans incremental batches respecting WB size limits.
+     - `transferFeature.AutomaticAuthorizationProcessor()`: Verifies live credentials before dispatch.
      - `cardpublicationFeature.ProductDispatcher()`: Dispatches card upload requests to Content API.
      - `cardpublicationFeature.ErrorFeed()`: Ingests `/content/v2/cards/error/list` and correlates errors.
 

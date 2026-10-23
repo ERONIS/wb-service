@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
+	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 )
 
 // Begin создаёт collecting-сессию или возвращает уже открытую.
@@ -159,7 +160,14 @@ func (s *Service) Continue(
 		return SessionView{}, err
 	}
 
-	session, err := s.repository.ContinueAfterErrors(ctx, command)
+	txCtx, cancel := s.repository.OperationContext(ctx)
+	defer cancel()
+	var session Session
+	err := s.uow.WithinTransaction(txCtx, func(txCtx context.Context, tx core_postgres_transaction.DBTX) error {
+		var continueErr error
+		session, continueErr = s.repository.ContinueAfterErrors(txCtx, tx, command)
+		return continueErr
+	})
 	if err != nil {
 		return SessionView{}, fmt.Errorf(
 			"continue cardimport session after errors: %w",

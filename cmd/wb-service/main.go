@@ -207,9 +207,9 @@ func main() {
 			},
 			cardprepareFeature.Processor(),
 			cardpublicationFeature.Processor(),
-			cardpublicationFeature.ErrorFeed(),
 			transferFeature.AutomaticAuthorizationProcessor(),
 			cardpublicationFeature.ProductDispatcher(),
+			cardpublicationFeature.ErrorFeed(),
 		); err != nil && ctx.Err() == nil {
 			logger.Logger.Error("run transfer polling", zap.Error(err))
 			cancel()

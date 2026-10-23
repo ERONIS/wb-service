@@ -10,13 +10,11 @@ type PublicationPlannedGroup = publication.PublicationPlannedGroup
 type PublicationPlannedItem = publication.PublicationPlannedItem
 type ApplyPublicationPlanResultCommand = publication.ApplyPublicationPlanResultCommand
 type PublicationPlanResultRepository = publication.PublicationPlanResultRepository
-type PublicationPlanResultApplier = publication.PublicationPlanResultApplier
 type PublicationTerminalItem = publication.PublicationTerminalItem
 type ApplyPublicationActionResultCommand = publication.ApplyPublicationActionResultCommand
 type ApplyPublicationMediaResultCommand = publication.ApplyPublicationMediaResultCommand
 type CorrectPublicationItemResultCommand = publication.CorrectPublicationItemResultCommand
 type PublicationExecutionResultRepository = publication.PublicationExecutionResultRepository
-type PublicationExecutionResultApplier = publication.PublicationExecutionResultApplier
 
 const (
 	MaxPublicationPlanningPageSize = publication.MaxPublicationPlanningPageSize
@@ -25,15 +23,3 @@ const (
 	PublicationProjectionSkipped  = publication.PublicationProjectionSkipped
 	PublicationProjectionRejected = publication.PublicationProjectionRejected
 )
-
-func NewPublicationPlanResultApplier(
-	repository PublicationPlanResultRepository,
-) *PublicationPlanResultApplier {
-	return publication.NewPublicationPlanResultApplier(repository)
-}
-
-func NewPublicationExecutionResultApplier(
-	repository PublicationExecutionResultRepository,
-) *PublicationExecutionResultApplier {
-	return publication.NewPublicationExecutionResultApplier(repository)
-}

@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	"github.com/ERONIS/wb-service/internal/feature/transfer/service/registry"
 	wbcabinet_service "github.com/ERONIS/wb-service/internal/feature/wbcabinet/service"
 )
 
@@ -28,7 +28,7 @@ func NewTargetTransport(cabinets CabinetSource) *TargetTransport {
 func (transport *TargetTransport) Credentials(
 	ctx context.Context,
 	ownerTelegramID int64,
-) ([]transfer_service.TargetCredential, error) {
+) ([]registry.TargetCredential, error) {
 	credentials, err := transport.cabinets.Targets(ctx, ownerTelegramID)
 	if err != nil {
 		return nil, err
@@ -36,13 +36,13 @@ func (transport *TargetTransport) Credentials(
 	return credentials, nil
 }
 
-func (transport *TargetTransport) CredentialsByOwnerRole(ctx context.Context, role domain.UserRole) ([]transfer_service.TargetCredential, error) {
+func (transport *TargetTransport) CredentialsByOwnerRole(ctx context.Context, role domain.UserRole) ([]registry.TargetCredential, error) {
 	return transport.cabinets.TargetsByOwnerRole(ctx, role)
 }
 
 func (transport *TargetTransport) AllCredentials(
 	ctx context.Context,
-) ([]transfer_service.TargetCredential, error) {
+) ([]registry.TargetCredential, error) {
 	credentials, err := transport.cabinets.AllTargets(ctx)
 	if err != nil {
 		return nil, err
@@ -50,4 +50,4 @@ func (transport *TargetTransport) AllCredentials(
 	return credentials, nil
 }
 
-var _ transfer_service.TargetTransport = (*TargetTransport)(nil)
+var _ registry.TargetTransport = (*TargetTransport)(nil)

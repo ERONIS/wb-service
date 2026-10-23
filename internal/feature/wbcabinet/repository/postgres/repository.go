@@ -1,21 +1,22 @@
 package wbcabinet_postgres_repository
 
 import (
+	"context"
+
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
-	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 )
 
 type Repository struct {
 	pool core_postgres_pool.Pool
-	uow  core_postgres_transaction.UnitOfWork
 }
 
-func New(
-	pool core_postgres_pool.Pool,
-	uow core_postgres_transaction.UnitOfWork,
-) *Repository {
-	if pool == nil || uow == nil {
-		panic("wbcabinet PostgreSQL dependency is nil")
+func New(pool core_postgres_pool.Pool) *Repository {
+	if pool == nil {
+		panic("wbcabinet PostgreSQL pool is nil")
 	}
-	return &Repository{pool: pool, uow: uow}
+	return &Repository{pool: pool}
+}
+
+func (repository *Repository) OperationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return repository.pool.OperationContext(ctx)
 }

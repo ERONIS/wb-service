@@ -7,7 +7,6 @@ import (
 	"fmt"
 
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
-	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 )
 
@@ -18,21 +17,11 @@ func (repository *Repository) ListAwaitingAuthorization(
 	afterID transfer_service.TransferID,
 	limit int,
 ) ([]transfer_service.Transfer, error) {
-	if afterID < 0 || limit <= 0 || limit > initializationListPageLimit {
-		return nil, core_errors.ErrInvalidArgument
-	}
-	ctx, cancel := repository.pool.OperationContext(ctx)
-	defer cancel()
-
-	query := `
-		SELECT ` + transferColumns + `
-		FROM wb.transfers AS transfer
-		WHERE transfer.phase IN (
+	const condition = `transfer.phase IN (
 				'preparing', 'awaiting_authorization', 'publishing',
 				'reconciling', 'media'
 			)
 			AND transfer.outcome = 'running'
-			AND transfer.id > $1
 			AND EXISTS (
 				SELECT 1
 				FROM wb.transfer_group_targets AS ready_group
@@ -40,28 +29,8 @@ func (repository *Repository) ListAwaitingAuthorization(
 				  AND ready_group.preparation_status = 'succeeded'
 				  AND ready_group.publication_status = 'not_started'
 				  AND ready_group.publication_plan_id IS NULL
-			)
-		ORDER BY transfer.id
-		LIMIT $2;
-	`
-	rows, err := repository.pool.Query(ctx, query, afterID, limit)
-	if err != nil {
-		return nil, fmt.Errorf("list awaiting-authorization transfers: %w", err)
-	}
-	defer rows.Close()
-
-	transfers := make([]transfer_service.Transfer, 0)
-	for rows.Next() {
-		transfer, err := scanTransfer(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan awaiting-authorization transfer: %w", err)
-		}
-		transfers = append(transfers, transfer)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate awaiting-authorization transfers: %w", err)
-	}
-	return transfers, nil
+			)`
+	return repository.listTransfers(ctx, afterID, limit, condition, "awaiting-authorization")
 }
 
 func (repository *Repository) LoadPublicationPlanningSource(

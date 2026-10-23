@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -11,6 +13,42 @@ import (
 )
 
 const rollbackTimeout = 5 * time.Second
+
+// ErrNestedTransaction сообщает о попытке открыть новую UoW внутри уже выполняемой транзакции.
+var ErrNestedTransaction = errors.New("nested PostgreSQL transaction")
+
+type transactionContextKey struct{}
+
+// Settings задаёт ограничения отдельной транзакции.
+type Settings struct {
+	Timeout          time.Duration
+	StatementTimeout time.Duration
+	LockTimeout      time.Duration
+	TxOptions        *pgx.TxOptions
+}
+
+// Stats содержит накопленные показатели жизненного цикла транзакций.
+type Stats struct {
+	Attempts       int64
+	Commits        int64
+	Rollbacks      int64
+	BeginErrors    int64
+	CommitErrors   int64
+	RollbackErrors int64
+	Canceled       int64
+	TotalDuration  time.Duration
+}
+
+type counters struct {
+	attempts       atomic.Int64
+	commits        atomic.Int64
+	rollbacks      atomic.Int64
+	beginErrors    atomic.Int64
+	commitErrors   atomic.Int64
+	rollbackErrors atomic.Int64
+	canceled       atomic.Int64
+	totalNanos     atomic.Int64
+}
 
 type DBTX interface {
 	Exec(
@@ -35,6 +73,16 @@ type UnitOfWork interface {
 	) error
 }
 
+// ConfigurableUnitOfWork позволяет выбрать ограничения для отдельной составной операции.
+type ConfigurableUnitOfWork interface {
+	UnitOfWork
+	WithinTransactionWithSettings(
+		ctx context.Context,
+		settings Settings,
+		fn func(context.Context, DBTX) error,
+	) error
+}
+
 type Beginner interface {
 	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
 }
@@ -50,6 +98,7 @@ type beginFunc func(context.Context, pgx.TxOptions) (transaction, error)
 type PGXUnitOfWork struct {
 	begin   beginFunc
 	options pgx.TxOptions
+	stats   counters
 }
 
 func New(beginner Beginner, options pgx.TxOptions) *PGXUnitOfWork {
@@ -80,30 +129,71 @@ func (u *PGXUnitOfWork) WithinTransaction(
 	ctx context.Context,
 	fn func(context.Context, DBTX) error,
 ) (err error) {
+	return u.WithinTransactionWithSettings(ctx, Settings{}, fn)
+}
+
+// WithinTransactionWithSettings выполняет callback в одной транзакции с локальными ограничениями PostgreSQL.
+func (u *PGXUnitOfWork) WithinTransactionWithSettings(
+	ctx context.Context,
+	settings Settings,
+	fn func(context.Context, DBTX) error,
+) (err error) {
 	if ctx == nil {
 		return errors.New("PostgreSQL transaction context is nil")
 	}
 	if fn == nil {
 		return errors.New("PostgreSQL transaction callback is nil")
 	}
-
-	tx, err := u.begin(ctx, u.options)
-	if err != nil {
-		return fmt.Errorf("begin PostgreSQL transaction: %w", err)
+	if ctx.Value(transactionContextKey{}) != nil {
+		return ErrNestedTransaction
 	}
+	if settings.Timeout < 0 || settings.StatementTimeout < 0 || settings.LockTimeout < 0 {
+		return errors.New("PostgreSQL transaction timeouts must not be negative")
+	}
+
+	if settings.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, settings.Timeout)
+		defer cancel()
+	}
+	u.stats.attempts.Add(1)
+	started := time.Now()
+	defer func() {
+		u.stats.totalNanos.Add(time.Since(started).Nanoseconds())
+		if ctx.Err() != nil {
+			u.stats.canceled.Add(1)
+		}
+	}()
+
+	options := u.options
+	if settings.TxOptions != nil {
+		options = *settings.TxOptions
+	}
+
+	prepared, err := beginPreparedTransaction(ctx, u.begin, options)
+	if err != nil {
+		u.stats.beginErrors.Add(1)
+		return err
+	}
+	txCtx := context.WithValue(ctx, transactionContextKey{}, struct{}{})
 
 	committed := false
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			_ = rollback(tx, ctx)
+			u.stats.rollbacks.Add(1)
+			if prepared.Rollback() != nil {
+				u.stats.rollbackErrors.Add(1)
+			}
 			panic(recovered)
 		}
 		if committed {
 			return
 		}
 
-		rollbackErr := rollback(tx, ctx)
+		u.stats.rollbacks.Add(1)
+		rollbackErr := prepared.Rollback()
 		if rollbackErr != nil {
+			u.stats.rollbackErrors.Add(1)
 			err = errors.Join(err, fmt.Errorf(
 				"rollback PostgreSQL transaction: %w",
 				rollbackErr,
@@ -111,31 +201,45 @@ func (u *PGXUnitOfWork) WithinTransaction(
 		}
 	}()
 
-	if err := fn(ctx, tx); err != nil {
+	if err := prepared.Configure(txCtx, settings.StatementTimeout, settings.LockTimeout); err != nil {
+		return err
+	}
+	if err := fn(txCtx, prepared.tx); err != nil {
 		return fmt.Errorf("run PostgreSQL transaction: %w", err)
 	}
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("PostgreSQL transaction context: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := prepared.Commit(ctx); err != nil {
+		u.stats.commitErrors.Add(1)
 		return fmt.Errorf("commit PostgreSQL transaction: %w", err)
 	}
 
 	committed = true
+	u.stats.commits.Add(1)
 	return nil
 }
 
-func rollback(tx transaction, parent context.Context) error {
-	ctx, cancel := context.WithTimeout(
-		context.WithoutCancel(parent),
-		rollbackTimeout,
-	)
-	defer cancel()
+// Stats возвращает снимок накопленных показателей UoW.
+func (u *PGXUnitOfWork) Stats() Stats {
+	return Stats{
+		Attempts:       u.stats.attempts.Load(),
+		Commits:        u.stats.commits.Load(),
+		Rollbacks:      u.stats.rollbacks.Load(),
+		BeginErrors:    u.stats.beginErrors.Load(),
+		CommitErrors:   u.stats.commitErrors.Load(),
+		RollbackErrors: u.stats.rollbackErrors.Load(),
+		Canceled:       u.stats.canceled.Load(),
+		TotalDuration:  time.Duration(u.stats.totalNanos.Load()),
+	}
+}
 
-	err := tx.Rollback(ctx)
-	if errors.Is(err, pgx.ErrTxClosed) {
+// setLocalTimeout устанавливает ограничение только для текущей транзакции.
+func setLocalTimeout(ctx context.Context, tx transaction, name string, timeout time.Duration) error {
+	if timeout == 0 {
 		return nil
 	}
-
+	milliseconds := timeout / time.Millisecond
+	if timeout%time.Millisecond != 0 {
+		milliseconds++
+	}
+	_, err := tx.Exec(ctx, "SELECT set_config($1, $2, true)", name, strconv.FormatInt(int64(milliseconds), 10)+"ms")
 	return err
 }

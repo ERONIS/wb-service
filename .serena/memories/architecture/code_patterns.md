@@ -23,8 +23,11 @@
 - **Mechanics**:
   - Begins transaction via `beginner.BeginTx(ctx, options)`.
   - Injects `DBTX` interface (`Exec`, `Query`, `QueryRow`, `CopyFrom`).
-  - Automatic `defer tx.Rollback(rollbackCtx)` with isolated 5-second timeout on error or panic.
+  - UoW rolls back with an isolated 5-second context on error or panic; panic is rethrown after cleanup. Core tests cover the panic path, rollback count, and lifecycle stats.
   - Commits atomically on `fn` returning `nil`.
+  - `PGXUnitOfWork.WithinTransactionWithSettings` adds an optional operation budget, per-transaction `statement_timeout`/`lock_timeout` via `set_config(..., true)`, and optional `pgx.TxOptions` override. The existing `UnitOfWork` interface remains unchanged; `ConfigurableUnitOfWork` exposes the extended operation to callers that need it. A transaction context marker rejects nested UoW calls when the callback context is propagated. `Stats()` exposes cumulative atomic lifecycle counters and elapsed time, with no automatic retries.
+  - `PrepareTx`, `PrepareTxWithStatementTimeout` and callback UoW share the private `beginPreparedTransaction` → `Configure` → `Commit`/`Rollback` lifecycle. Prepared helpers expose explicit commit/rollback closures; UoW retains callback ownership and atomic lifecycle counters. `DeferRollback` uses a detached bounded context and treats `pgx.ErrTxClosed` as completed cleanup.
+  - Pool tracer measures connection acquisition as well as SQL/CopyFrom; errors are logged only as bounded categories and SQLSTATE, without arbitrary error text or SQL arguments. `ConnectionPool` exposes pgxpool's `Stat()` through embedding.
 
 ## 3. WB Client Flow Control & Safety Policy (`internal/core/transport/wb`)
 - **Token Bucket Rate Limiter (`flowcontrol/limiter.go`)**:

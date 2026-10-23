@@ -14,6 +14,12 @@ type mockProcessor struct {
 	calls atomic.Int64
 }
 
+// mockProgressProcessor эмулирует процессор с поддержкой ProgressAwareProcessor.
+type mockProgressProcessor struct {
+	calls    atomic.Int64
+	progress atomic.Bool
+}
+
 func (m *mockProcessor) ProcessPending(ctx context.Context) error {
 	m.calls.Add(1)
 	return nil
@@ -80,10 +86,47 @@ func TestPolling_ChainedWake(t *testing.T) {
 	}
 }
 
-// mockProgressProcessor эмулирует процессор с поддержкой ProgressAwareProcessor.
-type mockProgressProcessor struct {
-	calls    atomic.Int64
-	progress atomic.Bool
+func TestPollingWakeStopsAtStageWithoutProgress(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	wake := make(chan struct{}, 1)
+	first := &mockProgressProcessor{}
+	second := &mockProcessor{}
+	third := &mockProcessor{}
+	polling := transfer_server.NewPollingWithWake(time.Hour, wake, first, second, third)
+	done := make(chan error, 1)
+	go func() { done <- polling.Run(ctx, nil) }()
+	deadline := time.Now().Add(2 * time.Second)
+	for first.calls.Load() < 1 || second.calls.Load() < 1 || third.calls.Load() < 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("начальный проход стадий не завершился")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	secondBefore := second.calls.Load()
+	thirdBefore := third.calls.Load()
+	first.progress.Store(true)
+	wake <- struct{}{}
+	deadline = time.Now().Add(2 * time.Second)
+	for second.calls.Load() <= secondBefore {
+		if time.Now().After(deadline) {
+			t.Fatal("непосредственная следующая стадия не получила сигнал")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if third.calls.Load() != thirdBefore {
+		t.Fatal("сигнал миновал стадию без прогресса")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("опрос не завершился после отмены")
+	}
 }
 
 func (m *mockProgressProcessor) ProcessPending(ctx context.Context) error {

@@ -84,20 +84,20 @@ func (command InitializeTransferCommand) Validate() error {
 func (service *Service) Initialize(
 	ctx context.Context,
 	transferID TransferID,
-) error {
+) (bool, error) {
 	if err := core_errors.RequireContext(ctx); err != nil {
-		return err
+		return false, err
 	}
 	if transferID <= 0 {
-		return core_errors.InvalidArgument("initialize transfer ID='%d'", transferID)
+		return false, core_errors.InvalidArgument("initialize transfer ID='%d'", transferID)
 	}
 
 	transfer, err := service.repository.FindByID(ctx, transferID)
 	if err != nil {
-		return fmt.Errorf("load transfer for initialization: %w", err)
+		return false, fmt.Errorf("load transfer for initialization: %w", err)
 	}
 	if transfer.Phase != PhaseInitializing {
-		return nil
+		return false, nil
 	}
 
 	command, err := service.buildInitialization(ctx, transfer)
@@ -105,13 +105,14 @@ func (service *Service) Initialize(
 		if core_errors.IsNotFound(err) ||
 			core_errors.IsInvalidArgument(err) ||
 			core_errors.IsConflict(err) {
-			return service.markInitializationFailed(
+			err = service.markInitializationFailed(
 				ctx,
 				transfer.ID,
 				failureBatchMismatch,
 			)
+			return false, err
 		}
-		return err
+		return false, err
 	}
 
 	err = service.uow.WithinTransaction(
@@ -121,16 +122,17 @@ func (service *Service) Initialize(
 		},
 	)
 	if core_errors.IsConflict(err) {
-		return service.markInitializationFailed(
+		err = service.markInitializationFailed(
 			ctx,
 			transfer.ID,
 			failureStorageMismatch,
 		)
+		return false, err
 	}
 	if err != nil {
-		return fmt.Errorf("persist transfer initialization: %w", err)
+		return false, fmt.Errorf("persist transfer initialization: %w", err)
 	}
-	return nil
+	return true, nil
 }
 
 func (service *Service) buildInitialization(

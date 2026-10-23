@@ -14,28 +14,36 @@ const slowLimiterWaitLogThreshold = time.Second
 
 var requestTraceSequence atomic.Uint64
 
+// requestTrace собирает данные об отправке для одной записи в журнале.
 type requestTrace struct {
-	requestID       string
-	sellerID        domain.SellerID
-	cabinetName     string
-	operation       policy.OperationID
-	method          string
-	path            string
-	bucketID        policy.BucketID
-	startedAt       time.Time
+	details requestTraceDetails
+	metrics requestTraceMetrics
+}
+
+// requestTraceDetails описывает запрос, к которому относится запись в журнале.
+type requestTraceDetails struct {
+	requestID   string
+	sellerID    domain.SellerID
+	cabinetName string
+	operation   policy.OperationID
+	method      string
+	path        string
+	bucketID    policy.BucketID
+	startedAt   time.Time
+}
+
+// requestTraceMetrics накапливает данные обо всех попытках запроса.
+type requestTraceMetrics struct {
 	requestBytes    int
 	responseBytes   int
 	limiterWait     time.Duration
-	statusCode      int
-	delivery        DeliveryState
-	errorCode       string
-	err             error
 	observationErrs int
 	observationErr  error
 	dispatchCount   int
 	attempts        []int
 }
 
+// newRequestTrace начинает учёт логического запроса и его попыток.
 func newRequestTrace(
 	client *APIClient,
 	operation policy.Operation,
@@ -43,22 +51,112 @@ func newRequestTrace(
 ) *requestTrace {
 	startedAt := time.Now()
 	trace := &requestTrace{
-		requestID: newRequestID(startedAt),
-		operation: operation.ID(),
-		method:    operation.Method(),
-		path:      operation.Path(),
-		bucketID:  operation.BucketID(),
-		startedAt: startedAt,
-		attempts:  make([]int, 0, maxAttempts),
+		details: requestTraceDetails{
+			requestID: newRequestID(startedAt),
+			operation: operation.ID(),
+			method:    operation.Method(),
+			path:      operation.Path(),
+			bucketID:  operation.BucketID(),
+			startedAt: startedAt,
+		},
+		metrics: requestTraceMetrics{
+			attempts: make([]int, 0, maxAttempts),
+		},
 	}
 	if client != nil {
-		trace.sellerID = client.sellerID
-		trace.cabinetName = client.cabinetName
+		trace.details.sellerID = client.sellerID
+		trace.details.cabinetName = client.cabinetName
 	}
 
 	return trace
 }
 
+// log записывает единый итог запроса с подходящим уровнем журнала.
+func (trace *requestTrace) log(logger *zap.Logger, result executionResult, executeErr error) {
+	if logger == nil {
+		return
+	}
+	errorCode := classifiedErrorCode(executeErr)
+	resultLabel := "success"
+	if errorCode != "" {
+		resultLabel = "error"
+	}
+
+	fields := []zap.Field{
+		zap.String("event", "wb_request_completed"),
+		zap.String("request_id", trace.details.requestID),
+		zap.String("seller_id", string(trace.details.sellerID)),
+		zap.String("cabinet_name", trace.details.cabinetName),
+		zap.String("operation", trace.details.operation.String()),
+		zap.String("method", trace.details.method),
+		zap.String("path", trace.details.path),
+		zap.String("bucket_id", trace.details.bucketID.String()),
+		zap.Int("attempt_count", len(trace.metrics.attempts)),
+		zap.Ints("attempt_statuses", trace.metrics.attempts),
+		zap.Int("dispatch_count", trace.metrics.dispatchCount),
+		zap.Duration("limiter_wait", trace.metrics.limiterWait),
+		zap.Int("request_bytes", trace.metrics.requestBytes),
+		zap.Int("response_bytes", trace.metrics.responseBytes),
+		zap.Duration("duration", time.Since(trace.details.startedAt)),
+		zap.Int("status_code", result.statusCode),
+		zap.String("delivery_state", result.delivery.String()),
+		zap.String("result", resultLabel),
+		zap.String("error_code", errorCode),
+		zap.Int("rate_limit_observation_errors", trace.metrics.observationErrs),
+	}
+	if executeErr != nil {
+		fields = append(fields, zap.NamedError("error", executeErr))
+	}
+	if trace.metrics.observationErr != nil {
+		fields = append(fields, zap.NamedError("rate_limit_observation_error", trace.metrics.observationErr))
+	}
+	if errorCode == ErrorCodeCanceled && trace.metrics.observationErr == nil {
+		logger.Debug("WB request completed", fields...)
+		return
+	}
+	if errorCode != "" || trace.metrics.observationErr != nil {
+		logger.Warn("WB request completed", fields...)
+		return
+	}
+	if trace.metrics.limiterWait >= slowLimiterWaitLogThreshold {
+		logger.Info("WB request completed", fields...)
+		return
+	}
+	logger.Debug("WB request completed", fields...)
+}
+
+// recordAttempt запоминает статус и число фактических отправок попытки.
+func (trace *requestTrace) recordAttempt(
+	statusCode int,
+	dispatchCount int,
+) {
+	trace.metrics.dispatchCount += dispatchCount
+	trace.metrics.attempts = append(trace.metrics.attempts, statusCode)
+}
+
+// addLimiterWait накапливает время ожидания разрешения от лимитера.
+func (trace *requestTrace) addLimiterWait(duration time.Duration) {
+	trace.metrics.limiterWait += duration
+}
+
+// addResponseBytes накапливает число прочитанных байтов ответа.
+func (trace *requestTrace) addResponseBytes(responseBytes int) {
+	trace.metrics.responseBytes += responseBytes
+}
+
+// recordObservationError учитывает ошибки чтения заголовков лимита.
+func (trace *requestTrace) recordObservationError(err error) {
+	if err == nil {
+		return
+	}
+
+	trace.metrics.observationErrs++
+	if trace.metrics.observationErr == nil {
+		trace.metrics.observationErr = err
+	}
+}
+
+// newRequestID создаёт идентификатор из времени и порядкового номера.
 func newRequestID(startedAt time.Time) string {
 	return fmt.Sprintf(
 		"%016x-%016x",
@@ -67,99 +165,7 @@ func newRequestID(startedAt time.Time) string {
 	)
 }
 
-func (trace *requestTrace) recordAttempt(
-	statusCode int,
-	dispatchCount int,
-) {
-	trace.dispatchCount += dispatchCount
-	trace.attempts = append(trace.attempts, statusCode)
-}
-
-func (trace *requestTrace) addLimiterWait(duration time.Duration) {
-	trace.limiterWait += duration
-}
-
-func (trace *requestTrace) addResponseBytes(responseBytes int) {
-	trace.responseBytes += responseBytes
-}
-
-func (trace *requestTrace) recordObservationError(err error) {
-	if err == nil {
-		return
-	}
-
-	trace.observationErrs++
-	if trace.observationErr == nil {
-		trace.observationErr = err
-	}
-}
-
-func (trace *requestTrace) complete(
-	result executionResult,
-	executeErr error,
-) {
-	trace.statusCode = result.statusCode
-	trace.delivery = result.delivery
-	trace.errorCode = classifiedErrorCode(executeErr)
-	trace.err = executeErr
-}
-
-func (trace *requestTrace) log(logger *zap.Logger) {
-	if logger == nil {
-		return
-	}
-
-	fields := []zap.Field{
-		zap.String("event", "wb_request_completed"),
-		zap.String("request_id", trace.requestID),
-		zap.String("seller_id", string(trace.sellerID)),
-		zap.String("cabinet_name", trace.cabinetName),
-		zap.String("operation", trace.operation.String()),
-		zap.String("method", trace.method),
-		zap.String("path", trace.path),
-		zap.String("bucket_id", trace.bucketID.String()),
-		zap.Int("attempt_count", len(trace.attempts)),
-		zap.Ints("attempt_statuses", trace.attempts),
-		zap.Int("dispatch_count", trace.dispatchCount),
-		zap.Duration("limiter_wait", trace.limiterWait),
-		zap.Int("request_bytes", trace.requestBytes),
-		zap.Int("response_bytes", trace.responseBytes),
-		zap.Duration("duration", time.Since(trace.startedAt)),
-		zap.Int("status_code", trace.statusCode),
-		zap.String("delivery_state", trace.delivery.String()),
-		zap.String("result", trace.resultLabel()),
-		zap.String("error_code", trace.errorCode),
-		zap.Int("rate_limit_observation_errors", trace.observationErrs),
-	}
-	if trace.err != nil {
-		fields = append(fields, zap.NamedError("error", trace.err))
-	}
-	if trace.observationErr != nil {
-		fields = append(fields, zap.NamedError("rate_limit_observation_error", trace.observationErr))
-	}
-	if trace.errorCode == ErrorCodeCanceled && trace.observationErr == nil {
-		logger.Debug("WB request completed", fields...)
-		return
-	}
-	if trace.errorCode != "" || trace.observationErr != nil {
-		logger.Warn("WB request completed", fields...)
-		return
-	}
-	if trace.limiterWait >= slowLimiterWaitLogThreshold {
-		logger.Info("WB request completed", fields...)
-		return
-	}
-	logger.Debug("WB request completed", fields...)
-}
-
-func (trace *requestTrace) resultLabel() string {
-	if trace.errorCode == "" {
-		return "success"
-	}
-
-	return "error"
-}
-
+// clientLogger возвращает журнал клиента, если клиент существует.
 func clientLogger(client *APIClient) *zap.Logger {
 	if client == nil {
 		return nil
