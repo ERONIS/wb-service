@@ -5,11 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
-
-	"github.com/ERONIS/wb-service/internal/core/canonicalhash"
 )
 
 func DecodeExactJSON(payload []byte, target any) error {
@@ -27,28 +24,6 @@ func DecodeExactJSON(payload []byte, target any) error {
 		return errors.New("exact JSON payload is not canonical")
 	}
 	return nil
-}
-
-func DigestParts(domain string, parts ...[]byte) Digest {
-	builder := canonicalhash.NewSHA256(domain)
-	for _, part := range parts {
-		builder.Bytes(part)
-	}
-	return Digest(builder.Sum())
-}
-
-func DigestMembers(members []ActionMemberDraft) Digest {
-	parts := make([][]byte, 0, len(members)*4)
-	for _, member := range members {
-		parts = append(
-			parts,
-			[]byte(strconv.FormatInt(member.GroupTargetID, 10)),
-			[]byte(strconv.FormatInt(member.TransferItemTargetID, 10)),
-			[]byte(strconv.Itoa(member.RequestMemberIndex)),
-			[]byte(member.VendorCode),
-		)
-	}
-	return DigestParts("cardpublication-members:v1", parts...)
 }
 
 func NormalizeUniqueStrings(values []string) []string {

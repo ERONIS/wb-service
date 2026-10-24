@@ -7,6 +7,7 @@ import (
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
 
 type pollingRepository struct {
@@ -20,23 +21,23 @@ type pollingUOW struct{}
 
 func (repository *pollingRepository) ListInitializing(
 	_ context.Context,
-	afterID TransferID,
+	afterID transfer_model.TransferID,
 	_ int,
-) ([]Transfer, error) {
+) ([]transfer_model.Transfer, error) {
 	if afterID != 0 {
 		return nil, nil
 	}
-	return []Transfer{{ID: 1, Phase: PhaseInitializing}}, nil
+	return []transfer_model.Transfer{{ID: 1, Phase: PhaseInitializing}}, nil
 }
 
-func (*pollingRepository) FindByID(context.Context, TransferID) (Transfer, error) {
-	return Transfer{ID: 1, Phase: PhaseInitializing}, nil
+func (*pollingRepository) FindByID(context.Context, transfer_model.TransferID) (transfer_model.Transfer, error) {
+	return transfer_model.Transfer{ID: 1, Phase: PhaseInitializing}, nil
 }
 
 func (repository *pollingRepository) MarkInitializationFailed(
 	_ context.Context,
 	_ core_postgres_transaction.DBTX,
-	_ TransferID,
+	_ transfer_model.TransferID,
 	_ string,
 ) error {
 	repository.failed = true

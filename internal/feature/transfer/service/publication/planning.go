@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"strings"
 
+	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
 
 const MaxPublicationPlanningPageSize = 1000
@@ -24,13 +26,12 @@ type PublicationPlanningGroup struct {
 	GroupTargetID int64
 	SourceGroupID int64
 	TargetID      int64
-	SellerID      SellerID
-	ProposalRoot  Digest
+	SellerID      core_domain.SellerID
 	Members       []PublicationPlanningMember
 }
 
 type PublicationPlanningSource struct {
-	TransferID TransferID
+	TransferID transfer_model.TransferID
 	Groups     []PublicationPlanningGroup
 }
 
@@ -43,7 +44,7 @@ func (source PublicationPlanningSource) Validate() error {
 	for groupIndex, group := range source.Groups {
 		if group.GroupTargetID <= 0 || group.SourceGroupID <= 0 ||
 			group.TargetID <= 0 ||
-			group.ProposalRoot == (Digest{}) || len(group.Members) == 0 ||
+			len(group.Members) == 0 ||
 			strings.TrimSpace(string(group.SellerID)) != string(group.SellerID) ||
 			group.SellerID == "" {
 			return fmt.Errorf("publication planning group at index %d is invalid", groupIndex)
@@ -83,7 +84,7 @@ const (
 type PublicationPlannedGroup struct {
 	GroupTargetID  int64
 	Status         PublicationProjectionStatus
-	OutcomeClass   ResultClass
+	OutcomeClass   transfer_model.ResultClass
 	OutcomeCode    string
 	HasMediaAction bool
 }
@@ -92,7 +93,7 @@ type PublicationPlannedItem struct {
 	GroupTargetID        int64
 	TransferItemTargetID int64
 	SourceActionID       int64
-	OutcomeClass         ResultClass
+	OutcomeClass         transfer_model.ResultClass
 	OutcomeCode          string
 	NMID                 int64
 }
@@ -102,7 +103,7 @@ func (item PublicationPlannedItem) IsTerminal() bool {
 }
 
 type ApplyPublicationPlanResultCommand struct {
-	TransferID  TransferID
+	TransferID  transfer_model.TransferID
 	PlanID      int64
 	Groups      []PublicationPlannedGroup
 	Items       []PublicationPlannedItem

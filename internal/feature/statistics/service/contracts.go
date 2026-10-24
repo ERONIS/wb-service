@@ -5,7 +5,7 @@ import (
 	"time"
 
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
-	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
+	cardpublication_resolution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/resolution"
 )
 
 type Reader interface {
@@ -22,7 +22,7 @@ type Reader interface {
 }
 
 type VerifiedCardResolver interface {
-	Resolve(context.Context, cardpublication_service.VerifiedCardCommand, cardpublication_service.VerifiedCardEvidence) error
+	Resolve(context.Context, cardpublication_resolution.VerifiedCardCommand, cardpublication_resolution.VerifiedCardEvidence) error
 }
 
 type CardVerificationInfo struct {

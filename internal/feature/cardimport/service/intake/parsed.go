@@ -1,4 +1,4 @@
-package model
+package cardimport_intake
 
 import "github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 
@@ -26,16 +26,6 @@ type ParsedFile struct {
 	Issues    []ParseIssue
 }
 
-func (f ParsedFile) HasErrors() bool {
-	for _, issue := range f.Issues {
-		if issue.Severity == IssueSeverityError {
-			return true
-		}
-	}
-
-	return false
-}
-
 // ParsedRow сохраняет одну исходную товарную строку XLSX без межстрочного
 // объединения. Group имеет область только текущего FileID.
 type ParsedRow struct {
@@ -49,27 +39,29 @@ type ParsedRow struct {
 	MarkingConfirmed string `json:"markingConfirmed"`
 	VATRate          string `json:"vatRate"`
 
-	Variant ParsedVariant `json:"variant"`
-	Media   ParsedMedia   `json:"media"`
+	Variant cardpipeline.Variant `json:"variant"`
+	Media   cardpipeline.Media   `json:"media"`
 }
-
-type ParsedVariant = cardpipeline.Variant
-type ParsedDimensions = cardpipeline.Dimensions
-type ParsedSize = cardpipeline.Size
-type RawCharacteristic = cardpipeline.RawCharacteristic
-type ParsedMedia = cardpipeline.Media
-
-// AggregatedCard представляет одну карточку после объединения всех строк с
-// одинаковым артикулом продавца внутри одного XLSX-файла.
-type AggregatedCard = cardpipeline.Card
 
 type AggregatedFile struct {
 	FileID    FileID
 	SheetName string
-	Cards     []AggregatedCard
+	Cards     []cardpipeline.Card
 	Issues    []ParseIssue
 }
 
+// HasErrors проверяет наличие ошибок в разобранном файле.
+func (f ParsedFile) HasErrors() bool {
+	for _, issue := range f.Issues {
+		if issue.Severity == IssueSeverityError {
+			return true
+		}
+	}
+
+	return false
+}
+
+// HasErrors проверяет наличие ошибок после объединения строк.
 func (f AggregatedFile) HasErrors() bool {
 	for _, issue := range f.Issues {
 		if issue.Severity == IssueSeverityError {

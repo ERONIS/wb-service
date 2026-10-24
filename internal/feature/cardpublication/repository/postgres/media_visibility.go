@@ -8,11 +8,12 @@ import (
 
 	tx "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
+	cardpublication_execution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/execution"
 	transfer "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 )
 
 func (repository *Repository) ScheduleMediaVisibility(ctx context.Context, dbtx tx.DBTX,
-	action service.MediaAction, attempt service.MediaAttempt, result service.MediaMutationResult,
+	action cardpublication_execution.MediaAction, attempt cardpublication_execution.MediaAttempt, result cardpublication_execution.MediaMutationResult,
 	interval, timeout time.Duration,
 ) error {
 	if (result.Disposition != service.SubmissionAccepted && result.Disposition != service.SubmissionUncertain) ||
@@ -54,7 +55,7 @@ func (repository *Repository) ScheduleMediaVisibility(ctx context.Context, dbtx 
 	return nil
 }
 
-func (repository *Repository) ClaimMediaVisibility(ctx context.Context, limit int, lease time.Duration) ([]service.MediaVisibilityJob, error) {
+func (repository *Repository) ClaimMediaVisibility(ctx context.Context, limit int, lease time.Duration) ([]cardpublication_execution.MediaVisibilityJob, error) {
 	if limit <= 0 || limit > 100 || lease <= 0 {
 		return nil, errors.New("media visibility claim is invalid")
 	}
@@ -78,7 +79,7 @@ func (repository *Repository) ClaimMediaVisibility(ctx context.Context, limit in
 			RETURNING job.*
 		)
 		SELECT action.transfer_id, action.id, action.target_id, target.seller_id,
-		       auth.id, auth.revision, plan.plan_digest, plan.target_set_root,
+		       auth.id, auth.revision, plan.id,
 		       job.attempt_id, job.revision AS claim_revision, job.deadline_at, job.check_count
 		FROM claimed AS job
 		JOIN wb.publication_actions AS action
@@ -96,39 +97,33 @@ func (repository *Repository) ClaimMediaVisibility(ctx context.Context, limit in
 		return nil, fmt.Errorf("claim media visibility: %w", err)
 	}
 	defer rows.Close()
-	jobs := make([]service.MediaVisibilityJob, 0)
+	jobs := make([]cardpublication_execution.MediaVisibilityJob, 0)
 	for rows.Next() {
-		var job service.MediaVisibilityJob
-		var planDigest, targetRoot []byte
+		var job cardpublication_execution.MediaVisibilityJob
 		c := &job.Candidate
 		if err := rows.Scan(&c.TransferID, &c.ActionID, &c.TargetID, &c.SellerID,
-			&c.AuthorizationID, &c.AuthorizationRevision, &planDigest, &targetRoot,
+			&c.AuthorizationID, &c.AuthorizationRevision, &c.PlanID,
 			&job.AttemptID, &job.Revision, &job.DeadlineAt, &job.CheckCount); err != nil {
 			return nil, fmt.Errorf("scan media visibility: %w", err)
 		}
-		if len(planDigest) != len(c.PlanDigest) || len(targetRoot) != len(c.TargetSetRoot) {
-			return nil, service.ErrMediaActionConflict
-		}
-		copy(c.PlanDigest[:], planDigest)
-		copy(c.TargetSetRoot[:], targetRoot)
 		jobs = append(jobs, job)
 	}
 	return jobs, rows.Err()
 }
 
 func (repository *Repository) UpdateMediaVisibility(ctx context.Context, dbtx tx.DBTX,
-	action service.MediaAction, job service.MediaVisibilityJob, update service.MediaVisibilityUpdate,
-) (service.MediaGroupResult, error) {
+	action cardpublication_execution.MediaAction, job cardpublication_execution.MediaVisibilityJob, update cardpublication_execution.MediaVisibilityUpdate,
+) (cardpublication_execution.MediaGroupResult, error) {
 	if dbtx == nil || action.State != "reconciling" || action.AttemptID != job.AttemptID ||
 		action.TransferID != job.Candidate.TransferID || action.ActionID != job.Candidate.ActionID ||
 		job.Revision <= 0 || update.NextDelay <= 0 || update.Observation.PhotosCount < 0 || len(update.ErrorCode) > 128 {
-		return service.MediaGroupResult{}, service.ErrMediaActionConflict
+		return cardpublication_execution.MediaGroupResult{}, service.ErrMediaActionConflict
 	}
 	terminal := update.OutcomeClass != ""
 	if (!terminal && update.OutcomeCode != "") || (terminal &&
 		!((update.OutcomeClass == transfer.ResultSuccess && update.OutcomeCode == "WB_MEDIA_VISIBLE" && update.Observation.Visible) ||
 			(update.OutcomeClass == transfer.ResultUnresolved && update.OutcomeCode == "WB_MEDIA_VISIBILITY_TIMEOUT" && !update.Observation.Visible))) {
-		return service.MediaGroupResult{}, errors.New("media visibility outcome is invalid")
+		return cardpublication_execution.MediaGroupResult{}, errors.New("media visibility outcome is invalid")
 	}
 	const query = `
 		UPDATE wb.publication_media_visibility AS job
@@ -151,13 +146,13 @@ func (repository *Repository) UpdateMediaVisibility(ctx context.Context, dbtx tx
 		update.NextDelay.Microseconds(), update.Observation.CardFound, update.Observation.PhotosCount,
 		update.ErrorCode, terminal, update.OutcomeClass == transfer.ResultUnresolved)
 	if err != nil {
-		return service.MediaGroupResult{}, fmt.Errorf("update media visibility: %w", err)
+		return cardpublication_execution.MediaGroupResult{}, fmt.Errorf("update media visibility: %w", err)
 	}
 	if tag.RowsAffected() != 1 {
-		return service.MediaGroupResult{}, service.ErrMediaActionConflict
+		return cardpublication_execution.MediaGroupResult{}, service.ErrMediaActionConflict
 	}
 	if !terminal {
-		return service.MediaGroupResult{GroupTargetID: action.Member.GroupTargetID}, nil
+		return cardpublication_execution.MediaGroupResult{GroupTargetID: action.Member.GroupTargetID}, nil
 	}
 	return finishMediaAction(ctx, dbtx, action, update.OutcomeClass, update.OutcomeCode)
 }

@@ -7,7 +7,7 @@ import (
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
 	cardimport_postgres_repository "github.com/ERONIS/wb-service/internal/feature/cardimport/repository/postgres"
-	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
+	cardimport_flow "github.com/ERONIS/wb-service/internal/feature/cardimport/service/importflow"
 	cardimport_telegram_transport "github.com/ERONIS/wb-service/internal/feature/cardimport/transport/telegram"
 	cardimport_xlsx_transport "github.com/ERONIS/wb-service/internal/feature/cardimport/transport/xlsx"
 
@@ -17,7 +17,7 @@ import (
 
 // Feature объединяет зависимости модуля импорта карточек.
 type Feature struct {
-	service         *cardimport_service.Service
+	service         *cardimport_flow.Service
 	telegramHandler *cardimport_telegram_transport.Handler
 }
 
@@ -30,7 +30,7 @@ func New(
 ) *Feature {
 	repository := cardimport_postgres_repository.New(postgresPool)
 	parser := cardimport_xlsx_transport.NewParser()
-	service := cardimport_service.New(repository, parser, uow)
+	service := cardimport_flow.New(repository, parser, uow)
 
 	return &Feature{
 		service: service,
@@ -43,7 +43,7 @@ func New(
 	}
 }
 
-func (f *Feature) Service() *cardimport_service.Service {
+func (f *Feature) Service() *cardimport_flow.Service {
 	return f.service
 }
 

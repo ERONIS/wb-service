@@ -8,7 +8,9 @@ import (
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
+	cardpublication_execution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/execution"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
 
 // ListReconcilingProductActions возвращает действия в сверке с учётом интервалов опроса WB.
@@ -17,7 +19,7 @@ func (repository *Repository) ListReconcilingProductActions(
 	now time.Time,
 	baseDelay time.Duration,
 	limit int,
-) ([]cardpublication_service.ProductActionCandidate, error) {
+) ([]cardpublication_execution.ProductActionCandidate, error) {
 	if now.IsZero() || baseDelay <= 0 || limit <= 0 || limit > 100 {
 		return nil, errors.New("reconciling product action query is invalid")
 	}
@@ -32,8 +34,7 @@ func (repository *Repository) ListReconcilingProductActions(
 			target.seller_id AS seller_id,
 			live_auth.id AS authorization_id,
 			live_auth.revision AS authorization_revision,
-			plan.plan_digest,
-			plan.target_set_root,
+			plan.id AS plan_id,
 			ROW_NUMBER() OVER (
 				PARTITION BY target.seller_id
 				ORDER BY action.updated_at, action.id
@@ -85,7 +86,7 @@ func (repository *Repository) ListReconcilingProductActions(
 		SELECT
 			transfer_id, action_id, target_id, seller_id,
 			authorization_id, authorization_revision,
-			plan_digest, target_set_root, catalog_vendor_codes
+			plan_id, catalog_vendor_codes
 		FROM reconciling
 		ORDER BY cabinet_rank, updated_at, seller_id, action_id
 		LIMIT $3;
@@ -95,7 +96,7 @@ func (repository *Repository) ListReconcilingProductActions(
 		return nil, fmt.Errorf("list reconciling product actions: %w", err)
 	}
 	defer rows.Close()
-	result := make([]cardpublication_service.ProductActionCandidate, 0)
+	result := make([]cardpublication_execution.ProductActionCandidate, 0)
 	for rows.Next() {
 		candidate, err := scanCatalogProductActionCandidate(rows)
 		if err != nil {
@@ -112,8 +113,8 @@ func (repository *Repository) ListReconcilingProductActions(
 // LoadErrorBatchMatches находит совпадения по отклонённым вендор-кодам в буфере ошибок WB (Error List).
 func (repository *Repository) LoadErrorBatchMatches(
 	ctx context.Context,
-	action cardpublication_service.ProductAction,
-) ([]cardpublication_service.ErrorBatchMatch, error) {
+	action cardpublication_execution.ProductAction,
+) ([]cardpublication_execution.ErrorBatchMatch, error) {
 	if action.AttemptID <= 0 {
 		return nil, cardpublication_service.ErrProductActionConflict
 	}
@@ -155,9 +156,9 @@ func (repository *Repository) LoadErrorBatchMatches(
 		return nil, fmt.Errorf("load publication Error List matches: %w", err)
 	}
 	defer rows.Close()
-	result := make([]cardpublication_service.ErrorBatchMatch, 0)
+	result := make([]cardpublication_execution.ErrorBatchMatch, 0)
 	for rows.Next() {
-		var match cardpublication_service.ErrorBatchMatch
+		var match cardpublication_execution.ErrorBatchMatch
 		if err := rows.Scan(
 			&match.ID,
 			&match.BatchUUID,
@@ -180,9 +181,9 @@ func (repository *Repository) LoadErrorBatchMatches(
 func (repository *Repository) RecordProductReconciliationPoll(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	action cardpublication_service.ProductAction,
+	action cardpublication_execution.ProductAction,
 	postObservationID int64,
-	memberResults []cardpublication_service.MemberReconciliationResult,
+	memberResults []cardpublication_execution.MemberReconciliationResult,
 ) error {
 	if tx == nil || action.State != "reconciling" || action.AttemptID <= 0 ||
 		postObservationID <= 0 {
@@ -249,10 +250,10 @@ func (repository *Repository) RecordProductReconciliationPoll(
 func (repository *Repository) FinishProductReconciliation(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	action cardpublication_service.ProductAction,
+	action cardpublication_execution.ProductAction,
 	postObservationID int64,
-	memberResults []cardpublication_service.MemberReconciliationResult,
-	actionClass transfer_service.ResultClass,
+	memberResults []cardpublication_execution.MemberReconciliationResult,
+	actionClass transfer_model.ResultClass,
 	actionCode string,
 ) error {
 	if tx == nil || action.State != "reconciling" || action.AttemptID <= 0 ||
@@ -325,11 +326,11 @@ func (repository *Repository) FinishProductReconciliation(
 func recordProductReconciliationMembers(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	action cardpublication_service.ProductAction,
+	action cardpublication_execution.ProductAction,
 	postObservationID int64,
-	memberResults []cardpublication_service.MemberReconciliationResult,
+	memberResults []cardpublication_execution.MemberReconciliationResult,
 ) error {
-	members := make(map[int64]cardpublication_service.ProductActionMember, len(action.Members))
+	members := make(map[int64]cardpublication_execution.ProductActionMember, len(action.Members))
 	for _, member := range action.Members {
 		members[member.ID] = member
 	}
@@ -419,13 +420,13 @@ func recordProductReconciliationMembers(
 			const insertAttribution = `
 				INSERT INTO wb.publication_attributions (
 					transfer_id, group_target_id, action_id, action_member_id,
-					seller_id, nm_id, plan_digest, attempt_id,
+					seller_id, nm_id, attempt_id,
 					preflight_observation_id, post_observation_id, level,
 					safe_reason_code
 				)
 				VALUES (
-					$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-					'observed_after_attempt', $11
+					$1, $2, $3, $4, $5, $6, $7, $8, $9,
+					'observed_after_attempt', $10
 				);
 			`
 			if _, err := tx.Exec(
@@ -437,7 +438,6 @@ func recordProductReconciliationMembers(
 				member.ID,
 				action.SellerID,
 				result.NMID,
-				action.PlanDigest[:],
 				action.AttemptID,
 				action.PreflightObservationID,
 				postObservationID,
@@ -495,7 +495,7 @@ func recordProductReconciliationMembers(
 func finishPotentialMediaActions(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	action cardpublication_service.ProductAction,
+	action cardpublication_execution.ProductAction,
 	safeCode string,
 ) error {
 	itemTargetIDs := make([]int64, len(action.Members))
@@ -533,8 +533,7 @@ func finishPotentialMediaActions(
 					  AND product_action.plan_id = media_action.plan_id
 					  AND product_action.kind IN ('create_group', 'add_to_group')
 					  AND attribution.level IN ('direct', 'observed_after_attempt')
-					  AND attribution.plan_digest = $5
-					  AND attribution.seller_id = $6
+					  AND attribution.seller_id = $5
 					  AND attribution.group_target_id = member.group_target_id
 				);
 	`
@@ -545,7 +544,6 @@ func finishPotentialMediaActions(
 		action.PlanID,
 		itemTargetIDs,
 		safeCode,
-		action.PlanDigest[:],
 		action.SellerID,
 	); err != nil {
 		return fmt.Errorf("skip publication media members: %w", err)
@@ -594,7 +592,7 @@ func finishPotentialMediaActions(
 func (repository *Repository) PendingMediaGroupTargetIDs(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	action cardpublication_service.ProductAction,
+	action cardpublication_execution.ProductAction,
 ) ([]int64, error) {
 	if tx == nil || action.TransferID <= 0 || action.PlanID <= 0 || len(action.Members) == 0 {
 		return nil, cardpublication_service.ErrProductActionConflict

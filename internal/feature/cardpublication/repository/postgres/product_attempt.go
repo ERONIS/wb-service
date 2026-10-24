@@ -7,6 +7,7 @@ import (
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
+	cardpublication_execution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/execution"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 )
 
@@ -14,8 +15,8 @@ import (
 func (repository *Repository) BeginProductAttempt(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	command cardpublication_service.BeginProductAttemptCommand,
-) (cardpublication_service.ProductAttempt, error) {
+	command cardpublication_execution.BeginProductAttemptCommand,
+) (cardpublication_execution.ProductAttempt, error) {
 	action := command.Action
 	if tx == nil || action.State != "planned" || action.AttemptID != 0 ||
 		command.Authorization.AuthorizationID != action.AuthorizationID ||
@@ -25,7 +26,7 @@ func (repository *Repository) BeginProductAttempt(
 		command.Baseline.ActionID != action.ActionID ||
 		command.Baseline.SellerID != action.SellerID ||
 		command.RecheckObservationID <= 0 {
-		return cardpublication_service.ProductAttempt{}, errors.New(
+		return cardpublication_execution.ProductAttempt{}, errors.New(
 			"begin publication product attempt command is invalid",
 		)
 	}
@@ -50,13 +51,13 @@ func (repository *Repository) BeginProductAttempt(
 		action.ActionID,
 	)
 	if err != nil {
-		return cardpublication_service.ProductAttempt{}, fmt.Errorf(
+		return cardpublication_execution.ProductAttempt{}, fmt.Errorf(
 			"bind publication product identities: %w",
 			err,
 		)
 	}
 	if result.RowsAffected() != int64(len(action.Members)) {
-		return cardpublication_service.ProductAttempt{}, cardpublication_service.ErrProductActionConflict
+		return cardpublication_execution.ProductAttempt{}, cardpublication_service.ErrProductActionConflict
 	}
 	const beginAction = `
 		UPDATE wb.publication_actions AS action
@@ -80,13 +81,13 @@ func (repository *Repository) BeginProductAttempt(
 		action.AuthorizationID,
 	)
 	if err != nil {
-		return cardpublication_service.ProductAttempt{}, fmt.Errorf(
+		return cardpublication_execution.ProductAttempt{}, fmt.Errorf(
 			"begin publication product action: %w",
 			err,
 		)
 	}
 	if result.RowsAffected() != 1 {
-		return cardpublication_service.ProductAttempt{}, cardpublication_service.ErrProductActionConflict
+		return cardpublication_execution.ProductAttempt{}, cardpublication_service.ErrProductActionConflict
 	}
 	const beginPlan = `
 		UPDATE wb.publication_plans
@@ -100,13 +101,13 @@ func (repository *Repository) BeginProductAttempt(
 	`
 	result, err = tx.Exec(ctx, beginPlan, action.TransferID, action.PlanID)
 	if err != nil {
-		return cardpublication_service.ProductAttempt{}, fmt.Errorf(
+		return cardpublication_execution.ProductAttempt{}, fmt.Errorf(
 			"begin publication plan execution: %w",
 			err,
 		)
 	}
 	if result.RowsAffected() != 1 {
-		return cardpublication_service.ProductAttempt{}, cardpublication_service.ErrProductActionConflict
+		return cardpublication_execution.ProductAttempt{}, cardpublication_service.ErrProductActionConflict
 	}
 	const insertAttempt = `
 		INSERT INTO wb.publication_attempts (
@@ -119,18 +120,16 @@ func (repository *Repository) BeginProductAttempt(
 			baseline_cursor_updated_at,
 			baseline_cursor_batch_uuid,
 			baseline_captured_at,
-			request_digest,
 			request_payload
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING id, started_at;
 	`
-	attempt := cardpublication_service.ProductAttempt{
+	attempt := cardpublication_execution.ProductAttempt{
 		TransferID:           action.TransferID,
 		ActionID:             action.ActionID,
 		AuthorizationID:      action.AuthorizationID,
 		RecheckObservationID: command.RecheckObservationID,
-		RequestDigest:        action.RequestDigest,
 	}
 	if err := tx.QueryRow(
 		ctx,
@@ -144,10 +143,9 @@ func (repository *Repository) BeginProductAttempt(
 		nullableTime(command.Baseline.CursorUpdatedAt),
 		command.Baseline.CursorBatchUUID,
 		command.Baseline.CapturedAt,
-		action.RequestDigest[:],
 		action.RequestPayload,
 	).Scan(&attempt.ID, &attempt.StartedAt); err != nil {
-		return cardpublication_service.ProductAttempt{}, fmt.Errorf(
+		return cardpublication_execution.ProductAttempt{}, fmt.Errorf(
 			"insert publication product attempt: %w",
 			err,
 		)
@@ -159,7 +157,7 @@ func (repository *Repository) BeginProductAttempt(
 func (repository *Repository) RecordSubmission(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	command cardpublication_service.RecordSubmissionCommand,
+	command cardpublication_execution.RecordSubmissionCommand,
 ) error {
 	if tx == nil {
 		return errors.New("record product submission: DBTX is nil")
@@ -170,12 +168,11 @@ func (repository *Repository) RecordSubmission(
 	action, attempt, result := command.Action, command.Attempt, command.Result
 	if action.State != "dispatching" || action.AttemptID != attempt.ID ||
 		attempt.ActionID != action.ActionID || attempt.TransferID != action.TransferID ||
-		attempt.AuthorizationID != action.AuthorizationID ||
-		attempt.RequestDigest != action.RequestDigest {
+		attempt.AuthorizationID != action.AuthorizationID {
 		return cardpublication_service.ErrProductActionConflict
 	}
 	const lockAttempt = `
-		SELECT request_digest
+		SELECT request_payload
 		FROM wb.publication_attempts
 		WHERE transfer_id = $1
 			AND id = $2
@@ -184,7 +181,7 @@ func (repository *Repository) RecordSubmission(
 			AND finished_at IS NULL
 		FOR UPDATE;
 	`
-	var storedDigest []byte
+	var storedPayload []byte
 	if err := tx.QueryRow(
 		ctx,
 		lockAttempt,
@@ -192,11 +189,10 @@ func (repository *Repository) RecordSubmission(
 		attempt.ID,
 		action.ActionID,
 		action.AuthorizationID,
-	).Scan(&storedDigest); err != nil {
+	).Scan(&storedPayload); err != nil {
 		return fmt.Errorf("lock publication product attempt result: %w", err)
 	}
-	if len(storedDigest) != len(action.RequestDigest) ||
-		!equalBytes(storedDigest, action.RequestDigest[:]) {
+	if !equalBytes(storedPayload, action.RequestPayload) {
 		return cardpublication_service.ErrProductActionConflict
 	}
 	var httpStatus any
@@ -290,7 +286,7 @@ func (repository *Repository) RecordSubmission(
 		return nil
 	}
 
-	memberResults := make(map[int64]cardpublication_service.MemberSubmissionResult)
+	memberResults := make(map[int64]cardpublication_execution.MemberSubmissionResult)
 	for _, memberResult := range result.MemberResults {
 		memberResults[memberResult.ActionMemberID] = memberResult
 	}

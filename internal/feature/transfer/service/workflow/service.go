@@ -6,10 +6,13 @@ import (
 	"strings"
 	"sync"
 
+	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+
 	"go.uber.org/zap"
 )
 
@@ -18,7 +21,7 @@ type Service struct {
 	batchReader    BatchReader
 	targetRegistry TargetRegistry
 	uow            core_postgres_transaction.UnitOfWork
-	capacity       CapacityPolicy
+	capacity       transfer_model.CapacityPolicy
 	logger         *zap.Logger
 	processMu      sync.Mutex
 	batchCursor    *cardpipeline.BatchCursor
@@ -29,7 +32,7 @@ func New(
 	batchReader BatchReader,
 	targetRegistry TargetRegistry,
 	uow core_postgres_transaction.UnitOfWork,
-	capacity CapacityPolicy,
+	capacity transfer_model.CapacityPolicy,
 	loggers ...*zap.Logger,
 ) *Service {
 	if repository == nil {
@@ -63,26 +66,26 @@ func (service *Service) Logger() *zap.Logger { return service.logger }
 func (service *Service) Start(
 	ctx context.Context,
 	batchID cardpipeline.BatchID,
-) (TransferID, error) {
+) (transfer_model.TransferID, error) {
 	return service.start(ctx, batchID, nil)
 }
 
 func (service *Service) StartToCabinet(
 	ctx context.Context,
 	batchID cardpipeline.BatchID,
-	sellerID SellerID,
-) (TransferID, error) {
+	sellerID core_domain.SellerID,
+) (transfer_model.TransferID, error) {
 	if strings.TrimSpace(string(sellerID)) != string(sellerID) || sellerID == "" {
 		return 0, core_errors.InvalidArgument("invalid transfer seller ID %q", sellerID)
 	}
-	return service.start(ctx, batchID, []SellerID{sellerID})
+	return service.start(ctx, batchID, []core_domain.SellerID{sellerID})
 }
 
 func (service *Service) start(
 	ctx context.Context,
 	batchID cardpipeline.BatchID,
-	targetSellerIDs []SellerID,
-) (TransferID, error) {
+	targetSellerIDs []core_domain.SellerID,
+) (transfer_model.TransferID, error) {
 	if batchID <= 0 {
 		return 0, core_errors.InvalidArgument("invalid transfer batch ID '%d'", batchID)
 	}
@@ -108,7 +111,7 @@ func (service *Service) start(
 		return 0, err
 	}
 
-	var snapshot MutationTargetSnapshot
+	var snapshot transfer_model.MutationTargetSnapshot
 	if len(targetSellerIDs) == 0 {
 		snapshot, err = service.targetRegistry.FanoutMutationSnapshot(ctx)
 	} else {
@@ -129,9 +132,8 @@ func (service *Service) start(
 	if err != nil {
 		return 0, fmt.Errorf("check transfer capacity: %w", err)
 	}
-	root := TargetSetRoot(snapshot)
 
-	var transfer Transfer
+	var transfer transfer_model.Transfer
 	err = service.uow.WithinTransaction(
 		ctx,
 		func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
@@ -141,10 +143,9 @@ func (service *Service) start(
 				ctx,
 				tx,
 				CreateTransfer{
-					Batch:         batch,
-					Snapshot:      snapshot,
-					TargetSetRoot: root,
-					Capacity:      capacity,
+					Batch:    batch,
+					Snapshot: snapshot,
+					Capacity: capacity,
 				},
 			)
 			if err != nil || created || len(targetSellerIDs) == 0 {
@@ -166,8 +167,8 @@ func (service *Service) start(
 
 func (service *Service) verifyStoredTargets(
 	ctx context.Context,
-	transferID TransferID,
-	expected []SellerID,
+	transferID transfer_model.TransferID,
+	expected []core_domain.SellerID,
 ) error {
 	stored, err := service.repository.ListTargetSellerIDs(ctx, transferID)
 	if err != nil {
@@ -176,11 +177,11 @@ func (service *Service) verifyStoredTargets(
 	return verifyTargetSellerIDs(stored, expected)
 }
 
-func verifyTargetSellerIDs(stored, expected []SellerID) error {
+func verifyTargetSellerIDs(stored, expected []core_domain.SellerID) error {
 	if len(stored) != len(expected) {
 		return core_errors.Conflict("transfer target set differs from requested target")
 	}
-	wanted := make(map[SellerID]struct{}, len(expected))
+	wanted := make(map[core_domain.SellerID]struct{}, len(expected))
 	for _, sellerID := range expected {
 		wanted[sellerID] = struct{}{}
 	}
@@ -195,12 +196,6 @@ func verifyTargetSellerIDs(stored, expected []SellerID) error {
 func validateStartBatch(batch cardpipeline.ReadyBatchHeader) error {
 	if err := batch.Validate(); err != nil {
 		return fmt.Errorf("validate transfer batch: %w", err)
-	}
-	if batch.Checksum == (cardpipeline.Digest{}) {
-		return fmt.Errorf(
-			"cardimport batch checksum is empty: %w",
-			core_errors.ErrConflict,
-		)
 	}
 	return nil
 }

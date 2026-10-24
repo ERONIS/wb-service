@@ -1,9 +1,10 @@
-package workflow
+package cardimport_flow
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	cardimport_contract "github.com/ERONIS/wb-service/internal/feature/cardimport/service/contract"
 	"io"
 	"strings"
 	"sync"
@@ -14,13 +15,15 @@ import (
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
+	cardimport_batch "github.com/ERONIS/wb-service/internal/feature/cardimport/service/batch"
+	cardimport_intake "github.com/ERONIS/wb-service/internal/feature/cardimport/service/intake"
 )
 
 type memoryTestParser struct{}
 
 type memoryTestRepository struct {
-	finalized []FinalizedSession
-	batches   map[BatchID]BatchHeader
+	finalized []cardimport_contract.FinalizedSession
+	batches   map[cardpipeline.BatchID]cardimport_batch.BatchHeader
 }
 
 func (*memoryTestRepository) HasAuthor(context.Context, int64) (bool, error) {
@@ -31,46 +34,44 @@ type memoryTestUOW struct {
 	failNext bool
 }
 
-func (memoryTestParser) Parse(FileID, io.Reader) (ParsedFile, error) {
-	return ParsedFile{}, errors.New("parser is not used by this fixture")
+func (memoryTestParser) Parse(cardimport_intake.FileID, io.Reader) (cardimport_intake.ParsedFile, error) {
+	return cardimport_intake.ParsedFile{}, errors.New("parser is not used by this fixture")
 }
 
 func (repository *memoryTestRepository) PersistFinalized(
-	_ context.Context, _ core_postgres_transaction.DBTX, finalized FinalizedSession,
-) (BatchHeader, error) {
+	_ context.Context, _ core_postgres_transaction.DBTX, finalized cardimport_contract.FinalizedSession,
+) (cardimport_batch.BatchHeader, error) {
 	repository.finalized = append(repository.finalized, finalized)
-	header := BatchHeader{
-		ID: BatchID(len(repository.finalized)), SourceSessionID: finalized.Session.ID,
-		Purpose: finalized.Session.Purpose, ItemsCount: len(finalized.Items),
-		GroupsCount: finalized.GroupsCount, Checksum: finalized.Checksum,
-		AuthorSnapshot: AuthorSnapshot{
-			TelegramUserID: finalized.User.TelegramID, DisplayName: finalized.User.FullName,
-		},
-		FinalizedAt: time.Now().UTC(),
+	header := cardimport_batch.BatchHeader{
+		ID: cardpipeline.BatchID(len(repository.finalized)), SourceSessionID: finalized.Session.ID,
+		ItemsCount:       len(finalized.Items),
+		GroupsCount:      finalized.GroupsCount,
+		AuthorTelegramID: finalized.User.TelegramID,
+		FinalizedAt:      time.Now().UTC(),
 	}
 	if err := header.Validate(); err != nil {
-		return BatchHeader{}, err
+		return cardimport_batch.BatchHeader{}, err
 	}
 	repository.batches[header.ID] = header
 	return header, nil
 }
 
-func (repository *memoryTestRepository) GetBatch(_ context.Context, id BatchID) (BatchHeader, error) {
+func (repository *memoryTestRepository) GetBatch(_ context.Context, id cardpipeline.BatchID) (cardimport_batch.BatchHeader, error) {
 	return repository.batches[id], nil
 }
 
-func (repository *memoryTestRepository) ListFinalizedBatches(context.Context, *BatchCursor, int) ([]BatchHeader, error) {
+func (repository *memoryTestRepository) ListFinalizedBatches(context.Context, *cardpipeline.BatchCursor, int) ([]cardimport_batch.BatchHeader, error) {
 	return nil, nil
 }
 
-func (repository *memoryTestRepository) ListBatchItems(_ context.Context, batchID BatchID, afterPosition int, limit int) ([]BatchItem, error) {
+func (repository *memoryTestRepository) ListBatchItems(_ context.Context, batchID cardpipeline.BatchID, afterPosition int, limit int) ([]cardimport_batch.BatchItem, error) {
 	items := repository.finalized[int(batchID)-1].Items
-	page := make([]BatchItem, 0, limit)
+	page := make([]cardimport_batch.BatchItem, 0, limit)
 	for index, item := range items {
 		if item.Position <= afterPosition {
 			continue
 		}
-		item.ID = BatchItemID(index + 1)
+		item.ID = cardpipeline.BatchItemID(index + 1)
 		item.BatchID = batchID
 		page = append(page, item)
 		if len(page) == limit {
@@ -92,11 +93,11 @@ func (uow *memoryTestUOW) WithinTransaction(
 
 func TestImportStaysInMemoryUntilFinalize(t *testing.T) {
 	ctx := context.Background()
-	repository := &memoryTestRepository{batches: make(map[BatchID]BatchHeader)}
+	repository := &memoryTestRepository{batches: make(map[cardpipeline.BatchID]cardimport_batch.BatchHeader)}
 	uow := &memoryTestUOW{failNext: true}
 	service := New(repository, memoryTestParser{}, uow)
 	user := domain.CreateUser(12345, "Тест Пользователь")
-	session, err := service.Begin(ctx, BeginCommand{AuthorTelegramID: user.TelegramID, Purpose: PurposeTransfer})
+	session, err := service.Begin(ctx, cardimport_contract.BeginCommand{AuthorTelegramID: user.TelegramID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,15 +105,15 @@ func TestImportStaysInMemoryUntilFinalize(t *testing.T) {
 	if len(repository.finalized) != 0 {
 		t.Fatal("сессия записана до финализации")
 	}
-	view, err := service.GetView(ctx, SessionCommand{AuthorTelegramID: user.TelegramID, SessionID: session.ID})
+	view, err := service.GetView(ctx, cardimport_contract.SessionCommand{AuthorTelegramID: user.TelegramID, SessionID: session.ID})
 	if err != nil || !view.Ready || view.CardsCount != 1 {
 		t.Fatalf("сессия не готова: view=%+v err=%v", view, err)
 	}
-	command := FinalizeCommand{SessionID: session.ID, ExpectedRevision: view.Revision, IdempotencyKey: "test-finalize"}
+	command := cardimport_contract.FinalizeCommand{SessionID: session.ID, ExpectedRevision: view.Revision, IdempotencyKey: "test-finalize"}
 	if _, err := service.Finalize(ctx, user, command); err == nil {
 		t.Fatal("ожидалась ошибка транзакции")
 	}
-	view, err = service.GetView(ctx, SessionCommand{AuthorTelegramID: user.TelegramID, SessionID: session.ID})
+	view, err = service.GetView(ctx, cardimport_contract.SessionCommand{AuthorTelegramID: user.TelegramID, SessionID: session.ID})
 	if err != nil || !view.Ready || len(repository.finalized) != 0 {
 		t.Fatalf("ошибка транзакции изменила сессию: view=%+v err=%v", view, err)
 	}
@@ -148,18 +149,18 @@ func TestImportStaysInMemoryUntilFinalize(t *testing.T) {
 
 func TestContinueKeepsOneCardWhenFilesShareBarcode(t *testing.T) {
 	ctx := context.Background()
-	service := New(&memoryTestRepository{batches: make(map[BatchID]BatchHeader)}, memoryTestParser{}, &memoryTestUOW{})
-	session, err := service.Begin(ctx, BeginCommand{AuthorTelegramID: 12345, Purpose: PurposeTransfer})
+	service := New(&memoryTestRepository{batches: make(map[cardpipeline.BatchID]cardimport_batch.BatchHeader)}, memoryTestParser{}, &memoryTestUOW{})
+	session, err := service.Begin(ctx, cardimport_contract.BeginCommand{AuthorTelegramID: 12345})
 	if err != nil {
 		t.Fatal(err)
 	}
 	addMemoryTestFile(t, service, session, 1, memoryTestCard("sku-1", "shared", 2))
 	addMemoryTestFile(t, service, session, 2, memoryTestCard("sku-2", "shared", 3))
-	view, err := service.GetView(ctx, SessionCommand{AuthorTelegramID: 12345, SessionID: session.ID})
+	view, err := service.GetView(ctx, cardimport_contract.SessionCommand{AuthorTelegramID: 12345, SessionID: session.ID})
 	if err != nil || view.ErrorsCount != 1 || view.Ready {
 		t.Fatalf("межфайловый дубль не найден: view=%+v err=%v", view, err)
 	}
-	continued, err := service.Continue(ctx, ContinueCommand{
+	continued, err := service.Continue(ctx, cardimport_contract.ContinueCommand{
 		AuthorTelegramID: 12345, SessionID: session.ID, ExpectedRevision: view.Revision,
 	})
 	if err != nil || !continued.Ready || continued.CardsCount != 1 || continued.ErrorsCount != 0 {
@@ -169,14 +170,14 @@ func TestContinueKeepsOneCardWhenFilesShareBarcode(t *testing.T) {
 
 func TestConcurrentFilesKeepSessionRevision(t *testing.T) {
 	ctx := context.Background()
-	service := New(&memoryTestRepository{batches: make(map[BatchID]BatchHeader)}, memoryTestParser{}, &memoryTestUOW{})
-	session, err := service.Begin(ctx, BeginCommand{AuthorTelegramID: 12345, Purpose: PurposeTransfer})
+	service := New(&memoryTestRepository{batches: make(map[cardpipeline.BatchID]cardimport_batch.BatchHeader)}, memoryTestParser{}, &memoryTestUOW{})
+	session, err := service.Begin(ctx, cardimport_contract.BeginCommand{AuthorTelegramID: 12345})
 	if err != nil {
 		t.Fatal(err)
 	}
-	commands := make([]ParseFileCommand, 2)
+	commands := make([]cardimport_contract.ParseFileCommand, 2)
 	for index := range commands {
-		file, err := service.ReserveFile(ctx, ReserveFileCommand{
+		file, err := service.ReserveFile(ctx, cardimport_contract.ReserveFileCommand{
 			AuthorTelegramID: session.AuthorTelegramID, SessionID: session.ID,
 			TelegramFileID:       fmt.Sprintf("telegram-%d", index),
 			TelegramFileUniqueID: fmt.Sprintf("unique-%d", index),
@@ -185,13 +186,13 @@ func TestConcurrentFilesKeepSessionRevision(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := service.StoreFile(ctx, StoreFileCommand{
+		if _, err := service.StoreFile(ctx, cardimport_contract.StoreFileCommand{
 			AuthorTelegramID: session.AuthorTelegramID, SessionID: session.ID, FileID: file.ID,
 		}, strings.NewReader("xlsx")); err != nil {
 			t.Fatal(err)
 		}
-		commands[index] = ParseFileCommand{AuthorTelegramID: session.AuthorTelegramID, SessionID: session.ID, FileID: file.ID}
-		if _, err := service.sessions.claim(ctx, commands[index]); err != nil {
+		commands[index] = cardimport_contract.ParseFileCommand{AuthorTelegramID: session.AuthorTelegramID, SessionID: session.ID, FileID: file.ID}
+		if _, err := service.sessions.Claim(ctx, commands[index]); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -201,9 +202,9 @@ func TestConcurrentFilesKeepSessionRevision(t *testing.T) {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			_, failures[index] = service.sessions.saveParsed(ctx, command, AggregatedFile{
+			_, failures[index] = service.sessions.SaveParsed(ctx, command, cardimport_intake.AggregatedFile{
 				FileID: command.FileID,
-				Cards:  []AggregatedCard{memoryTestCard(fmt.Sprintf("sku-%d", index), fmt.Sprintf("barcode-%d", index), index+2)},
+				Cards:  []cardpipeline.Card{memoryTestCard(fmt.Sprintf("sku-%d", index), fmt.Sprintf("barcode-%d", index), index+2)},
 			})
 		}()
 	}
@@ -213,16 +214,16 @@ func TestConcurrentFilesKeepSessionRevision(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	view, err := service.GetView(ctx, SessionCommand{AuthorTelegramID: session.AuthorTelegramID, SessionID: session.ID})
+	view, err := service.GetView(ctx, cardimport_contract.SessionCommand{AuthorTelegramID: session.AuthorTelegramID, SessionID: session.ID})
 	if err != nil || view.Revision != 2 || view.CardsCount != 2 || !view.Ready {
 		t.Fatalf("параллельная обработка потеряла изменение: view=%+v err=%v", view, err)
 	}
 }
 
-func addMemoryTestFile(t *testing.T, service *Service, session Session, position int, card AggregatedCard) {
+func addMemoryTestFile(t *testing.T, service *Service, session cardimport_intake.Session, position int, card cardpipeline.Card) {
 	t.Helper()
 	ctx := context.Background()
-	file, err := service.ReserveFile(ctx, ReserveFileCommand{
+	file, err := service.ReserveFile(ctx, cardimport_contract.ReserveFileCommand{
 		AuthorTelegramID: session.AuthorTelegramID, SessionID: session.ID,
 		TelegramFileID:       fmt.Sprintf("telegram-%d", position),
 		TelegramFileUniqueID: fmt.Sprintf("unique-%d", position),
@@ -232,23 +233,23 @@ func addMemoryTestFile(t *testing.T, service *Service, session Session, position
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.StoreFile(ctx, StoreFileCommand{
+	if _, err := service.StoreFile(ctx, cardimport_contract.StoreFileCommand{
 		AuthorTelegramID: session.AuthorTelegramID, SessionID: session.ID, FileID: file.ID,
 	}, strings.NewReader("xlsx")); err != nil {
 		t.Fatal(err)
 	}
-	command := ParseFileCommand{AuthorTelegramID: session.AuthorTelegramID, SessionID: session.ID, FileID: file.ID}
-	if _, err := service.sessions.claim(ctx, command); err != nil {
+	command := cardimport_contract.ParseFileCommand{AuthorTelegramID: session.AuthorTelegramID, SessionID: session.ID, FileID: file.ID}
+	if _, err := service.sessions.Claim(ctx, command); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.sessions.saveParsed(ctx, command, AggregatedFile{FileID: file.ID, Cards: []AggregatedCard{card}}); err != nil {
+	if _, err := service.sessions.SaveParsed(ctx, command, cardimport_intake.AggregatedFile{FileID: file.ID, Cards: []cardpipeline.Card{card}}); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func memoryTestCard(vendor, barcode string, row int) AggregatedCard {
-	return AggregatedCard{
-		SourceRows: []int{row}, Category: "Одежда",
+func memoryTestCard(vendor, barcode string, row int) cardpipeline.Card {
+	return cardpipeline.Card{
+		SourceRows: []int{row}, Group: "1", Category: "Одежда",
 		Variant: cardpipeline.Variant{
 			VendorCode: vendor, Sizes: []cardpipeline.Size{{TechSize: "M", SKUs: []string{barcode}}},
 		},

@@ -16,7 +16,14 @@ import (
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	core_wb "github.com/ERONIS/wb-service/internal/core/transport/wb"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
+	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
+	cardpublication_model "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/model"
+	cardpublication_monitoring "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/monitoring"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_authorization "github.com/ERONIS/wb-service/internal/feature/transfer/service/authorization"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+	transfer_publication "github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
+
 	"go.uber.org/zap"
 )
 
@@ -24,17 +31,11 @@ const mediaClassifierVersion = 1
 
 var ErrMediaActionConflict = core_errors.ErrConflict
 
-type MediaActionCandidate = ProductActionCandidate
-
 type MediaAction struct {
 	ProductActionCandidate
-	PlanID                 int64
 	Revision               int64
 	State                  string
-	RequestDigest          Digest
 	RequestPayload         []byte
-	MemberSetDigest        Digest
-	MediaLinkSetRoot       Digest
 	SellerID               domain.SellerID
 	ClientGeneration       domain.ClientGeneration
 	CredentialExpiresAt    time.Time
@@ -45,7 +46,6 @@ type MediaAction struct {
 	IdentityRevision       int64
 	AttemptID              int64
 	RecheckObservationID   int64
-	AttemptRequestDigest   Digest
 	AttemptRequestPayload  []byte
 	AttemptStartedAt       time.Time
 }
@@ -57,10 +57,8 @@ type mediaTemplate struct {
 func (action MediaAction) Validate() error {
 	if action.TransferID <= 0 || action.ActionID <= 0 || action.TargetID <= 0 ||
 		action.SellerID.Validate() != nil || action.AuthorizationID <= 0 ||
-		action.AuthorizationRevision < 0 || action.PlanDigest == (Digest{}) ||
-		action.TargetSetRoot == (Digest{}) || action.PlanID <= 0 || action.Revision < 0 ||
-		action.RequestDigest == (Digest{}) || len(action.RequestPayload) == 0 ||
-		action.MemberSetDigest == (Digest{}) || action.MediaLinkSetRoot == (Digest{}) ||
+		action.AuthorizationRevision < 0 || action.PlanID <= 0 || action.Revision < 0 ||
+		len(action.RequestPayload) == 0 ||
 		action.ClientGeneration.IsZero() ||
 		action.CredentialExpiresAt.IsZero() || action.PreflightObservationID <= 0 ||
 		action.Member.ID <= 0 || action.Member.GroupTargetID <= 0 ||
@@ -81,35 +79,20 @@ func (action MediaAction) Validate() error {
 			return errors.New("publication media template contains an empty link")
 		}
 	}
-	if digestParts("cardpublication-media-template:v1", action.RequestPayload) !=
-		action.RequestDigest ||
-		digestParts("cardpublication-media-links:v1", action.RequestPayload) !=
-			action.MediaLinkSetRoot ||
-		digestMembers([]ActionMemberDraft{{
-			GroupTargetID:        action.Member.GroupTargetID,
-			TransferItemTargetID: action.Member.TransferItemTargetID,
-			RequestMemberIndex:   action.Member.RequestMemberIndex,
-			VendorCode:           action.Member.VendorCode,
-		}}) != action.MemberSetDigest {
-		return errors.New("publication media action digest differs")
-	}
 	if action.AttemptID == 0 {
 		if action.State != "planned" || action.RecheckObservationID != 0 ||
-			action.AttemptRequestDigest != (Digest{}) ||
 			len(action.AttemptRequestPayload) != 0 || !action.AttemptStartedAt.IsZero() {
 			return errors.New("publication media action has a partial attempt")
 		}
 		return nil
 	}
 	if (action.State != "dispatching" && action.State != "reconciling") || action.RecheckObservationID <= 0 ||
-		action.AttemptRequestDigest == (Digest{}) ||
 		len(action.AttemptRequestPayload) == 0 || action.AttemptStartedAt.IsZero() {
 		return errors.New("publication media attempt is incomplete")
 	}
-	request, payload, digest, err := action.FinalRequest()
-	if err != nil || request.NMID != action.NMID || digest != action.AttemptRequestDigest ||
-		!bytes.Equal(payload, action.AttemptRequestPayload) {
-		return errors.New("publication media attempt request differs")
+	request, _, err := action.FinalRequest()
+	if err != nil || request.NMID != action.NMID {
+		return errors.New("publication media attempt request is invalid")
 	}
 	return nil
 }
@@ -117,12 +100,11 @@ func (action MediaAction) Validate() error {
 func (action MediaAction) FinalRequest() (
 	contentapi.SaveMediaByLinksRequest,
 	[]byte,
-	Digest,
 	error,
 ) {
 	var template mediaTemplate
 	if err := decodeExactJSON(action.RequestPayload, &template); err != nil {
-		return contentapi.SaveMediaByLinksRequest{}, nil, Digest{}, err
+		return contentapi.SaveMediaByLinksRequest{}, nil, err
 	}
 	request := contentapi.SaveMediaByLinksRequest{
 		NMID: action.NMID,
@@ -130,29 +112,27 @@ func (action MediaAction) FinalRequest() (
 	}
 	payload, err := json.Marshal(request)
 	if err != nil {
-		return contentapi.SaveMediaByLinksRequest{}, nil, Digest{}, err
+		return contentapi.SaveMediaByLinksRequest{}, nil, err
 	}
-	return request, payload, digestParts("cardpublication-media-request:v1", payload), nil
+	return request, payload, nil
 }
 
 type MediaAttempt struct {
 	ID                   int64
-	TransferID           transfer_service.TransferID
+	TransferID           transfer_model.TransferID
 	ActionID             int64
-	AuthorizationID      transfer_service.LiveAuthorizationID
+	AuthorizationID      transfer_authorization.LiveAuthorizationID
 	RecheckObservationID int64
 	AttributionID        int64
-	RequestDigest        Digest
 	RequestPayload       []byte
 	StartedAt            time.Time
 }
 
 type BeginMediaAttemptCommand struct {
 	Action               MediaAction
-	Authorization        transfer_service.LiveAuthorizationEvidence
-	Baseline             ErrorBaseline
+	Authorization        transfer_authorization.LiveAuthorizationEvidence
+	Baseline             cardpublication_monitoring.ErrorBaseline
 	RecheckObservationID int64
-	RequestDigest        Digest
 	RequestPayload       []byte
 }
 
@@ -161,7 +141,7 @@ type MediaMutationResult struct {
 	HTTPStatus        int
 	ClassifierVersion int
 	Disposition       SubmissionDisposition
-	OutcomeClass      transfer_service.ResultClass
+	OutcomeClass      transfer_model.ResultClass
 	OutcomeCode       string
 	UnmatchedCount    int
 }
@@ -215,7 +195,7 @@ func (result MediaMutationResult) Validate() error {
 type MediaGroupResult struct {
 	Terminal      bool
 	GroupTargetID int64
-	OutcomeClass  transfer_service.ResultClass
+	OutcomeClass  transfer_model.ResultClass
 	OutcomeCode   string
 }
 
@@ -240,20 +220,20 @@ type MediaJournalRepository interface {
 	ScheduleMediaVisibility(context.Context, core_postgres_transaction.DBTX, MediaAction, MediaAttempt, MediaMutationResult, time.Duration, time.Duration) error
 	ClaimMediaVisibility(context.Context, int, time.Duration) ([]MediaVisibilityJob, error)
 	UpdateMediaVisibility(context.Context, core_postgres_transaction.DBTX, MediaAction, MediaVisibilityJob, MediaVisibilityUpdate) (MediaGroupResult, error)
-	ListDispatchableMediaActions(context.Context, int) ([]MediaActionCandidate, error)
-	ListPendingMediaActions(context.Context, int) ([]MediaActionCandidate, error)
-	ListInterruptedMediaActions(context.Context, int) ([]MediaActionCandidate, error)
+	ListDispatchableMediaActions(context.Context, int) ([]ProductActionCandidate, error)
+	ListPendingMediaActions(context.Context, int) ([]ProductActionCandidate, error)
+	ListInterruptedMediaActions(context.Context, int) ([]ProductActionCandidate, error)
 	LockMediaAction(
 		context.Context,
 		core_postgres_transaction.DBTX,
-		MediaActionCandidate,
+		ProductActionCandidate,
 	) (MediaAction, error)
 	InsertActionObservation(
 		context.Context,
 		core_postgres_transaction.DBTX,
-		transfer_service.TransferID,
+		transfer_model.TransferID,
 		string,
-		ObservationDraft,
+		cardpublication_model.ObservationDraft,
 	) (int64, error)
 	BeginMediaAttempt(
 		context.Context,
@@ -276,16 +256,16 @@ type MediaJournalRepository interface {
 	PublicationPlanTerminal(
 		context.Context,
 		core_postgres_transaction.DBTX,
-		transfer_service.TransferID,
+		transfer_model.TransferID,
 		int64,
 	) (bool, error)
 }
 
 type MediaDispatcher struct {
 	repository         MediaJournalRepository
-	transport          CatalogTransport
-	catalogReader      *CatalogReader
-	errorFeed          *ErrorFeed
+	transport          cardpublication_catalog.CatalogTransport
+	catalogReader      *cardpublication_catalog.CatalogReader
+	errorFeed          *cardpublication_monitoring.ErrorFeed
 	authorization      LiveAuthorizationVerifier
 	transferResults    PublicationExecutionResultApplier
 	uow                core_postgres_transaction.UnitOfWork
@@ -303,15 +283,15 @@ type MediaDispatcher struct {
 }
 
 type mediaActionKey struct {
-	transferID transfer_service.TransferID
+	transferID transfer_model.TransferID
 	actionID   int64
 }
 
 func NewMediaDispatcher(
 	repository MediaJournalRepository,
-	transport CatalogTransport,
-	catalogReader *CatalogReader,
-	errorFeed *ErrorFeed,
+	transport cardpublication_catalog.CatalogTransport,
+	catalogReader *cardpublication_catalog.CatalogReader,
+	errorFeed *cardpublication_monitoring.ErrorFeed,
 	authorization LiveAuthorizationVerifier,
 	transferResults PublicationExecutionResultApplier,
 	uow core_postgres_transaction.UnitOfWork,
@@ -373,7 +353,7 @@ func (dispatcher *MediaDispatcher) ProcessPending(ctx context.Context) (err erro
 			}
 		}
 	}
-	var candidates []MediaActionCandidate
+	var candidates []ProductActionCandidate
 	if dispatcher.enabled {
 		candidates, err = dispatcher.repository.ListDispatchableMediaActions(
 			ctx,
@@ -400,7 +380,7 @@ func (dispatcher *MediaDispatcher) ProcessPending(ctx context.Context) (err erro
 
 func (dispatcher *MediaDispatcher) processReservedMediaAction(
 	ctx context.Context,
-	candidate MediaActionCandidate,
+	candidate ProductActionCandidate,
 ) {
 	defer dispatcher.inFlightWait.Done()
 	defer dispatcher.releaseMediaAction(candidate)
@@ -425,7 +405,7 @@ func (dispatcher *MediaDispatcher) processReservedMediaAction(
 	}
 }
 
-func (dispatcher *MediaDispatcher) reserveMediaAction(candidate MediaActionCandidate) bool {
+func (dispatcher *MediaDispatcher) reserveMediaAction(candidate ProductActionCandidate) bool {
 	key := mediaActionKey{transferID: candidate.TransferID, actionID: candidate.ActionID}
 	dispatcher.inFlightMu.Lock()
 	defer dispatcher.inFlightMu.Unlock()
@@ -445,14 +425,14 @@ func (dispatcher *MediaDispatcher) reserveMediaAction(candidate MediaActionCandi
 	return true
 }
 
-func (dispatcher *MediaDispatcher) releaseMediaAction(candidate MediaActionCandidate) {
+func (dispatcher *MediaDispatcher) releaseMediaAction(candidate ProductActionCandidate) {
 	key := mediaActionKey{transferID: candidate.TransferID, actionID: candidate.ActionID}
 	dispatcher.inFlightMu.Lock()
 	delete(dispatcher.inFlight, key)
 	dispatcher.inFlightMu.Unlock()
 }
 
-func (dispatcher *MediaDispatcher) mediaActionInFlight(candidate MediaActionCandidate) bool {
+func (dispatcher *MediaDispatcher) mediaActionInFlight(candidate ProductActionCandidate) bool {
 	key := mediaActionKey{transferID: candidate.TransferID, actionID: candidate.ActionID}
 	dispatcher.inFlightMu.Lock()
 	_, exists := dispatcher.inFlight[key]
@@ -488,7 +468,7 @@ func (dispatcher *MediaDispatcher) Wait() {
 
 func (dispatcher *MediaDispatcher) dispatch(
 	ctx context.Context,
-	candidate MediaActionCandidate,
+	candidate ProductActionCandidate,
 ) error {
 	action, err := dispatcher.loadLockedAction(ctx, candidate)
 	if err != nil {
@@ -507,7 +487,7 @@ func (dispatcher *MediaDispatcher) dispatch(
 	if err != nil {
 		return err
 	}
-	request, requestPayload, requestDigest, err := action.FinalRequest()
+	request, requestPayload, err := action.FinalRequest()
 	if err != nil {
 		return err
 	}
@@ -563,13 +543,12 @@ func (dispatcher *MediaDispatcher) dispatch(
 			authorization, err := dispatcher.authorization.LockValid(
 				ctx,
 				tx,
-				transfer_service.LiveAuthorizationCheck{
+				transfer_authorization.LiveAuthorizationCheck{
 					TransferID:                    locked.TransferID,
 					ActionID:                      locked.ActionID,
 					AuthorizationID:               locked.AuthorizationID,
 					ExpectedAuthorizationRevision: locked.AuthorizationRevision,
-					PlanDigest:                    transfer_service.Digest(locked.PlanDigest),
-					TargetSetRoot:                 transfer_service.Digest(locked.TargetSetRoot),
+					PlanID:                        locked.PlanID,
 					TargetID:                      locked.TargetID,
 					SellerID:                      locked.SellerID,
 					ClientGeneration:              locked.ClientGeneration,
@@ -581,7 +560,7 @@ func (dispatcher *MediaDispatcher) dispatch(
 			baseline, err := dispatcher.errorFeed.CaptureBaseline(
 				ctx,
 				tx,
-				CaptureErrorBaselineCommand{
+				cardpublication_monitoring.CaptureErrorBaselineCommand{
 					TransferID: locked.TransferID,
 					ActionID:   locked.ActionID,
 					SellerID:   locked.SellerID,
@@ -598,7 +577,6 @@ func (dispatcher *MediaDispatcher) dispatch(
 					Authorization:        authorization,
 					Baseline:             baseline,
 					RecheckObservationID: recheckID,
-					RequestDigest:        requestDigest,
 					RequestPayload:       requestPayload,
 				},
 			)
@@ -637,7 +615,7 @@ func (dispatcher *MediaDispatcher) dispatch(
 
 func (dispatcher *MediaDispatcher) skip(
 	ctx context.Context,
-	candidate MediaActionCandidate,
+	candidate ProductActionCandidate,
 	safeCode string,
 ) error {
 	return dispatcher.uow.WithinTransaction(
@@ -673,7 +651,7 @@ func (dispatcher *MediaDispatcher) skip(
 
 func (dispatcher *MediaDispatcher) recordInterrupted(
 	ctx context.Context,
-	candidate MediaActionCandidate,
+	candidate ProductActionCandidate,
 ) error {
 	action, err := dispatcher.loadLockedAction(ctx, candidate)
 	if err != nil {
@@ -699,7 +677,7 @@ func (dispatcher *MediaDispatcher) recordInterrupted(
 
 func (dispatcher *MediaDispatcher) recordResult(
 	ctx context.Context,
-	candidate MediaActionCandidate,
+	candidate ProductActionCandidate,
 	attempt MediaAttempt,
 	result MediaMutationResult,
 ) error {
@@ -739,7 +717,7 @@ func (dispatcher *MediaDispatcher) recordResult(
 func (dispatcher *MediaDispatcher) applyGroupResult(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID transfer_service.TransferID,
+	transferID transfer_model.TransferID,
 	group MediaGroupResult,
 ) error {
 	if err := group.Validate(); err != nil {
@@ -751,7 +729,7 @@ func (dispatcher *MediaDispatcher) applyGroupResult(
 	return dispatcher.transferResults.ApplyMediaWithin(
 		ctx,
 		tx,
-		transfer_service.ApplyPublicationMediaResultCommand{
+		transfer_publication.ApplyPublicationMediaResultCommand{
 			TransferID:    transferID,
 			GroupTargetID: group.GroupTargetID,
 			OutcomeClass:  group.OutcomeClass,
@@ -773,7 +751,7 @@ func (dispatcher *MediaDispatcher) closeAuthorizationIfPlanTerminal(
 
 func (dispatcher *MediaDispatcher) loadLockedAction(
 	ctx context.Context,
-	candidate MediaActionCandidate,
+	candidate ProductActionCandidate,
 ) (MediaAction, error) {
 	var action MediaAction
 	err := dispatcher.uow.WithinTransaction(
@@ -789,7 +767,7 @@ func (dispatcher *MediaDispatcher) loadLockedAction(
 
 func BuildMediaRecheck(
 	action MediaAction,
-	observation CatalogObservation,
+	observation cardpublication_catalog.CatalogObservation,
 ) (TargetedRecheck, error) {
 	if err := action.Validate(); err != nil {
 		return TargetedRecheck{}, err
@@ -809,7 +787,7 @@ func BuildMediaRecheck(
 			trash = append(trash, card)
 		}
 	}
-	targeted := CatalogObservation{
+	targeted := cardpublication_catalog.CatalogObservation{
 		TargetID:   observation.TargetID,
 		SellerID:   observation.SellerID,
 		Normal:     normal,
@@ -830,8 +808,8 @@ func BuildMediaRecheck(
 
 func executeMediaMutation(
 	ctx context.Context,
-	transport CatalogTransport,
-	sellerID SellerID,
+	transport cardpublication_catalog.CatalogTransport,
+	sellerID domain.SellerID,
 	generation domain.ClientGeneration,
 	request contentapi.SaveMediaByLinksRequest,
 ) MediaMutationResult {
@@ -915,11 +893,7 @@ func classifyMediaError(err error) MediaMutationResult {
 func sameImmutableMediaAction(left, right MediaAction) bool {
 	return left.TransferID == right.TransferID && left.ActionID == right.ActionID &&
 		left.PlanID == right.PlanID && left.TargetID == right.TargetID &&
-		left.SellerID == right.SellerID && left.PlanDigest == right.PlanDigest &&
-		left.TargetSetRoot == right.TargetSetRoot &&
-		left.RequestDigest == right.RequestDigest &&
-		left.MemberSetDigest == right.MemberSetDigest &&
-		left.MediaLinkSetRoot == right.MediaLinkSetRoot &&
+		left.SellerID == right.SellerID &&
 		left.ClientGeneration == right.ClientGeneration &&
 		left.CredentialExpiresAt.Equal(right.CredentialExpiresAt) &&
 		left.PreflightObservationID == right.PreflightObservationID &&
@@ -935,7 +909,6 @@ func mediaAttemptFromAction(action MediaAction) MediaAttempt {
 		AuthorizationID:      action.AuthorizationID,
 		RecheckObservationID: action.RecheckObservationID,
 		AttributionID:        action.AttributionID,
-		RequestDigest:        action.AttemptRequestDigest,
 		RequestPayload:       append([]byte(nil), action.AttemptRequestPayload...),
 		StartedAt:            action.AttemptStartedAt,
 	}

@@ -4,51 +4,53 @@ import (
 	"context"
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	cardprepare_model "github.com/ERONIS/wb-service/internal/feature/cardprepare/service/model"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+	transfer_preparation "github.com/ERONIS/wb-service/internal/feature/transfer/service/preparation"
 )
 
 type TransferSource interface {
 	ListPreparing(
 		ctx context.Context,
-		afterID transfer_service.TransferID,
+		afterID transfer_model.TransferID,
 		limit int,
-	) ([]transfer_service.Transfer, error)
+	) ([]transfer_model.Transfer, error)
 
 	BeginPreparation(
 		ctx context.Context,
-		transferID transfer_service.TransferID,
+		transferID transfer_model.TransferID,
 	) error
 
 	ListPendingPreparationGroups(
 		ctx context.Context,
-		transferID transfer_service.TransferID,
+		transferID transfer_model.TransferID,
 		limit int,
-		after transfer_service.PreparationPendingGroup,
-	) ([]transfer_service.PreparationPendingGroup, error)
+		after transfer_preparation.PreparationPendingGroup,
+	) ([]transfer_preparation.PreparationPendingGroup, error)
 
 	LoadPreparationSource(
 		ctx context.Context,
-		transferID transfer_service.TransferID,
+		transferID transfer_model.TransferID,
 		groupTargetID int64,
-	) (transfer_service.PreparationSource, error)
+	) (transfer_preparation.PreparationSource, error)
 }
 
 type TransferResultApplier interface {
 	ApplyTx(
 		ctx context.Context,
 		tx core_postgres_transaction.DBTX,
-		command transfer_service.ApplyPreparationResultCommand,
+		command transfer_preparation.ApplyPreparationResultCommand,
 	) error
 }
 
 type ProposalReader interface {
 	LoadProposal(
 		ctx context.Context,
-		query ProposalQuery,
-	) (StoredProposal, error)
+		query cardprepare_model.ProposalQuery,
+	) (cardprepare_model.StoredProposal, error)
 
 	LoadProposals(
 		ctx context.Context,
-		queries []ProposalQuery,
-	) ([]StoredProposal, error)
+		queries []cardprepare_model.ProposalQuery,
+	) ([]cardprepare_model.StoredProposal, error)
 }

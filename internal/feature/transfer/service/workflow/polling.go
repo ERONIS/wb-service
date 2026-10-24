@@ -7,6 +7,7 @@ import (
 
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
 
 const pollingPageSize = 100
@@ -32,7 +33,7 @@ func (service *Service) ProcessPendingWithNotify(ctx context.Context, onProgress
 }
 
 func (service *Service) resumeInitializing(ctx context.Context, onProgress func()) error {
-	var afterID TransferID
+	var afterID transfer_model.TransferID
 	for {
 		transfers, err := service.repository.ListInitializing(
 			ctx,

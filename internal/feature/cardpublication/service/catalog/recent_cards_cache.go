@@ -6,16 +6,17 @@ import (
 	"sync/atomic"
 	"time"
 
+	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 )
 
 type recentVendorKey struct {
-	sellerID SellerID
+	sellerID core_domain.SellerID
 	vendor   string
 }
 
 type recentNMIDKey struct {
-	sellerID SellerID
+	sellerID core_domain.SellerID
 	nmID     int64
 }
 
@@ -82,7 +83,7 @@ func normalizeCatalogVendorCode(value string) string {
 }
 
 func (cache *RecentCardsCache) LookupVendorCode(
-	sellerID SellerID,
+	sellerID core_domain.SellerID,
 	vendorCode string,
 ) (contentapi.Card, bool) {
 	if cache == nil || sellerID == "" {
@@ -104,7 +105,7 @@ func (cache *RecentCardsCache) LookupVendorCode(
 }
 
 func (cache *RecentCardsCache) LookupMedia(
-	sellerID SellerID,
+	sellerID core_domain.SellerID,
 	nmID int64,
 ) (photos int, video bool, ok bool) {
 	if cache == nil || sellerID == "" || nmID <= 0 {
@@ -133,7 +134,7 @@ func loadedPhotoCount(photos []contentapi.CardPhoto) int {
 	return count
 }
 
-func (cache *RecentCardsCache) StoreIfRecent(sellerID SellerID, card contentapi.Card) bool {
+func (cache *RecentCardsCache) StoreIfRecent(sellerID core_domain.SellerID, card contentapi.Card) bool {
 	if cache == nil || sellerID == "" || card.NMID <= 0 ||
 		normalizeCatalogVendorCode(card.VendorCode) == "" {
 		return false
@@ -143,7 +144,7 @@ func (cache *RecentCardsCache) StoreIfRecent(sellerID SellerID, card contentapi.
 }
 
 func (cache *RecentCardsCache) store(
-	sellerID SellerID,
+	sellerID core_domain.SellerID,
 	card contentapi.Card,
 	observedAt time.Time,
 ) {

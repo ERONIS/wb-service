@@ -12,14 +12,15 @@ import (
 
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
+	cardprepare_model "github.com/ERONIS/wb-service/internal/feature/cardprepare/service/model"
 )
 
 const vatCharacteristicName = "ставка ндс"
 
-func Prepare(group SourceGroup, snapshot CatalogSnapshot) (Result, error) {
+func Prepare(group cardprepare_model.SourceGroup, snapshot cardprepare_model.CatalogSnapshot) (cardprepare_model.Result, error) {
 	group, err := normalizeSourceGroup(group)
 	if err != nil {
-		return Result{}, err
+		return cardprepare_model.Result{}, err
 	}
 	snapshot = normalizeCatalogSnapshot(snapshot)
 	if snapshot.ObservedAt.IsZero() {
@@ -81,29 +82,16 @@ func Prepare(group SourceGroup, snapshot CatalogSnapshot) (Result, error) {
 				validationError.Field,
 			), nil
 		}
-		return Result{}, err
+		return cardprepare_model.Result{}, err
 	}
 
-	semanticDigest, err := digestJSON("cardprepare-semantic:v1", group)
-	if err != nil {
-		return Result{}, fmt.Errorf("digest source group: %w", err)
-	}
-	metadataDigest, err := digestJSON("cardprepare-metadata:v1", snapshot)
-	if err != nil {
-		return Result{}, fmt.Errorf("digest catalog snapshot: %w", err)
-	}
-	proposalRoot := digestProposal(semanticDigest, metadataDigest, encoded)
-
-	return Result{
-		Outcome: Outcome{Code: OutcomePrepared},
-		Proposal: &Proposal{
+	return cardprepare_model.Result{
+		Outcome: cardprepare_model.Outcome{Code: OutcomePrepared},
+		Proposal: &cardprepare_model.Proposal{
 			SubjectID:        subject.SubjectID,
 			Request:          request,
 			EncodedRequest:   append([]byte(nil), encoded...),
 			MetadataSnapshot: snapshot,
-			SemanticDigest:   semanticDigest,
-			MetadataDigest:   metadataDigest,
-			ProposalRoot:     proposalRoot,
 			Limits:           snapshot.Limits,
 			LimitsObservedAt: snapshot.ObservedAt,
 		},
@@ -111,9 +99,9 @@ func Prepare(group SourceGroup, snapshot CatalogSnapshot) (Result, error) {
 }
 
 func resolveSubject(
-	group SourceGroup,
+	group cardprepare_model.SourceGroup,
 	subjects []contentapi.Subject,
-) (contentapi.Subject, *Result) {
+) (contentapi.Subject, *cardprepare_model.Result) {
 	categoryKey := normalizeKey(group.Items[0].Card.Category)
 	for _, item := range group.Items[1:] {
 		if normalizeKey(item.Card.Category) != categoryKey {
@@ -166,7 +154,7 @@ type characteristicSchema struct {
 func buildCharacteristicSchema(
 	subjectID int64,
 	characteristics []contentapi.SubjectCharacteristic,
-) (characteristicSchema, *Result) {
+) (characteristicSchema, *cardprepare_model.Result) {
 	schema := characteristicSchema{
 		byID:   make(map[int64]contentapi.SubjectCharacteristic),
 		byName: make(map[string]contentapi.SubjectCharacteristic),
@@ -213,10 +201,10 @@ func buildCharacteristicSchema(
 }
 
 func buildVariant(
-	item SourceItem,
+	item cardprepare_model.SourceItem,
 	schema characteristicSchema,
-	snapshot CatalogSnapshot,
-) (contentapi.UploadCard, *Result) {
+	snapshot cardprepare_model.CatalogSnapshot,
+) (contentapi.UploadCard, *cardprepare_model.Result) {
 	brand, brandResult := resolveBrand(item, snapshot.Brands)
 	if brandResult != nil {
 		return contentapi.UploadCard{}, brandResult
@@ -352,9 +340,9 @@ func buildVariant(
 }
 
 func resolveBrand(
-	item SourceItem,
+	item cardprepare_model.SourceItem,
 	brands []contentapi.Brand,
-) (string, *Result) {
+) (string, *cardprepare_model.Result) {
 	brandKey := normalizeKey(item.Card.Variant.Brand)
 	if brandKey == "" {
 		return "", nil
@@ -397,8 +385,8 @@ func characteristicValue(
 	position int,
 	specification contentapi.SubjectCharacteristic,
 	rawValue any,
-	directories DirectorySnapshot,
-) (any, *Result) {
+	directories cardprepare_model.DirectorySnapshot,
+) (any, *cardprepare_model.Result) {
 	switch specification.CharacteristicType {
 	case 0:
 		result := outcome(
@@ -441,7 +429,7 @@ func characteristicValue(
 							position,
 							"directory_value",
 						)
-						result.Outcome.Details = &OutcomeDetails{
+						result.Outcome.Details = &cardprepare_model.OutcomeDetails{
 							Reason:                "Значение отсутствует в справочнике WB",
 							SourceField:           specification.Name,
 							CharacteristicID:      specification.CharacteristicID,
@@ -575,7 +563,7 @@ func characteristicNumber(value any) (float64, error) {
 
 func directoryFor(
 	characteristicName string,
-	directories DirectorySnapshot,
+	directories cardprepare_model.DirectorySnapshot,
 ) ([]string, bool) {
 	switch characteristicName {
 	case "цвет", "цвет товара":
@@ -665,19 +653,19 @@ func parseOptionalBoolean(value string) (bool, bool) {
 	}
 }
 
-func normalizeSourceGroup(group SourceGroup) (SourceGroup, error) {
+func normalizeSourceGroup(group cardprepare_model.SourceGroup) (cardprepare_model.SourceGroup, error) {
 	if len(group.Items) == 0 {
-		return SourceGroup{}, errors.New("cardprepare source group is empty")
+		return cardprepare_model.SourceGroup{}, errors.New("cardprepare source group is empty")
 	}
 
-	items := make([]SourceItem, len(group.Items))
+	items := make([]cardprepare_model.SourceItem, len(group.Items))
 	for index, item := range group.Items {
 		if item.Position <= 0 {
-			return SourceGroup{}, errors.New(
+			return cardprepare_model.SourceGroup{}, errors.New(
 				"cardprepare source item position must be positive",
 			)
 		}
-		items[index] = SourceItem{
+		items[index] = cardprepare_model.SourceItem{
 			Position: item.Position,
 			Card:     cloneAndNormalizeCard(item.Card),
 		}
@@ -687,12 +675,12 @@ func normalizeSourceGroup(group SourceGroup) (SourceGroup, error) {
 	})
 	for index := 1; index < len(items); index++ {
 		if items[index-1].Position == items[index].Position {
-			return SourceGroup{}, errors.New(
+			return cardprepare_model.SourceGroup{}, errors.New(
 				"cardprepare source item position is duplicated",
 			)
 		}
 	}
-	return SourceGroup{Items: items}, nil
+	return cardprepare_model.SourceGroup{Items: items}, nil
 }
 
 func cloneAndNormalizeCard(
@@ -756,7 +744,7 @@ func cloneAndNormalizeCard(
 	return card
 }
 
-func normalizeCatalogSnapshot(snapshot CatalogSnapshot) CatalogSnapshot {
+func normalizeCatalogSnapshot(snapshot cardprepare_model.CatalogSnapshot) cardprepare_model.CatalogSnapshot {
 	snapshot.ObservedAt = snapshot.ObservedAt.UTC()
 	snapshot.Subjects = append([]contentapi.Subject(nil), snapshot.Subjects...)
 	sort.Slice(snapshot.Subjects, func(left, right int) bool {
@@ -796,7 +784,7 @@ func normalizeCatalogSnapshot(snapshot CatalogSnapshot) CatalogSnapshot {
 	return snapshot
 }
 
-func normalizeDirectories(directories DirectorySnapshot) DirectorySnapshot {
+func normalizeDirectories(directories cardprepare_model.DirectorySnapshot) cardprepare_model.DirectorySnapshot {
 	directories.Colors = cloneAndSortStrings(directories.Colors)
 	directories.Kinds = cloneAndSortStrings(directories.Kinds)
 	directories.Countries = cloneAndSortStrings(directories.Countries)
@@ -826,9 +814,9 @@ func normalizeKey(value string) string {
 	}), " ")
 }
 
-func unknownCharacteristicOutcome(item SourceItem, schema characteristicSchema, sourceField string, id int64, name string, value any) Result {
+func unknownCharacteristicOutcome(item cardprepare_model.SourceItem, schema characteristicSchema, sourceField string, id int64, name string, value any) cardprepare_model.Result {
 	result := outcome(OutcomeCharacteristicInvalid, item.Position, "characteristic_unknown")
-	result.Outcome.Details = &OutcomeDetails{
+	result.Outcome.Details = &cardprepare_model.OutcomeDetails{
 		Reason:                   "Characteristic was not found in the selected WB subject schema by ID or normalized name",
 		SourceField:              sourceField,
 		VendorCode:               item.Card.Variant.VendorCode,
@@ -843,8 +831,8 @@ func unknownCharacteristicOutcome(item SourceItem, schema characteristicSchema, 
 	return result
 }
 
-func outcome(code OutcomeCode, position int, field string) Result {
-	return Result{Outcome: Outcome{
+func outcome(code cardprepare_model.OutcomeCode, position int, field string) cardprepare_model.Result {
+	return cardprepare_model.Result{Outcome: cardprepare_model.Outcome{
 		Code:         code,
 		ItemPosition: position,
 		Field:        field,

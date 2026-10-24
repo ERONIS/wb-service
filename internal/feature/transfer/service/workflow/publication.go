@@ -6,13 +6,15 @@ import (
 	"fmt"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+	transfer_publication "github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
 )
 
 func (service *Service) ListAwaitingAuthorization(
 	ctx context.Context,
-	afterID TransferID,
+	afterID transfer_model.TransferID,
 	limit int,
-) ([]Transfer, error) {
+) ([]transfer_model.Transfer, error) {
 	if ctx == nil {
 		return nil, errors.New("list awaiting-authorization transfers: context is nil")
 	}
@@ -22,7 +24,7 @@ func (service *Service) ListAwaitingAuthorization(
 	return service.repository.ListAwaitingAuthorization(ctx, afterID, limit)
 }
 
-func (service *Service) PublicationTargets(ctx context.Context) ([]MutationTarget, error) {
+func (service *Service) PublicationTargets(ctx context.Context) ([]transfer_model.MutationTarget, error) {
 	if ctx == nil {
 		return nil, errors.New("load publication targets: context is nil")
 	}
@@ -35,22 +37,22 @@ func (service *Service) PublicationTargets(ctx context.Context) ([]MutationTarge
 
 func (service *Service) LoadPublicationPlanningSource(
 	ctx context.Context,
-	transferID TransferID,
-) (PublicationPlanningSource, error) {
+	transferID transfer_model.TransferID,
+) (transfer_publication.PublicationPlanningSource, error) {
 	if ctx == nil {
-		return PublicationPlanningSource{}, errors.New(
+		return transfer_publication.PublicationPlanningSource{}, errors.New(
 			"load publication planning source: context is nil",
 		)
 	}
 	if transferID <= 0 {
-		return PublicationPlanningSource{}, core_errors.ErrInvalidArgument
+		return transfer_publication.PublicationPlanningSource{}, core_errors.ErrInvalidArgument
 	}
 	source, err := service.repository.LoadPublicationPlanningSource(ctx, transferID)
 	if err != nil {
-		return PublicationPlanningSource{}, err
+		return transfer_publication.PublicationPlanningSource{}, err
 	}
 	if err := source.Validate(); err != nil {
-		return PublicationPlanningSource{}, fmt.Errorf(
+		return transfer_publication.PublicationPlanningSource{}, fmt.Errorf(
 			"validate publication planning source: %w",
 			err,
 		)

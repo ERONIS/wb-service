@@ -8,8 +8,11 @@ import (
 	"time"
 	"unicode/utf8"
 
+	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
+	cardprepare_model "github.com/ERONIS/wb-service/internal/feature/cardprepare/service/model"
+
 	"go.uber.org/zap"
 )
 
@@ -26,17 +29,20 @@ func NewPreparer(transport CatalogTransport, loggers ...*zap.Logger) *Preparer {
 		panic("cardprepare catalog transport is nil")
 	}
 	return &Preparer{
-		transport: transport,
-		now:       time.Now,
-		logger:    core_logger.Fallback(loggers...),
+		transport: &sharedCatalog{
+			CatalogTransport: transport,
+			catalogCache:     newCatalogCache(),
+		},
+		now:    time.Now,
+		logger: core_logger.Fallback(loggers...),
 	}
 }
 
 func (preparer *Preparer) PrepareTarget(
 	ctx context.Context,
-	sellerID SellerID,
-	group SourceGroup,
-) (prepared Result, err error) {
+	sellerID core_domain.SellerID,
+	group cardprepare_model.SourceGroup,
+) (prepared cardprepare_model.Result, err error) {
 	var subjectID int64
 	defer func() {
 		if preparer.logger == nil {
@@ -86,16 +92,16 @@ func (preparer *Preparer) PrepareTarget(
 		}
 	}()
 	if ctx == nil {
-		return Result{}, errors.New("prepare target: context is nil")
+		return cardprepare_model.Result{}, errors.New("prepare target: context is nil")
 	}
 	if strings.TrimSpace(string(sellerID)) != string(sellerID) ||
 		sellerID == "" {
-		return Result{}, errors.New("prepare target: seller ID is invalid")
+		return cardprepare_model.Result{}, errors.New("prepare target: seller ID is invalid")
 	}
 
 	normalizedGroup, err := normalizeSourceGroup(group)
 	if err != nil {
-		return Result{}, err
+		return cardprepare_model.Result{}, err
 	}
 	if localResult := validateLocalGroupCategory(normalizedGroup); localResult != nil {
 		return *localResult, nil
@@ -103,7 +109,7 @@ func (preparer *Preparer) PrepareTarget(
 
 	limitsResponse, err := preparer.transport.CardsLimits(ctx, sellerID)
 	if err != nil {
-		return Result{}, fmt.Errorf("read WB Cards Limits: %w", err)
+		return cardprepare_model.Result{}, fmt.Errorf("read WB Cards Limits: %w", err)
 	}
 	if limitsOutcome := envelopeOutcome(
 		limitsResponse.ResponseMeta,
@@ -113,7 +119,7 @@ func (preparer *Preparer) PrepareTarget(
 	}
 	limitsObservedAt := preparer.now().UTC().Truncate(time.Microsecond)
 	if limitsObservedAt.IsZero() {
-		return Result{}, errors.New("prepare target: current time is empty")
+		return cardprepare_model.Result{}, errors.New("prepare target: current time is empty")
 	}
 
 	subjects, subjectsResult, err := preparer.readSubjects(
@@ -122,7 +128,7 @@ func (preparer *Preparer) PrepareTarget(
 		normalizedGroup.Items[0].Card.Category,
 	)
 	if err != nil {
-		return Result{}, err
+		return cardprepare_model.Result{}, err
 	}
 	if subjectsResult != nil {
 		return *subjectsResult, nil
@@ -140,7 +146,7 @@ func (preparer *Preparer) PrepareTarget(
 		contentapi.SubjectCharacteristicsQuery{Locale: contentapi.LocaleRU},
 	)
 	if err != nil {
-		return Result{}, fmt.Errorf("read WB subject characteristics: %w", err)
+		return cardprepare_model.Result{}, fmt.Errorf("read WB subject characteristics: %w", err)
 	}
 	if characteristicsOutcome := envelopeOutcome(
 		characteristicsResponse.ResponseMeta,
@@ -151,14 +157,14 @@ func (preparer *Preparer) PrepareTarget(
 
 	brands := make([]contentapi.Brand, 0)
 	if groupUsesBrand(normalizedGroup) {
-		var brandsResult *Result
+		var brandsResult *cardprepare_model.Result
 		brands, brandsResult, err = preparer.readBrands(
 			ctx,
 			sellerID,
 			subject.SubjectID,
 		)
 		if err != nil {
-			return Result{}, err
+			return cardprepare_model.Result{}, err
 		}
 		if brandsResult != nil {
 			return *brandsResult, nil
@@ -173,13 +179,13 @@ func (preparer *Preparer) PrepareTarget(
 		characteristicsResponse.Data,
 	)
 	if err != nil {
-		return Result{}, err
+		return cardprepare_model.Result{}, err
 	}
 	if directoriesResult != nil {
 		return *directoriesResult, nil
 	}
 
-	prepared, err = Prepare(normalizedGroup, CatalogSnapshot{
+	prepared, err = Prepare(normalizedGroup, cardprepare_model.CatalogSnapshot{
 		Subjects:        subjects,
 		Characteristics: characteristicsResponse.Data,
 		Brands:          brands,
@@ -190,7 +196,7 @@ func (preparer *Preparer) PrepareTarget(
 	return prepared, err
 }
 
-func validateLocalGroupCategory(group SourceGroup) *Result {
+func validateLocalGroupCategory(group cardprepare_model.SourceGroup) *cardprepare_model.Result {
 	categoryKey := normalizeKey(group.Items[0].Card.Category)
 	if categoryKey == "" {
 		result := outcome(OutcomeSubjectNotFound, 0, "category")
@@ -211,9 +217,9 @@ func validateLocalGroupCategory(group SourceGroup) *Result {
 
 func (preparer *Preparer) readSubjects(
 	ctx context.Context,
-	sellerID SellerID,
+	sellerID core_domain.SellerID,
 	category string,
-) ([]contentapi.Subject, *Result, error) {
+) ([]contentapi.Subject, *cardprepare_model.Result, error) {
 	result := make([]contentapi.Subject, 0)
 	offset := 0
 	for page := 0; page < maxCatalogPages; page++ {
@@ -248,9 +254,9 @@ func (preparer *Preparer) readSubjects(
 
 func (preparer *Preparer) readBrands(
 	ctx context.Context,
-	sellerID SellerID,
+	sellerID core_domain.SellerID,
 	subjectID int64,
-) ([]contentapi.Brand, *Result, error) {
+) ([]contentapi.Brand, *cardprepare_model.Result, error) {
 	result := make([]contentapi.Brand, 0)
 	var next int64
 	seen := make(map[int64]struct{})
@@ -299,13 +305,13 @@ const (
 
 func (preparer *Preparer) readUsedDirectories(
 	ctx context.Context,
-	sellerID SellerID,
+	sellerID core_domain.SellerID,
 	subjectID int64,
-	group SourceGroup,
+	group cardprepare_model.SourceGroup,
 	characteristics []contentapi.SubjectCharacteristic,
-) (DirectorySnapshot, *Result, error) {
+) (cardprepare_model.DirectorySnapshot, *cardprepare_model.Result, error) {
 	used := usedDirectoryKinds(group, characteristics)
-	result := DirectorySnapshot{}
+	result := cardprepare_model.DirectorySnapshot{}
 	query := contentapi.DirectoryQuery{Locale: contentapi.LocaleRU}
 
 	if used[directoryColors] {
@@ -409,7 +415,7 @@ func (preparer *Preparer) readUsedDirectories(
 }
 
 func usedDirectoryKinds(
-	group SourceGroup,
+	group cardprepare_model.SourceGroup,
 	characteristics []contentapi.SubjectCharacteristic,
 ) map[directoryKind]bool {
 	characteristicKindsByID := make(map[int64]directoryKind)
@@ -465,7 +471,7 @@ func directoryKindForName(name string) (directoryKind, bool) {
 	}
 }
 
-func groupUsesBrand(group SourceGroup) bool {
+func groupUsesBrand(group cardprepare_model.SourceGroup) bool {
 	for _, item := range group.Items {
 		if strings.TrimSpace(item.Card.Variant.Brand) != "" {
 			return true
@@ -477,7 +483,7 @@ func groupUsesBrand(group SourceGroup) bool {
 func envelopeOutcome(
 	metadata contentapi.ResponseMeta,
 	field string,
-) *Result {
+) *cardprepare_model.Result {
 	if !metadata.Error {
 		return nil
 	}

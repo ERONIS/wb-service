@@ -3,13 +3,9 @@ package model
 import (
 	"time"
 
-	"github.com/ERONIS/wb-service/internal/core/domain"
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 )
-
-type Digest = cardpipeline.Digest
-type SellerID = domain.SellerID
 
 type OutcomeCode string
 
@@ -101,9 +97,6 @@ type Proposal struct {
 	Request          contentapi.UploadCardsRequest
 	EncodedRequest   []byte
 	MetadataSnapshot CatalogSnapshot
-	SemanticDigest   Digest
-	MetadataDigest   Digest
-	ProposalRoot     Digest
 	Limits           contentapi.CardsLimits
 	LimitsObservedAt time.Time
 }

@@ -7,27 +7,28 @@ import (
 	"strings"
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
 
 type PublicationTerminalItem struct {
 	GroupTargetID        int64
 	TransferItemTargetID int64
-	OutcomeClass         ResultClass
+	OutcomeClass         transfer_model.ResultClass
 	OutcomeCode          string
 	NMID                 int64
 }
 
 type ApplyPublicationActionResultCommand struct {
-	TransferID         TransferID
+	TransferID         transfer_model.TransferID
 	ActionID           int64
 	Items              []PublicationTerminalItem
 	SkipMediaForGroups []int64
 }
 
 type ApplyPublicationMediaResultCommand struct {
-	TransferID    TransferID
+	TransferID    transfer_model.TransferID
 	GroupTargetID int64
-	OutcomeClass  ResultClass
+	OutcomeClass  transfer_model.ResultClass
 	OutcomeCode   string
 }
 
@@ -42,16 +43,16 @@ func (command ApplyPublicationMediaResultCommand) Validate() error {
 }
 
 type CorrectPublicationItemResultCommand struct {
-	TransferID              TransferID
+	TransferID              transfer_model.TransferID
 	ActionID                int64
 	GroupTargetID           int64
 	TransferItemTargetID    int64
 	ExpectedItemRevision    int64
-	ExpectedOutcomeClass    ResultClass
+	ExpectedOutcomeClass    transfer_model.ResultClass
 	ExpectedOutcomeCode     string
 	ExpectedNMID            int64
 	ExpectedAttentionClosed bool
-	OutcomeClass            ResultClass
+	OutcomeClass            transfer_model.ResultClass
 	OutcomeCode             string
 	NMID                    int64
 	CloseAttentionNoRetry   bool
@@ -126,19 +127,19 @@ type PublicationExecutionResultRepository interface {
 	BeginPublicationAction(
 		ctx context.Context,
 		tx core_postgres_transaction.DBTX,
-		transferID TransferID,
+		transferID transfer_model.TransferID,
 	) error
 
 	MarkPublicationReconciling(
 		ctx context.Context,
 		tx core_postgres_transaction.DBTX,
-		transferID TransferID,
+		transferID transfer_model.TransferID,
 	) error
 
 	BeginPublicationMedia(
 		ctx context.Context,
 		tx core_postgres_transaction.DBTX,
-		transferID TransferID,
+		transferID transfer_model.TransferID,
 	) error
 
 	ApplyPublicationActionResult(
@@ -162,7 +163,7 @@ type PublicationExecutionResultRepository interface {
 	ResetPublicationPlanning(
 		ctx context.Context,
 		tx core_postgres_transaction.DBTX,
-		transferID TransferID,
+		transferID transfer_model.TransferID,
 		planID int64,
 	) error
 }
@@ -183,7 +184,7 @@ func NewPublicationExecutionResultApplier(
 func (applier *PublicationExecutionResultApplier) BeginWithin(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID TransferID,
+	transferID transfer_model.TransferID,
 ) error {
 	if ctx == nil || tx == nil || transferID <= 0 {
 		return errors.New("begin publication action dependency is invalid")
@@ -194,7 +195,7 @@ func (applier *PublicationExecutionResultApplier) BeginWithin(
 func (applier *PublicationExecutionResultApplier) MarkReconcilingWithin(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID TransferID,
+	transferID transfer_model.TransferID,
 ) error {
 	if ctx == nil || tx == nil || transferID <= 0 {
 		return errors.New("mark publication reconciling dependency is invalid")
@@ -205,7 +206,7 @@ func (applier *PublicationExecutionResultApplier) MarkReconcilingWithin(
 func (applier *PublicationExecutionResultApplier) BeginMediaWithin(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID TransferID,
+	transferID transfer_model.TransferID,
 ) error {
 	if ctx == nil || tx == nil || transferID <= 0 {
 		return errors.New("begin publication media dependency is invalid")
@@ -258,7 +259,7 @@ func (applier *PublicationExecutionResultApplier) CorrectWithin(
 func (applier *PublicationExecutionResultApplier) ResetPlanningWithin(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID TransferID,
+	transferID transfer_model.TransferID,
 	planID int64,
 ) error {
 	if ctx == nil || tx == nil || transferID <= 0 || planID <= 0 {

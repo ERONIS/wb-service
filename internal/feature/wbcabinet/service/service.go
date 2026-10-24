@@ -22,7 +22,7 @@ type Service struct {
 	uow            core_postgres_transaction.UnitOfWork
 	now            func() time.Time
 	mutationMu     sync.Mutex
-	restorePending map[SellerID]ClientGeneration
+	restorePending map[domain.SellerID]domain.ClientGeneration
 }
 
 func New(
@@ -38,7 +38,7 @@ func New(
 		verifier:       verifier,
 		uow:            uow,
 		now:            time.Now,
-		restorePending: make(map[SellerID]ClientGeneration),
+		restorePending: make(map[domain.SellerID]domain.ClientGeneration),
 	}
 }
 
@@ -139,7 +139,7 @@ func (service *Service) ListByOwner(
 func (service *Service) GetByOwner(
 	ctx context.Context,
 	ownerTelegramID int64,
-	sellerID SellerID,
+	sellerID domain.SellerID,
 ) (Cabinet, error) {
 	if ctx == nil || ownerTelegramID <= 0 || sellerID.Validate() != nil {
 		return Cabinet{}, core_errors.ErrInvalidArgument
@@ -150,7 +150,7 @@ func (service *Service) GetByOwner(
 func (service *Service) Delete(
 	ctx context.Context,
 	ownerTelegramID int64,
-	sellerID SellerID,
+	sellerID domain.SellerID,
 ) error {
 	if ctx == nil || ownerTelegramID <= 0 || sellerID.Validate() != nil {
 		return core_errors.ErrInvalidArgument
@@ -169,7 +169,7 @@ func (service *Service) Delete(
 func (service *Service) Targets(
 	ctx context.Context,
 	ownerTelegramID int64,
-) ([]TargetCredential, error) {
+) ([]domain.CabinetAccess, error) {
 	if ownerTelegramID <= 0 {
 		return nil, core_errors.ErrInvalidArgument
 	}
@@ -179,7 +179,7 @@ func (service *Service) Targets(
 func (service *Service) TargetsByOwnerRole(
 	ctx context.Context,
 	role domain.UserRole,
-) ([]TargetCredential, error) {
+) ([]domain.CabinetAccess, error) {
 	if ctx == nil || !role.IsValid() {
 		return nil, core_errors.ErrInvalidArgument
 	}
@@ -188,7 +188,7 @@ func (service *Service) TargetsByOwnerRole(
 
 func (service *Service) AllTargets(
 	ctx context.Context,
-) ([]TargetCredential, error) {
+) ([]domain.CabinetAccess, error) {
 	return service.repository.ListAllTargets(ctx)
 }
 

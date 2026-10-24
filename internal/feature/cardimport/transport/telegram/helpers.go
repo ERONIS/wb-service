@@ -2,6 +2,7 @@ package cardimport_telegram_transport
 
 import (
 	"fmt"
+	cardimport_contract "github.com/ERONIS/wb-service/internal/feature/cardimport/service/contract"
 	"html"
 	"strconv"
 	"strings"
@@ -13,44 +14,44 @@ import (
 	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
 	core_tg_presenter "github.com/ERONIS/wb-service/internal/core/transport/telegram/presenter"
 	core_tg_ui "github.com/ERONIS/wb-service/internal/core/transport/telegram/ui"
-	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
+	cardimport_intake "github.com/ERONIS/wb-service/internal/feature/cardimport/service/intake"
 
 	tele "gopkg.in/telebot.v3"
 )
 
 const sessionViewFilesLimit = 10
 
-func parseSessionID(arguments []string) (cardimport_service.SessionID, error) {
+func parseSessionID(arguments []string) (cardimport_intake.SessionID, error) {
 	value, err := core_tg_callback.ParseInt64Argument(arguments, 0, 1, 10, 1)
-	return cardimport_service.SessionID(value), err
+	return cardimport_intake.SessionID(value), err
 }
 
-func parseFinalizeCommand(arguments []string) (cardimport_service.FinalizeCommand, error) {
+func parseFinalizeCommand(arguments []string) (cardimport_contract.FinalizeCommand, error) {
 	id, revision, err := core_tg_callback.ParseIDAndRevision(arguments)
 	if err != nil {
-		return cardimport_service.FinalizeCommand{}, err
+		return cardimport_contract.FinalizeCommand{}, err
 	}
-	return cardimport_service.FinalizeCommand{
-		SessionID:        cardimport_service.SessionID(id),
+	return cardimport_contract.FinalizeCommand{
+		SessionID:        cardimport_intake.SessionID(id),
 		ExpectedRevision: revision,
 		IdempotencyKey:   fmt.Sprintf("telegram:%d:%d", id, revision),
 	}, nil
 }
 
-func parseContinueCommand(arguments []string) (cardimport_service.ContinueCommand, error) {
+func parseContinueCommand(arguments []string) (cardimport_contract.ContinueCommand, error) {
 	id, revision, err := core_tg_callback.ParseIDAndRevision(arguments)
 	if err != nil {
-		return cardimport_service.ContinueCommand{}, err
+		return cardimport_contract.ContinueCommand{}, err
 	}
-	return cardimport_service.ContinueCommand{
-		SessionID:        cardimport_service.SessionID(id),
+	return cardimport_contract.ContinueCommand{
+		SessionID:        cardimport_intake.SessionID(id),
 		ExpectedRevision: revision,
 	}, nil
 }
 
 func (h *Handler) sendSessionView(
 	ctx tele.Context,
-	view cardimport_service.SessionView,
+	view cardimport_intake.SessionView,
 ) error {
 	text, markup := h.sessionView(view)
 	return ctx.EditOrSend(text, markup)
@@ -62,7 +63,7 @@ const uploadedScreenDebounce = 350 * time.Millisecond
 // short debounce combines Telegram multi-file sends into one new menu message.
 func (h *Handler) sendUploadedSessionView(
 	ctx tele.Context,
-	view cardimport_service.SessionView,
+	view cardimport_intake.SessionView,
 ) error {
 	chat := ctx.Chat()
 	if chat == nil || chat.ID == 0 {
@@ -95,7 +96,7 @@ func (h *Handler) sendUploadedSessionView(
 	if err != nil {
 		return sendServiceError(ctx, err)
 	}
-	latestView, err := h.service.GetView(h.ctx, cardimport_service.SessionCommand{
+	latestView, err := h.service.GetView(h.ctx, cardimport_contract.SessionCommand{
 		AuthorTelegramID: authorTelegramID,
 		SessionID:        view.ID,
 	})
@@ -108,7 +109,7 @@ func (h *Handler) sendUploadedSessionView(
 }
 
 func (h *Handler) sessionView(
-	view cardimport_service.SessionView,
+	view cardimport_intake.SessionView,
 ) (string, *tele.ReplyMarkup) {
 	markup := h.bot.NewMarkup()
 	rows := make([]tele.Row, 0, 5)
@@ -142,11 +143,11 @@ func (h *Handler) sessionView(
 	return sessionViewText(view), markup
 }
 
-func sessionViewText(view cardimport_service.SessionView) string {
+func sessionViewText(view cardimport_intake.SessionView) string {
 	var builder strings.Builder
 	fileCountText := fmt.Sprintf("Файлы: %d", len(view.Files))
-	if cardimport_service.MaxFilesPerSession > 0 {
-		fileCountText = fmt.Sprintf("Файлы: %d/%d", len(view.Files), cardimport_service.MaxFilesPerSession)
+	if cardimport_intake.MaxFilesPerSession > 0 {
+		fileCountText = fmt.Sprintf("Файлы: %d/%d", len(view.Files), cardimport_intake.MaxFilesPerSession)
 	}
 	fmt.Fprintf(
 		&builder,
@@ -226,8 +227,8 @@ func sessionViewText(view cardimport_service.SessionView) string {
 	return builder.String()
 }
 
-func visibleFirstIssues(issues []cardimport_service.IssueView) []cardimport_service.IssueView {
-	visible := make([]cardimport_service.IssueView, 0, len(issues))
+func visibleFirstIssues(issues []cardimport_intake.IssueView) []cardimport_intake.IssueView {
+	visible := make([]cardimport_intake.IssueView, 0, len(issues))
 	for _, issue := range issues {
 		switch issue.Issue.Code {
 		case "vendor_code_across_files",
@@ -241,28 +242,28 @@ func visibleFirstIssues(issues []cardimport_service.IssueView) []cardimport_serv
 	return visible
 }
 
-func unfinishedFilesCount(view cardimport_service.SessionView) int {
+func unfinishedFilesCount(view cardimport_intake.SessionView) int {
 	count := 0
 	for _, file := range view.Files {
 		switch file.Status {
-		case cardimport_service.FileStatusReserved,
-			cardimport_service.FileStatusStored,
-			cardimport_service.FileStatusParsing:
+		case cardimport_intake.FileStatusReserved,
+			cardimport_intake.FileStatusStored,
+			cardimport_intake.FileStatusParsing:
 			count++
 		}
 	}
 	return count
 }
 
-func fileStatusIcon(status cardimport_service.FileStatus) string {
+func fileStatusIcon(status cardimport_intake.FileStatus) string {
 	switch status {
-	case cardimport_service.FileStatusValid:
+	case cardimport_intake.FileStatusValid:
 		return "✅"
-	case cardimport_service.FileStatusInvalid:
+	case cardimport_intake.FileStatusInvalid:
 		return "❌"
-	case cardimport_service.FileStatusParsing:
+	case cardimport_intake.FileStatusParsing:
 		return "⏳"
-	case cardimport_service.FileStatusStored:
+	case cardimport_intake.FileStatusStored:
 		return "💾"
 	default:
 		return "📎"

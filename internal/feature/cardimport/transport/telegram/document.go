@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	cardimport_contract "github.com/ERONIS/wb-service/internal/feature/cardimport/service/contract"
 	"time"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	core_tg_identity "github.com/ERONIS/wb-service/internal/core/transport/telegram/identity"
 	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
-	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
+	cardimport_intake "github.com/ERONIS/wb-service/internal/feature/cardimport/service/intake"
 	cardimport_xlsx_transport "github.com/ERONIS/wb-service/internal/feature/cardimport/transport/xlsx"
 
 	tele "gopkg.in/telebot.v3"
@@ -37,7 +38,7 @@ func (h *Handler) receiveDocument(ctx tele.Context) error {
 
 	file, err := h.service.ReserveFile(
 		h.ctx,
-		cardimport_service.ReserveFileCommand{
+		cardimport_contract.ReserveFileCommand{
 			AuthorTelegramID:     authorTelegramID,
 			SessionID:            view.ID,
 			TelegramFileID:       document.FileID,
@@ -52,7 +53,7 @@ func (h *Handler) receiveDocument(ctx tele.Context) error {
 		return sendServiceError(ctx, err)
 	}
 
-	command := cardimport_service.ParseFileCommand{
+	command := cardimport_contract.ParseFileCommand{
 		AuthorTelegramID: authorTelegramID,
 		SessionID:        view.ID,
 		FileID:           file.ID,
@@ -82,7 +83,7 @@ func (h *Handler) resumeFiles(ctx tele.Context) error {
 		return core_tg_menu.Notify(ctx, "cardimport.session_argument", "⚠️ Не удалось определить текущую загрузку.")
 	}
 
-	view, err := h.service.GetView(h.ctx, cardimport_service.SessionCommand{
+	view, err := h.service.GetView(h.ctx, cardimport_contract.SessionCommand{
 		AuthorTelegramID: authorTelegramID,
 		SessionID:        sessionID,
 	})
@@ -112,12 +113,12 @@ func (h *Handler) resumeFiles(ctx tele.Context) error {
 
 func (h *Handler) processFile(
 	processCtx context.Context,
-	file cardimport_service.File,
+	file cardimport_intake.File,
 	telegramFile *tele.File,
-	command cardimport_service.ParseFileCommand,
-) (cardimport_service.SessionView, error) {
+	command cardimport_contract.ParseFileCommand,
+) (cardimport_intake.SessionView, error) {
 	switch file.Status {
-	case cardimport_service.FileStatusReserved:
+	case cardimport_intake.FileStatusReserved:
 		if telegramFile == nil {
 			telegramFile = &tele.File{
 				FileID:   file.TelegramFileID,
@@ -127,47 +128,47 @@ func (h *Handler) processFile(
 		}
 		reader, err := h.bot.File(telegramFile)
 		if err != nil {
-			return cardimport_service.SessionView{}, fmt.Errorf(
+			return cardimport_intake.SessionView{}, fmt.Errorf(
 				"download reserved Telegram file: %w",
 				err,
 			)
 		}
 		_, storeErr := h.service.StoreFile(
 			processCtx,
-			cardimport_service.StoreFileCommand(command),
+			cardimport_contract.StoreFileCommand(command),
 			reader,
 		)
 		closeErr := reader.Close()
 		if storeErr != nil {
-			return cardimport_service.SessionView{}, storeErr
+			return cardimport_intake.SessionView{}, storeErr
 		}
 		if closeErr != nil {
-			return cardimport_service.SessionView{}, fmt.Errorf(
+			return cardimport_intake.SessionView{}, fmt.Errorf(
 				"close Telegram file: %w",
 				closeErr,
 			)
 		}
 
-	case cardimport_service.FileStatusStored:
+	case cardimport_intake.FileStatusStored:
 		// Durable blob уже сохранён: продолжаем оборванную обработку.
 
-	case cardimport_service.FileStatusParsing:
+	case cardimport_intake.FileStatusParsing:
 		if !isRecoverableFile(file, time.Now()) {
-			return cardimport_service.SessionView{}, fmt.Errorf(
+			return cardimport_intake.SessionView{}, fmt.Errorf(
 				"cardimport file is still being processed: %w",
 				core_errors.ErrConflict,
 			)
 		}
 
-	case cardimport_service.FileStatusValid,
-		cardimport_service.FileStatusInvalid:
-		return h.service.GetView(processCtx, cardimport_service.SessionCommand{
+	case cardimport_intake.FileStatusValid,
+		cardimport_intake.FileStatusInvalid:
+		return h.service.GetView(processCtx, cardimport_contract.SessionCommand{
 			AuthorTelegramID: command.AuthorTelegramID,
 			SessionID:        command.SessionID,
 		})
 
 	default:
-		return cardimport_service.SessionView{}, fmt.Errorf(
+		return cardimport_intake.SessionView{}, fmt.Errorf(
 			"cardimport file is not processable: %w",
 			core_errors.ErrConflict,
 		)
@@ -176,12 +177,12 @@ func (h *Handler) processFile(
 	return h.service.ParseFile(processCtx, command)
 }
 
-func isRecoverableFile(file cardimport_service.File, now time.Time) bool {
+func isRecoverableFile(file cardimport_intake.File, now time.Time) bool {
 	switch file.Status {
-	case cardimport_service.FileStatusReserved,
-		cardimport_service.FileStatusStored:
+	case cardimport_intake.FileStatusReserved,
+		cardimport_intake.FileStatusStored:
 		return true
-	case cardimport_service.FileStatusParsing:
+	case cardimport_intake.FileStatusParsing:
 		return !file.UpdatedAt.After(now.Add(-staleParsingFileAge))
 	default:
 		return false
@@ -190,21 +191,20 @@ func isRecoverableFile(file cardimport_service.File, now time.Time) bool {
 
 func (h *Handler) getOrBeginUploadView(
 	authorTelegramID int64,
-) (cardimport_service.SessionView, error) {
+) (cardimport_intake.SessionView, error) {
 	view, err := h.service.GetActiveView(h.ctx, authorTelegramID)
 	if err == nil || !errors.Is(err, core_errors.ErrNotFound) {
 		return view, err
 	}
 
-	session, err := h.service.Begin(h.ctx, cardimport_service.BeginCommand{
+	session, err := h.service.Begin(h.ctx, cardimport_contract.BeginCommand{
 		AuthorTelegramID: authorTelegramID,
-		Purpose:          cardimport_service.PurposeTransfer,
 	})
 	if err != nil {
-		return cardimport_service.SessionView{}, err
+		return cardimport_intake.SessionView{}, err
 	}
 
-	return h.service.GetView(h.ctx, cardimport_service.SessionCommand{
+	return h.service.GetView(h.ctx, cardimport_contract.SessionCommand{
 		AuthorTelegramID: authorTelegramID,
 		SessionID:        session.ID,
 	})

@@ -2,20 +2,6 @@ package cardprepare_service
 
 import "github.com/ERONIS/wb-service/internal/feature/cardprepare/service/model"
 
-type Digest = model.Digest
-type SellerID = model.SellerID
-type OutcomeCode = model.OutcomeCode
-type Outcome = model.Outcome
-type SourceGroup = model.SourceGroup
-type SourceItem = model.SourceItem
-type CatalogSnapshot = model.CatalogSnapshot
-type DirectorySnapshot = model.DirectorySnapshot
-type Proposal = model.Proposal
-type Result = model.Result
-type ProposalQuery = model.ProposalQuery
-type PreparedMember = model.PreparedMember
-type StoredProposal = model.StoredProposal
-
 const (
 	OutcomePrepared                     = model.OutcomePrepared
 	OutcomeSubjectNotFound              = model.OutcomeSubjectNotFound

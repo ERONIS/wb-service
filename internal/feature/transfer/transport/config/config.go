@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 
 	"github.com/kelseyhightower/envconfig"
 )
@@ -69,8 +69,8 @@ func (config Config) Validate() error {
 	return config.CapacityPolicy().Validate()
 }
 
-func (config Config) CapacityPolicy() transfer_service.CapacityPolicy {
-	return transfer_service.CapacityPolicy{
+func (config Config) CapacityPolicy() transfer_model.CapacityPolicy {
+	return transfer_model.CapacityPolicy{
 		MaxItems:        config.MaxItems,
 		MaxGroups:       config.MaxGroups,
 		MaxTargets:      config.MaxTargets,

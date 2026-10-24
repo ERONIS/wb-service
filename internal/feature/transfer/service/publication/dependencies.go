@@ -5,11 +5,6 @@ import (
 	"github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
 
-type TransferID = model.TransferID
-type Digest = model.Digest
-type SellerID = model.SellerID
-type ResultClass = model.ResultClass
-
 const (
 	ResultSuccess       = model.ResultSuccess
 	ResultSkipped       = model.ResultSkipped

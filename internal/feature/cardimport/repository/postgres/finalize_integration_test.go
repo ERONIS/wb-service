@@ -2,15 +2,16 @@ package cardimport_postgres_repository
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
-	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
+	cardimport_batch "github.com/ERONIS/wb-service/internal/feature/cardimport/service/batch"
+	cardimport_contract "github.com/ERONIS/wb-service/internal/feature/cardimport/service/contract"
+	cardimport_intake "github.com/ERONIS/wb-service/internal/feature/cardimport/service/intake"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -35,54 +36,48 @@ func TestPostgresPersistFinalizedIsAtomic(t *testing.T) {
 	}
 	defer connection.Close()
 	pool := &finalizationTestPool{Pool: connection}
-	var issuesTable *string
-	if err := pool.QueryRow(ctx, "SELECT to_regclass('wb.card_import_issues')::text").Scan(&issuesTable); err != nil {
-		t.Fatal(err)
-	}
-	if issuesTable != nil {
-			t.Fatal("в исходной схеме осталась таблица card_import_issues")
+	for _, name := range []string{"wb.card_import_sessions", "wb.card_import_files", "wb.card_import_issues"} {
+		var table *string
+		if err := pool.QueryRow(ctx, "SELECT to_regclass($1)::text", name).Scan(&table); err != nil {
+			t.Fatal(err)
+		}
+		if table != nil {
+			t.Fatalf("в схеме осталась таблица %s", name)
+		}
 	}
 	now := time.Now().UTC()
-	sessionID := cardimport_service.SessionID(now.UnixNano())
-	fileID := cardimport_service.FileID(now.UnixNano() + 1)
+	sessionID := cardimport_intake.SessionID(now.UnixNano())
+	fileID := cardimport_intake.FileID(now.UnixNano() + 1)
 	user := domain.CreateUser(now.UnixNano()+2, "Тест Пользователь")
 	card := cardpipeline.Card{
-		SourceRows: []int{2}, Category: "Одежда",
+		SourceRows: []int{2}, Group: "1", Category: "Одежда",
 		Variant: cardpipeline.Variant{
 			VendorCode: "test-sku",
 			Sizes:      []cardpipeline.Size{{TechSize: "M", SKUs: []string{"test-barcode"}}},
 		},
 	}
-	item := cardimport_service.BatchItem{
+	item := cardimport_batch.BatchItem{
 		Position: 1, SourceFileID: fileID, SourceRows: []int{2},
-		SourceGroupKey: cardimport_service.NewSourceGroupKey(fileID, "", "test-sku"),
+		SourceGroupKey: cardimport_batch.NewSourceGroupKey(fileID, "1"),
 		VendorCode:     "test-sku", Payload: card,
 	}
-	checksum, err := cardimport_service.BatchChecksum(cardimport_service.PurposeTransfer, 1, []cardimport_service.BatchItem{item})
-	if err != nil {
-		t.Fatal(err)
-	}
-	fileHash := sha256.Sum256([]byte("xlsx"))
-	finalized := cardimport_service.FinalizedSession{
-		Session: cardimport_service.Session{
+	finalized := cardimport_contract.FinalizedSession{
+		Session: cardimport_intake.Session{
 			ID: sessionID, AuthorTelegramID: user.TelegramID,
-			Purpose:  cardimport_service.PurposeTransfer,
-			Status:   cardimport_service.SessionStatusCollecting,
+			Status:   cardimport_intake.SessionStatusCollecting,
 			Revision: 1, CreatedAt: now, UpdatedAt: now,
 		},
-		Files: []cardimport_service.File{{
+		Files: []cardimport_intake.File{{
 			ID: fileID, SessionID: sessionID, TelegramFileID: "test-file",
 			TelegramFileUniqueID: "test-unique", TelegramMessageID: 1,
 			OriginalFilename: "test.xlsx", DeclaredSize: 4, StoredSize: 4,
-			SHA256: hex.EncodeToString(fileHash[:]), Status: cardimport_service.FileStatusValid,
+			Status:    cardimport_intake.FileStatusValid,
 			CreatedAt: now, UpdatedAt: now,
 		}},
-		Items: []cardimport_service.BatchItem{item}, GroupsCount: 1,
-		Checksum: checksum, User: user,
-		Command: cardimport_service.FinalizeCommand{
+		Items: []cardimport_batch.BatchItem{item}, GroupsCount: 1, User: user,
+		Command: cardimport_contract.FinalizeCommand{
 			SessionID: sessionID, ExpectedRevision: 1, IdempotencyKey: "test",
 		},
-		CommandDigest: cardimport_service.Digest(sha256.Sum256([]byte("test"))),
 	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -94,8 +89,8 @@ func TestPostgresPersistFinalizedIsAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if header.Checksum != checksum {
-		t.Fatal("контрольная сумма изменилась при записи")
+	if header.ItemsCount != 1 || header.GroupsCount != 1 {
+		t.Fatal("неверные размеры сохранённой пачки")
 	}
 	var count int
 	if err := tx.QueryRow(ctx, "SELECT count(*) FROM wb.card_batch_items WHERE batch_id = $1", header.ID).Scan(&count); err != nil {
@@ -107,10 +102,50 @@ func TestPostgresPersistFinalizedIsAtomic(t *testing.T) {
 	if err := tx.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM wb.card_import_sessions WHERE id = $1", sessionID).Scan(&count); err != nil {
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM wb.card_batches WHERE source_session_id = $1", sessionID).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 0 {
-		t.Fatal("отмена транзакции оставила сессию в БД")
+		t.Fatal("отмена транзакции оставила пачку в БД")
+	}
+
+	committedTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer committedTx.Rollback(context.Background())
+	header, err = repository.PersistFinalized(ctx, committedTx, finalized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := committedTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := repository.GetBatch(ctx, header.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.ID != header.ID || stored.SourceSessionID != sessionID {
+		t.Fatal("сохранённая пачка не совпадает с исходной сессией")
+	}
+	items, err := repository.ListBatchItems(ctx, header.ID, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].VendorCode != item.VendorCode {
+		t.Fatal("сохранённая карточка не прочитана из пачки")
+	}
+	if items[0].SourceFileID != fileID {
+		t.Fatal("связь карточки с исходным файлом не сохранена")
+	}
+
+	replayTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replayTx.Rollback(context.Background())
+	replayed, err := repository.PersistFinalized(ctx, replayTx, finalized)
+	if err != nil || replayed.ID != header.ID {
+		t.Fatalf("повторная финализация не вернула исходную пачку: %v", err)
 	}
 }

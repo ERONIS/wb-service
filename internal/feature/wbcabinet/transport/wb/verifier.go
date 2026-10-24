@@ -34,7 +34,7 @@ func NewVerifier(runtime Runtime) *Verifier {
 
 func (verifier *Verifier) Prepare(
 	ctx context.Context,
-	sellerID wbcabinet_service.SellerID,
+	sellerID domain.SellerID,
 	name string,
 	token string,
 ) (wbcabinet_service.PreparedCredential, error) {
@@ -94,7 +94,7 @@ func classifyVerificationError(err error) error {
 	return err
 }
 
-func (verifier *Verifier) Remove(sellerID wbcabinet_service.SellerID) {
+func (verifier *Verifier) Remove(sellerID domain.SellerID) {
 	if verifier == nil || verifier.runtime == nil {
 		return
 	}
@@ -106,9 +106,9 @@ type preparedCredential struct {
 	candidate *core_wb.CredentialCandidate
 }
 
-func (credential *preparedCredential) Generation() wbcabinet_service.ClientGeneration {
+func (credential *preparedCredential) Generation() domain.ClientGeneration {
 	if credential == nil || credential.candidate == nil {
-		return wbcabinet_service.ClientGeneration{}
+		return domain.ClientGeneration{}
 	}
 	return credential.candidate.Generation()
 }

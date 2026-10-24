@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	"github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
@@ -21,7 +22,7 @@ type PreparationSource struct {
 	GroupTargetID int64
 	SourceGroupID int64
 	TargetID      int64
-	SellerID      model.SellerID
+	SellerID      core_domain.SellerID
 	Items         []PreparationSourceItem
 }
 
@@ -55,7 +56,7 @@ type PreparationPendingGroup struct {
 	GroupTargetID int64
 	SourceGroupID int64
 	TargetID      int64
-	SellerID      model.SellerID
+	SellerID      core_domain.SellerID
 }
 
 // Validate проверяет корректность идентификаторов и кабинета целевой группы.

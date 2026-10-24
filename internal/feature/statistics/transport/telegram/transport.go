@@ -4,9 +4,10 @@ import (
 	"context"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
+	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
-	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
-	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
+	cardimport_batch "github.com/ERONIS/wb-service/internal/feature/cardimport/service/batch"
+	cardpublication_resolution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/resolution"
 	statistics_service "github.com/ERONIS/wb-service/internal/feature/statistics/service"
 
 	tele "gopkg.in/telebot.v3"
@@ -44,13 +45,13 @@ type StatisticsService interface {
 type ManualResolver interface {
 	Resolve(
 		context.Context,
-		cardpublication_service.ManualTrustedActor,
-		cardpublication_service.ManualResolutionCommand,
-	) (cardpublication_service.ManualResolution, error)
+		cardpublication_resolution.ManualTrustedActor,
+		cardpublication_resolution.ManualResolutionCommand,
+	) (cardpublication_resolution.ManualResolution, error)
 }
 
 type BatchReader interface {
-	GetBatch(context.Context, cardimport_service.BatchID) (cardimport_service.BatchHeader, error)
+	GetBatch(context.Context, cardpipeline.BatchID) (cardimport_batch.BatchHeader, error)
 }
 
 type Handler struct {

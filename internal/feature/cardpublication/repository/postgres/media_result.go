@@ -6,19 +6,21 @@ import (
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
+	cardpublication_execution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/execution"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
 
 // RecordMediaResult записывает результат выполнения попытки медиа-действия и завершает действие.
 func (repository *Repository) RecordMediaResult(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	action cardpublication_service.MediaAction,
-	attempt cardpublication_service.MediaAttempt,
-	mediaResult cardpublication_service.MediaMutationResult,
-) (cardpublication_service.MediaGroupResult, error) {
+	action cardpublication_execution.MediaAction,
+	attempt cardpublication_execution.MediaAttempt,
+	mediaResult cardpublication_execution.MediaMutationResult,
+) (cardpublication_execution.MediaGroupResult, error) {
 	if err := recordMediaAttemptResult(ctx, tx, action, attempt, mediaResult); err != nil {
-		return cardpublication_service.MediaGroupResult{}, err
+		return cardpublication_execution.MediaGroupResult{}, err
 	}
 	return finishMediaAction(ctx, tx, action, mediaResult.OutcomeClass, mediaResult.OutcomeCode)
 }
@@ -27,15 +29,14 @@ func (repository *Repository) RecordMediaResult(
 func recordMediaAttemptResult(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	action cardpublication_service.MediaAction,
-	attempt cardpublication_service.MediaAttempt,
-	mediaResult cardpublication_service.MediaMutationResult,
+	action cardpublication_execution.MediaAction,
+	attempt cardpublication_execution.MediaAttempt,
+	mediaResult cardpublication_execution.MediaMutationResult,
 ) error {
 	if tx == nil || action.State != "dispatching" || action.AttemptID != attempt.ID ||
 		attempt.ActionID != action.ActionID || attempt.TransferID != action.TransferID ||
 		attempt.AuthorizationID != action.AuthorizationID ||
 		attempt.AttributionID != action.AttributionID ||
-		attempt.RequestDigest != action.AttemptRequestDigest ||
 		!equalBytes(attempt.RequestPayload, action.AttemptRequestPayload) {
 		return cardpublication_service.ErrMediaActionConflict
 	}
@@ -43,7 +44,7 @@ func recordMediaAttemptResult(
 		return err
 	}
 	const lockAttempt = `
-		SELECT request_digest, request_payload, COALESCE(attribution_id, 0)
+		SELECT request_payload, COALESCE(attribution_id, 0)
 		FROM wb.publication_attempts
 		WHERE transfer_id = $1
 			AND id = $2
@@ -52,7 +53,7 @@ func recordMediaAttemptResult(
 			AND finished_at IS NULL
 		FOR UPDATE;
 	`
-	var storedDigest, storedPayload []byte
+	var storedPayload []byte
 	var storedAttributionID int64
 	if err := tx.QueryRow(
 		ctx,
@@ -61,11 +62,10 @@ func recordMediaAttemptResult(
 		attempt.ID,
 		action.ActionID,
 		action.AuthorizationID,
-	).Scan(&storedDigest, &storedPayload, &storedAttributionID); err != nil {
+	).Scan(&storedPayload, &storedAttributionID); err != nil {
 		return fmt.Errorf("lock publication media attempt result: %w", err)
 	}
-	if !equalBytes(storedDigest, attempt.RequestDigest[:]) ||
-		!equalBytes(storedPayload, attempt.RequestPayload) ||
+	if !equalBytes(storedPayload, attempt.RequestPayload) ||
 		storedAttributionID != action.AttributionID {
 		return cardpublication_service.ErrMediaActionConflict
 	}
@@ -115,10 +115,10 @@ func recordMediaAttemptResult(
 func finishMediaAction(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	action cardpublication_service.MediaAction,
-	outcomeClass transfer_service.ResultClass,
+	action cardpublication_execution.MediaAction,
+	outcomeClass transfer_model.ResultClass,
 	outcomeCode string,
-) (cardpublication_service.MediaGroupResult, error) {
+) (cardpublication_execution.MediaGroupResult, error) {
 	const finishMember = `
 		UPDATE wb.publication_action_members
 		SET outcome_class = $4,
@@ -142,11 +142,11 @@ func finishMediaAction(
 		action.NMID,
 	)
 	if err != nil {
-		return cardpublication_service.MediaGroupResult{},
+		return cardpublication_execution.MediaGroupResult{},
 			fmt.Errorf("finish publication media member: %w", err)
 	}
 	if result.RowsAffected() != 1 {
-		return cardpublication_service.MediaGroupResult{},
+		return cardpublication_execution.MediaGroupResult{},
 			cardpublication_service.ErrMediaActionConflict
 	}
 	const finishAction = `
@@ -174,11 +174,11 @@ func finishMediaAction(
 		action.State,
 	)
 	if err != nil {
-		return cardpublication_service.MediaGroupResult{},
+		return cardpublication_execution.MediaGroupResult{},
 			fmt.Errorf("finish publication media action: %w", err)
 	}
 	if result.RowsAffected() != 1 {
-		return cardpublication_service.MediaGroupResult{},
+		return cardpublication_execution.MediaGroupResult{},
 			cardpublication_service.ErrMediaActionConflict
 	}
 	const releaseIdentity = `
@@ -204,15 +204,15 @@ func finishMediaAction(
 		action.NMID,
 	)
 	if err != nil {
-		return cardpublication_service.MediaGroupResult{},
+		return cardpublication_execution.MediaGroupResult{},
 			fmt.Errorf("release publication media identity: %w", err)
 	}
 	if result.RowsAffected() != 1 {
-		return cardpublication_service.MediaGroupResult{},
+		return cardpublication_execution.MediaGroupResult{},
 			cardpublication_service.ErrMediaActionConflict
 	}
 	if err := reducePublicationPlan(ctx, tx, action.TransferID, action.PlanID); err != nil {
-		return cardpublication_service.MediaGroupResult{}, err
+		return cardpublication_execution.MediaGroupResult{}, err
 	}
 	return loadMediaGroupResult(ctx, tx, action)
 }
@@ -221,8 +221,8 @@ func finishMediaAction(
 func loadMediaGroupResult(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	action cardpublication_service.MediaAction,
-) (cardpublication_service.MediaGroupResult, error) {
+	action cardpublication_execution.MediaAction,
+) (cardpublication_execution.MediaGroupResult, error) {
 	const query = `
 		SELECT
 			COUNT(*) AS total,
@@ -257,10 +257,10 @@ func loadMediaGroupResult(
 		&succeeded,
 		&skipped,
 	); err != nil {
-		return cardpublication_service.MediaGroupResult{},
+		return cardpublication_execution.MediaGroupResult{},
 			fmt.Errorf("load publication media group result: %w", err)
 	}
-	result := cardpublication_service.MediaGroupResult{
+	result := cardpublication_execution.MediaGroupResult{
 		GroupTargetID: action.Member.GroupTargetID,
 		Terminal:      total > 0 && terminal == total,
 	}
@@ -281,13 +281,13 @@ func loadMediaGroupResult(
 		result.OutcomeClass = transfer_service.ResultSkipped
 		result.OutcomeCode = "MEDIA_SKIPPED"
 	default:
-		return cardpublication_service.MediaGroupResult{},
+		return cardpublication_execution.MediaGroupResult{},
 			cardpublication_service.ErrMediaActionConflict
 	}
 	if err := result.Validate(); err != nil {
-		return cardpublication_service.MediaGroupResult{}, err
+		return cardpublication_execution.MediaGroupResult{}, err
 	}
 	return result, nil
 }
 
-var _ cardpublication_service.MediaJournalRepository = (*Repository)(nil)
+var _ cardpublication_execution.MediaJournalRepository = (*Repository)(nil)

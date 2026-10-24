@@ -18,7 +18,7 @@ import (
 const maxProfileCabinets = 8
 
 type permissionLabel struct {
-	permission wbcabinet_service.TokenProperties
+	permission credentials.TokenProperties
 	label      string
 }
 
@@ -161,7 +161,7 @@ func roleText(role domain.UserRole) string {
 	}
 }
 
-func permissionsText(properties wbcabinet_service.TokenProperties) string {
+func permissionsText(properties credentials.TokenProperties) string {
 	permissions := make([]string, 0, len(permissionLabels))
 	for _, item := range permissionLabels {
 		if properties.Has(item.permission) {
@@ -174,7 +174,7 @@ func permissionsText(properties wbcabinet_service.TokenProperties) string {
 	return strings.Join(permissions, ", ")
 }
 
-func accessModeText(properties wbcabinet_service.TokenProperties) string {
+func accessModeText(properties credentials.TokenProperties) string {
 	if properties == 0 {
 		return "не определён"
 	}

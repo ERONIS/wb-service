@@ -6,7 +6,7 @@ import (
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_wb "github.com/ERONIS/wb-service/internal/core/transport/wb"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
-	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
+	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
 )
 
 type CatalogTransport struct {
@@ -86,4 +86,4 @@ func (transport *CatalogTransport) SaveMediaByLinks(
 	)
 }
 
-var _ cardpublication_service.CatalogTransport = (*CatalogTransport)(nil)
+var _ cardpublication_catalog.CatalogTransport = (*CatalogTransport)(nil)

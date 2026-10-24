@@ -18,15 +18,11 @@ import (
 	"go.uber.org/zap"
 )
 
-type Mode = transfer_config_transport.Mode
-
 const (
 	ModeDisabled = transfer_config_transport.ModeDisabled
 	ModeDryRun   = transfer_config_transport.ModeDryRun
 	ModeLive     = transfer_config_transport.ModeLive
 )
-
-type Config = transfer_config_transport.Config
 
 type Feature struct {
 	service                     *workflow.Service
@@ -42,11 +38,11 @@ type Feature struct {
 	pollingInterval             time.Duration
 }
 
-func NewConfig() (Config, error) {
+func NewConfig() (transfer_config_transport.Config, error) {
 	return transfer_config_transport.New()
 }
 
-func NewConfigMust() Config {
+func NewConfigMust() transfer_config_transport.Config {
 	return transfer_config_transport.Must()
 }
 
@@ -56,7 +52,7 @@ func New(
 	uow core_postgres_transaction.UnitOfWork,
 	batchReader workflow.BatchReader,
 	targetTransport registry.TargetTransport,
-	config Config,
+	config transfer_config_transport.Config,
 	loggers ...*zap.Logger,
 ) (*Feature, error) {
 	if ctx == nil {

@@ -8,6 +8,7 @@ import (
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
 
 const (
@@ -34,18 +35,16 @@ type InitializationItem struct {
 }
 
 type InitializeTransferCommand struct {
-	TransferID    TransferID
-	BatchID       cardpipeline.BatchID
-	BatchChecksum cardpipeline.Digest
-	ItemsCount    int
-	GroupsCount   int
-	Groups        []InitializationGroup
-	Items         []InitializationItem
+	TransferID  transfer_model.TransferID
+	BatchID     cardpipeline.BatchID
+	ItemsCount  int
+	GroupsCount int
+	Groups      []InitializationGroup
+	Items       []InitializationItem
 }
 
 func (command InitializeTransferCommand) Validate() error {
 	if command.TransferID <= 0 || command.BatchID <= 0 ||
-		command.BatchChecksum == (cardpipeline.Digest{}) ||
 		command.ItemsCount <= 0 || command.GroupsCount <= 0 ||
 		command.GroupsCount > command.ItemsCount ||
 		len(command.Items) != command.ItemsCount ||
@@ -77,7 +76,7 @@ func (command InitializeTransferCommand) Validate() error {
 
 func (service *Service) Initialize(
 	ctx context.Context,
-	transferID TransferID,
+	transferID transfer_model.TransferID,
 ) (bool, error) {
 	if err := core_errors.RequireContext(ctx); err != nil {
 		return false, err
@@ -131,7 +130,7 @@ func (service *Service) Initialize(
 
 func (service *Service) buildInitialization(
 	ctx context.Context,
-	transfer Transfer,
+	transfer transfer_model.Transfer,
 ) (InitializeTransferCommand, error) {
 	ready, err := service.batchReader.GetReadyBatch(ctx, transfer.BatchID)
 	if err != nil {
@@ -145,8 +144,7 @@ func (service *Service) buildInitialization(
 		return InitializeTransferCommand{}, ErrInitializationInvalid
 	}
 	if batch.ItemsCount != transfer.ItemsCount ||
-		batch.GroupsCount != transfer.GroupsCount ||
-		batch.Checksum != transfer.BatchChecksum {
+		batch.GroupsCount != transfer.GroupsCount {
 		return InitializeTransferCommand{}, ErrInitializationInvalid
 	}
 
@@ -195,13 +193,12 @@ func (service *Service) buildInitialization(
 	}
 
 	command := InitializeTransferCommand{
-		TransferID:    transfer.ID,
-		BatchID:       transfer.BatchID,
-		BatchChecksum: transfer.BatchChecksum,
-		ItemsCount:    transfer.ItemsCount,
-		GroupsCount:   transfer.GroupsCount,
-		Groups:        groups,
-		Items:         items,
+		TransferID:  transfer.ID,
+		BatchID:     transfer.BatchID,
+		ItemsCount:  transfer.ItemsCount,
+		GroupsCount: transfer.GroupsCount,
+		Groups:      groups,
+		Items:       items,
 	}
 	if err := command.Validate(); err != nil {
 		return InitializeTransferCommand{}, err
@@ -211,7 +208,7 @@ func (service *Service) buildInitialization(
 
 func (service *Service) markInitializationFailed(
 	ctx context.Context,
-	transferID TransferID,
+	transferID transfer_model.TransferID,
 	failureCode string,
 ) error {
 	if err := service.uow.WithinTransaction(

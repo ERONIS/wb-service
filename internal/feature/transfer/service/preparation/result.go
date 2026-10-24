@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
 
 var ErrPreparationResultConflict = core_errors.ErrConflict
@@ -25,9 +25,6 @@ const (
 
 type PreparationArtifact struct {
 	SubjectID        int64
-	SemanticDigest   Digest
-	MetadataDigest   Digest
-	ProposalRoot     Digest
 	RequestPayload   []byte
 	MetadataSnapshot []byte
 	LimitsFree       int64
@@ -37,7 +34,7 @@ type PreparationArtifact struct {
 
 // ApplyPreparationResultCommand содержит параметры применения результата подготовки целевой группы.
 type ApplyPreparationResultCommand struct {
-	TransferID    TransferID
+	TransferID    transfer_model.TransferID
 	GroupTargetID int64
 	Status        PreparationResultStatus
 	OutcomeCode   string
@@ -45,7 +42,6 @@ type ApplyPreparationResultCommand struct {
 	Field         string
 	StartedAt     time.Time
 	FinishedAt    time.Time
-	ProposalRoot  Digest
 	Artifact      *PreparationArtifact
 	Revision      int64
 }
@@ -65,22 +61,19 @@ func (command ApplyPreparationResultCommand) Validate() error {
 	}
 	switch command.Status {
 	case PreparationResultSucceeded:
-		if command.OutcomeCode != "prepared" || command.ProposalRoot == (Digest{}) ||
+		if command.OutcomeCode != "prepared" ||
 			command.Artifact == nil || command.ItemPosition != 0 || command.Field != "" {
 			return errors.New("successful transfer preparation result is invalid")
 		}
 		artifact := command.Artifact
-		metadataDigest, err := cardpipeline.DigestJSON("cardprepare-metadata:v1", json.RawMessage(artifact.MetadataSnapshot))
-		if err != nil || artifact.SubjectID <= 0 || artifact.SemanticDigest == (Digest{}) ||
-			artifact.MetadataDigest != metadataDigest || artifact.ProposalRoot != command.ProposalRoot ||
-			!json.Valid(artifact.RequestPayload) || artifact.LimitsObservedAt.IsZero() ||
-			artifact.LimitsFree < 0 || artifact.LimitsPaid < 0 ||
-			cardpipeline.DigestProposal(artifact.SemanticDigest, artifact.MetadataDigest, artifact.RequestPayload) != command.ProposalRoot {
-			return errors.New("transfer preparation artifact integrity is invalid")
+		if artifact.SubjectID <= 0 || !json.Valid(artifact.RequestPayload) ||
+			!json.Valid(artifact.MetadataSnapshot) || artifact.LimitsObservedAt.IsZero() ||
+			artifact.LimitsFree < 0 || artifact.LimitsPaid < 0 {
+			return errors.New("transfer preparation artifact is invalid")
 		}
 	case PreparationResultRejected, PreparationResultUnresolved:
-		if command.ProposalRoot != (Digest{}) || command.Artifact != nil {
-			return errors.New("unsuccessful transfer preparation result has proposal root")
+		if command.Artifact != nil {
+			return errors.New("unsuccessful transfer preparation result has an artifact")
 		}
 	default:
 		return errors.New("transfer preparation result status is invalid")

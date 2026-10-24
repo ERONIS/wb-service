@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 
+	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	cardpublication_execution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/execution"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -17,11 +19,11 @@ import (
 func (repository *Repository) LockProductAction(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	candidate cardpublication_service.ProductActionCandidate,
-) (cardpublication_service.ProductAction, error) {
-	if tx == nil || candidate.TransferID <= 0 || candidate.ActionID <= 0 ||
+	candidate cardpublication_execution.ProductActionCandidate,
+) (cardpublication_execution.ProductAction, error) {
+	if tx == nil || candidate.TransferID <= 0 || candidate.PlanID <= 0 || candidate.ActionID <= 0 ||
 		candidate.AuthorizationID <= 0 {
-		return cardpublication_service.ProductAction{}, errors.New(
+		return cardpublication_execution.ProductAction{}, errors.New(
 			"lock publication product action: identity is invalid",
 		)
 	}
@@ -31,9 +33,7 @@ func (repository *Repository) LockProductAction(
 			action.revision,
 			action.kind,
 			action.state,
-			action.request_digest,
 			action.request_payload,
-			action.member_set_digest,
 			target.seller_id,
 			target.client_generation,
 			target.credential_expires_at,
@@ -55,7 +55,7 @@ func (repository *Repository) LockProductAction(
 			attempt.http_status,
 			attempt.safe_error_code,
 			retry.id,
-			retry.request_digest,
+			retry.request_payload,
 			retry.started_at,
 			retry.finished_at,
 			retry.delivery_state,
@@ -84,15 +84,13 @@ func (repository *Repository) LockProductAction(
 			AND action.id = $2
 			AND action.target_id = $3
 			AND target.seller_id = $4
-			AND plan.plan_digest = $6
-			AND plan.target_set_root = $7
+			AND plan.id = $6
 		FOR UPDATE OF action, plan;
 	`
-	action := cardpublication_service.ProductAction{ProductActionCandidate: candidate}
+	action := cardpublication_execution.ProductAction{ProductActionCandidate: candidate}
 	var (
-		requestDigest, memberDigest  []byte
 		generation                   []byte
-		sellerID                     cardpublication_service.SellerID
+		sellerID                     core_domain.SellerID
 		preflightID                  pgtype.Int8
 		attemptID, recheckID         pgtype.Int8
 		attemptStartedAt             pgtype.Timestamptz
@@ -100,7 +98,7 @@ func (repository *Repository) LockProductAction(
 		attemptDelivery, attemptCode pgtype.Text
 		attemptHTTPStatus            pgtype.Int4
 		retryID                      pgtype.Int8
-		retryDigest                  []byte
+		retryPayload                 []byte
 		retryStartedAt               pgtype.Timestamptz
 		retryFinishedAt              pgtype.Timestamptz
 		retryDelivery                pgtype.Text
@@ -119,16 +117,13 @@ func (repository *Repository) LockProductAction(
 		candidate.TargetID,
 		candidate.SellerID,
 		candidate.AuthorizationID,
-		candidate.PlanDigest[:],
-		candidate.TargetSetRoot[:],
+		candidate.PlanID,
 	).Scan(
 		&action.PlanID,
 		&action.Revision,
 		&action.Kind,
 		&action.State,
-		&requestDigest,
 		&action.RequestPayload,
-		&memberDigest,
 		&sellerID,
 		&generation,
 		&action.CredentialExpiresAt,
@@ -141,7 +136,7 @@ func (repository *Repository) LockProductAction(
 		&attemptHTTPStatus,
 		&attemptCode,
 		&retryID,
-		&retryDigest,
+		&retryPayload,
 		&retryStartedAt,
 		&retryFinishedAt,
 		&retryDelivery,
@@ -153,22 +148,18 @@ func (repository *Repository) LockProductAction(
 		&currentAuthorizationRevision,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return cardpublication_service.ProductAction{}, cardpublication_service.ErrProductActionConflict
+		return cardpublication_execution.ProductAction{}, cardpublication_service.ErrProductActionConflict
 	}
 	if err != nil {
-		return cardpublication_service.ProductAction{}, fmt.Errorf(
+		return cardpublication_execution.ProductAction{}, fmt.Errorf(
 			"lock publication product action: %w",
 			err,
 		)
 	}
-	if len(requestDigest) != len(action.RequestDigest) ||
-		len(memberDigest) != len(action.MemberSetDigest) ||
-		sellerID.Validate() != nil ||
+	if sellerID.Validate() != nil ||
 		len(generation) != len(action.ClientGeneration) || !preflightID.Valid {
-		return cardpublication_service.ProductAction{}, cardpublication_service.ErrProductActionConflict
+		return cardpublication_execution.ProductAction{}, cardpublication_service.ErrProductActionConflict
 	}
-	copy(action.RequestDigest[:], requestDigest)
-	copy(action.MemberSetDigest[:], memberDigest)
 	action.SellerID = sellerID
 	copy(action.ClientGeneration[:], generation)
 	action.PreflightObservationID = preflightID.Int64
@@ -186,7 +177,7 @@ func (repository *Repository) LockProductAction(
 		action.AttemptFinishedAt = attemptFinishedAt.Time.UTC()
 	}
 	if attemptDelivery.Valid {
-		action.AttemptDelivery = cardpublication_service.SubmissionDelivery(attemptDelivery.String)
+		action.AttemptDelivery = cardpublication_execution.SubmissionDelivery(attemptDelivery.String)
 	}
 	if attemptHTTPStatus.Valid {
 		action.AttemptHTTPStatus = int(attemptHTTPStatus.Int32)
@@ -195,28 +186,28 @@ func (repository *Repository) LockProductAction(
 		action.AttemptSafeCode = attemptCode.String
 	}
 	if retryID.Valid {
-		if len(retryDigest) != len(action.EmptyResponseRetry.RequestDigest) || !retryStartedAt.Valid {
-			return cardpublication_service.ProductAction{}, cardpublication_service.ErrProductActionConflict
+		if len(retryPayload) == 0 || !retryStartedAt.Valid {
+			return cardpublication_execution.ProductAction{}, cardpublication_service.ErrProductActionConflict
 		}
-		retry := cardpublication_service.ProductRetry{
+		retry := cardpublication_execution.ProductRetry{
 			ID:              retryID.Int64,
 			TransferID:      action.TransferID,
 			ActionID:        action.ActionID,
 			AuthorizationID: action.AuthorizationID,
 			StartedAt:       retryStartedAt.Time.UTC(),
 		}
-		copy(retry.RequestDigest[:], retryDigest)
+		retry.RequestPayload = append([]byte(nil), retryPayload...)
 		if retryFinishedAt.Valid {
 			retry.FinishedAt = retryFinishedAt.Time.UTC()
 		}
 		if retryDelivery.Valid {
-			retry.Delivery = cardpublication_service.SubmissionDelivery(retryDelivery.String)
+			retry.Delivery = cardpublication_execution.SubmissionDelivery(retryDelivery.String)
 		}
 		if retryHTTPStatus.Valid {
 			retry.HTTPStatus = int(retryHTTPStatus.Int32)
 		}
 		if retryDisposition.Valid {
-			retry.Disposition = cardpublication_service.SubmissionDisposition(retryDisposition.String)
+			retry.Disposition = cardpublication_execution.SubmissionDisposition(retryDisposition.String)
 		}
 		if retryClassifierVersion.Valid {
 			retry.ClassifierVersion = int(retryClassifierVersion.Int32)
@@ -247,14 +238,14 @@ func (repository *Repository) LockProductAction(
 	`
 	rows, err := tx.Query(ctx, membersQuery, candidate.TransferID, candidate.ActionID)
 	if err != nil {
-		return cardpublication_service.ProductAction{}, fmt.Errorf(
+		return cardpublication_execution.ProductAction{}, fmt.Errorf(
 			"lock publication product action members: %w",
 			err,
 		)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var member cardpublication_service.ProductActionMember
+		var member cardpublication_execution.ProductActionMember
 		var outcomeClass, outcomeCode pgtype.Text
 		var nmID pgtype.Int8
 		if err := rows.Scan(
@@ -267,13 +258,13 @@ func (repository *Repository) LockProductAction(
 			&outcomeCode,
 			&nmID,
 		); err != nil {
-			return cardpublication_service.ProductAction{}, fmt.Errorf(
+			return cardpublication_execution.ProductAction{}, fmt.Errorf(
 				"scan publication product action member: %w",
 				err,
 			)
 		}
 		if outcomeClass.Valid {
-			member.OutcomeClass = transfer_service.ResultClass(outcomeClass.String)
+			member.OutcomeClass = transfer_model.ResultClass(outcomeClass.String)
 		}
 		if outcomeCode.Valid {
 			member.OutcomeCode = outcomeCode.String
@@ -284,13 +275,13 @@ func (repository *Repository) LockProductAction(
 		action.Members = append(action.Members, member)
 	}
 	if err := rows.Err(); err != nil {
-		return cardpublication_service.ProductAction{}, err
+		return cardpublication_execution.ProductAction{}, err
 	}
 	if err := lockProductIdentities(ctx, tx, action); err != nil {
-		return cardpublication_service.ProductAction{}, err
+		return cardpublication_execution.ProductAction{}, err
 	}
 	if err := action.Validate(); err != nil {
-		return cardpublication_service.ProductAction{}, err
+		return cardpublication_execution.ProductAction{}, err
 	}
 	return action, nil
 }
@@ -299,7 +290,7 @@ func (repository *Repository) LockProductAction(
 func lockProductIdentities(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	action cardpublication_service.ProductAction,
+	action cardpublication_execution.ProductAction,
 ) error {
 	const query = `
 		SELECT vendor_code_key

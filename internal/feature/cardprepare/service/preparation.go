@@ -1,17 +1,16 @@
 package cardprepare_service
 
 import (
+	cardprepare_model "github.com/ERONIS/wb-service/internal/feature/cardprepare/service/model"
 	"github.com/ERONIS/wb-service/internal/feature/cardprepare/service/preparation"
+
 	"go.uber.org/zap"
 )
 
-type CatalogTransport = preparation.CatalogTransport
-type Preparer = preparation.Preparer
-
-func NewPreparer(transport CatalogTransport, loggers ...*zap.Logger) *Preparer {
+func NewPreparer(transport preparation.CatalogTransport, loggers ...*zap.Logger) *preparation.Preparer {
 	return preparation.NewPreparer(transport, loggers...)
 }
 
-func Prepare(group SourceGroup, snapshot CatalogSnapshot) (Result, error) {
+func Prepare(group cardprepare_model.SourceGroup, snapshot cardprepare_model.CatalogSnapshot) (cardprepare_model.Result, error) {
 	return preparation.Prepare(group, snapshot)
 }

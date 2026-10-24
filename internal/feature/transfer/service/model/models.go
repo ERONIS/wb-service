@@ -12,9 +12,6 @@ import (
 var ErrCapacityExceeded = core_errors.CapacityExceeded("transfer capacity exceeded")
 
 type TransferID int64
-type Digest = cardpipeline.Digest
-type SellerID = domain.SellerID
-type ClientGeneration = domain.ClientGeneration
 
 type Phase string
 
@@ -175,25 +172,22 @@ func (projection ItemTargetProjection) Validate() error {
 }
 
 type Transfer struct {
-	ID                     TransferID
-	BatchID                cardpipeline.BatchID
-	Phase                  Phase
-	Outcome                Outcome
-	AttentionCode          string
-	Revision               int64
-	BatchChecksum          cardpipeline.Digest
-	ItemsCount             int
-	GroupsCount            int
-	CohortName             string
-	TargetSnapshotRevision Digest
-	TargetSetRoot          Digest
-	TargetsCount           int
-	ItemTargetsCount       int64
-	GroupTargetsCount      int64
-	CreatedAt              time.Time
-	StartedAt              time.Time
-	FinishedAt             *time.Time
-	UpdatedAt              time.Time
+	ID                TransferID
+	BatchID           cardpipeline.BatchID
+	Phase             Phase
+	Outcome           Outcome
+	AttentionCode     string
+	Revision          int64
+	ItemsCount        int
+	GroupsCount       int
+	CohortName        string
+	TargetsCount      int
+	ItemTargetsCount  int64
+	GroupTargetsCount int64
+	CreatedAt         time.Time
+	StartedAt         time.Time
+	FinishedAt        *time.Time
+	UpdatedAt         time.Time
 }
 
 func (transfer Transfer) Validate() error {
@@ -257,12 +251,6 @@ func (transfer Transfer) Validate() error {
 		return invalidTransfer("finished time precedes started time")
 	case transfer.UpdatedAt.Before(transfer.CreatedAt):
 		return invalidTransfer("updated time precedes created time")
-	case isZeroDigest(transfer.TargetSnapshotRevision):
-		return invalidTransfer("target snapshot revision is empty")
-	case isZeroDigest(transfer.TargetSetRoot):
-		return invalidTransfer("target set root is empty")
-	case transfer.BatchChecksum == (cardpipeline.Digest{}):
-		return invalidTransfer("batch checksum is empty")
 	default:
 		return nil
 	}
@@ -270,14 +258,13 @@ func (transfer Transfer) Validate() error {
 
 type MutationTargetSnapshot struct {
 	CohortName string
-	Revision   Digest
 	Targets    []MutationTarget
 }
 
 type MutationTarget struct {
 	Position            int
-	SellerID            SellerID
-	ClientGeneration    ClientGeneration
+	SellerID            domain.SellerID
+	ClientGeneration    domain.ClientGeneration
 	BindingRevision     int64
 	CapabilityRevision  int64
 	ContentRead         bool
@@ -293,14 +280,11 @@ func (snapshot MutationTargetSnapshot) Validate(now time.Time) error {
 		snapshot.CohortName == "" || len(snapshot.CohortName) > 128 {
 		return invalidTargetSnapshot("cohort name is invalid")
 	}
-	if isZeroDigest(snapshot.Revision) {
-		return invalidTargetSnapshot("snapshot revision is empty")
-	}
 	if len(snapshot.Targets) == 0 {
 		return invalidTargetSnapshot("target list is empty")
 	}
 
-	sellers := make(map[SellerID]struct{}, len(snapshot.Targets))
+	sellers := make(map[domain.SellerID]struct{}, len(snapshot.Targets))
 	for index, target := range snapshot.Targets {
 		switch {
 		case target.Position != index+1:
@@ -326,10 +310,6 @@ func (snapshot MutationTargetSnapshot) Validate(now time.Time) error {
 	}
 
 	return nil
-}
-
-func isZeroDigest(digest Digest) bool {
-	return digest == Digest{}
 }
 
 func invalidTransfer(message string) error {

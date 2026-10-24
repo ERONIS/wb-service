@@ -6,16 +6,20 @@ import (
 	"errors"
 	"fmt"
 
+	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+	transfer_preparation "github.com/ERONIS/wb-service/internal/feature/transfer/service/preparation"
+	transfer_workflow "github.com/ERONIS/wb-service/internal/feature/transfer/service/workflow"
 )
 
 func (repository *Repository) ListPreparing(
 	ctx context.Context,
-	afterID transfer_service.TransferID,
+	afterID transfer_model.TransferID,
 	limit int,
-) ([]transfer_service.Transfer, error) {
+) ([]transfer_model.Transfer, error) {
 	const condition = `transfer.phase IN (
 				'preparing', 'awaiting_authorization', 'publishing',
 				'reconciling', 'media'
@@ -33,7 +37,7 @@ func (repository *Repository) ListPreparing(
 func (repository *Repository) BeginPreparation(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID transfer_service.TransferID,
+	transferID transfer_model.TransferID,
 ) error {
 	if tx == nil {
 		return errors.New("begin transfer preparation: DBTX is nil")
@@ -136,10 +140,10 @@ func validPreparationActivation(
 // ListPendingPreparationGroups выбирает порцию целевых групп переноса в статусе running для выполнения подготовки.
 func (repository *Repository) ListPendingPreparationGroups(
 	ctx context.Context,
-	transferID transfer_service.TransferID,
+	transferID transfer_model.TransferID,
 	limit int,
-	after transfer_service.PreparationPendingGroup,
-) ([]transfer_service.PreparationPendingGroup, error) {
+	after transfer_preparation.PreparationPendingGroup,
+) ([]transfer_preparation.PreparationPendingGroup, error) {
 	if transferID <= 0 || limit <= 0 || after.SourceGroupID < 0 || after.TargetID < 0 {
 		return nil, core_errors.ErrInvalidArgument
 	}
@@ -164,14 +168,14 @@ func (repository *Repository) ListPendingPreparationGroups(
 	}
 	defer rows.Close()
 
-	groups := make([]transfer_service.PreparationPendingGroup, 0)
+	groups := make([]transfer_preparation.PreparationPendingGroup, 0)
 	for rows.Next() {
-		var g transfer_service.PreparationPendingGroup
+		var g transfer_preparation.PreparationPendingGroup
 		var cab string
 		if err := rows.Scan(&g.GroupTargetID, &g.SourceGroupID, &g.TargetID, &cab); err != nil {
 			return nil, fmt.Errorf("scan pending transfer preparation group: %w", err)
 		}
-		g.SellerID = transfer_service.SellerID(cab)
+		g.SellerID = core_domain.SellerID(cab)
 		if err := g.Validate(); err != nil {
 			return nil, fmt.Errorf("validate pending transfer preparation group: %w", err)
 		}
@@ -185,9 +189,9 @@ func (repository *Repository) ListPendingPreparationGroups(
 
 func (repository *Repository) LoadPreparationSource(
 	ctx context.Context,
-	transferID transfer_service.TransferID,
+	transferID transfer_model.TransferID,
 	groupTargetID int64,
-) (transfer_service.PreparationSource, error) {
+) (transfer_preparation.PreparationSource, error) {
 	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 
@@ -221,14 +225,14 @@ func (repository *Repository) LoadPreparationSource(
 	`
 	rows, err := repository.pool.Query(ctx, query, transferID, groupTargetID)
 	if err != nil {
-		return transfer_service.PreparationSource{}, fmt.Errorf(
+		return transfer_preparation.PreparationSource{}, fmt.Errorf(
 			"query transfer preparation source: %w",
 			err,
 		)
 	}
 	defer rows.Close()
 
-	source := transfer_service.PreparationSource{
+	source := transfer_preparation.PreparationSource{
 		TransferID:    transferID,
 		GroupTargetID: groupTargetID,
 	}
@@ -237,7 +241,7 @@ func (repository *Repository) LoadPreparationSource(
 			sourceGroupID int64
 			targetID      int64
 			sellerID      string
-			item          transfer_service.PreparationSourceItem
+			item          transfer_preparation.PreparationSourceItem
 			payload       []byte
 		)
 		if err := rows.Scan(
@@ -249,7 +253,7 @@ func (repository *Repository) LoadPreparationSource(
 			&item.VendorCode,
 			&payload,
 		); err != nil {
-			return transfer_service.PreparationSource{}, fmt.Errorf(
+			return transfer_preparation.PreparationSource{}, fmt.Errorf(
 				"scan transfer preparation source: %w",
 				err,
 			)
@@ -257,16 +261,16 @@ func (repository *Repository) LoadPreparationSource(
 		if len(source.Items) == 0 {
 			source.SourceGroupID = sourceGroupID
 			source.TargetID = targetID
-			source.SellerID = transfer_service.SellerID(sellerID)
+			source.SellerID = core_domain.SellerID(sellerID)
 		} else if source.SourceGroupID != sourceGroupID ||
 			source.TargetID != targetID ||
-			source.SellerID != transfer_service.SellerID(sellerID) {
-			return transfer_service.PreparationSource{}, errors.New(
+			source.SellerID != core_domain.SellerID(sellerID) {
+			return transfer_preparation.PreparationSource{}, errors.New(
 				"transfer preparation source identity changed within result",
 			)
 		}
 		if err := json.Unmarshal(payload, &item.Card); err != nil {
-			return transfer_service.PreparationSource{}, fmt.Errorf(
+			return transfer_preparation.PreparationSource{}, fmt.Errorf(
 				"decode transfer preparation source payload: %w",
 				err,
 			)
@@ -274,13 +278,13 @@ func (repository *Repository) LoadPreparationSource(
 		source.Items = append(source.Items, item)
 	}
 	if err := rows.Err(); err != nil {
-		return transfer_service.PreparationSource{}, fmt.Errorf(
+		return transfer_preparation.PreparationSource{}, fmt.Errorf(
 			"iterate transfer preparation source: %w",
 			err,
 		)
 	}
 	if len(source.Items) == 0 {
-		return transfer_service.PreparationSource{}, fmt.Errorf(
+		return transfer_preparation.PreparationSource{}, fmt.Errorf(
 			"transfer preparation source ID='%d/%d': %w",
 			transferID,
 			groupTargetID,
@@ -288,9 +292,9 @@ func (repository *Repository) LoadPreparationSource(
 		)
 	}
 	if err := source.Validate(); err != nil {
-		return transfer_service.PreparationSource{}, err
+		return transfer_preparation.PreparationSource{}, err
 	}
 	return source, nil
 }
 
-var _ transfer_service.Repository = (*Repository)(nil)
+var _ transfer_workflow.Repository = (*Repository)(nil)

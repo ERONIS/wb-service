@@ -7,13 +7,14 @@ import (
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
+	cardpublication_resolution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/resolution"
 )
 
 func (repository *Repository) ApplyVerifiedCardResult(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	subject cardpublication_service.ManualResolutionSubject,
-	decision cardpublication_service.ManualResolutionDecision,
+	subject cardpublication_resolution.ManualResolutionSubject,
+	decision cardpublication_resolution.ManualResolutionDecision,
 ) error {
 	if tx == nil || decision.Kind != cardpublication_service.ManualMarkRemotePresent ||
 		decision.OutcomeClass != "success" || decision.OutcomeCode != "VERIFIED_IN_WB" ||
@@ -21,7 +22,7 @@ func (repository *Repository) ApplyVerifiedCardResult(
 		decision.EvidenceObservationID <= 0 {
 		return errors.New("verified card result is invalid")
 	}
-	command := cardpublication_service.ApplyManualResolutionCommand{
+	command := cardpublication_resolution.ApplyManualResolutionCommand{
 		Subject:  subject,
 		Decision: decision,
 	}
@@ -37,7 +38,7 @@ func (repository *Repository) ApplyVerifiedCardResult(
 	return reduceManualPublicationPlan(ctx, tx, subject.TransferID, subject.PlanID)
 }
 
-func resolutionActionCodes(command cardpublication_service.ApplyManualResolutionCommand) [4]string {
+func resolutionActionCodes(command cardpublication_resolution.ApplyManualResolutionCommand) [4]string {
 	if command.Decision.OutcomeCode == "VERIFIED_IN_WB" {
 		return [4]string{
 			"VERIFIED_IN_WB_REMAINS_UNRESOLVED",

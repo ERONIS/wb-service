@@ -6,6 +6,7 @@ import (
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
 
 // Общие SQL-фрагменты агрегации результатов групп и расчёта мастер-исходов переноса.
@@ -81,7 +82,7 @@ const (
 func advanceTransferAfterPreparation(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID transfer_service.TransferID,
+	transferID transfer_model.TransferID,
 ) error {
 	query := fmt.Sprintf(`
 		WITH %s
@@ -135,7 +136,7 @@ func advanceTransferAfterPreparation(
 func finishPublicationTransfer(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID transfer_service.TransferID,
+	transferID transfer_model.TransferID,
 ) error {
 	finish := fmt.Sprintf(`
 		WITH %s
@@ -176,7 +177,7 @@ func finishPublicationTransfer(
 func reduceTransferAfterPlanning(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID transfer_service.TransferID,
+	transferID transfer_model.TransferID,
 ) error {
 	reduceTransfer := fmt.Sprintf(`
 		WITH %s, item_counts AS (

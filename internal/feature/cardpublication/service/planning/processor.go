@@ -7,9 +7,12 @@ import (
 	"sort"
 	"sync"
 
+	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
-	cardprepare_service "github.com/ERONIS/wb-service/internal/feature/cardprepare/service"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	cardprepare_model "github.com/ERONIS/wb-service/internal/feature/cardprepare/service/model"
+	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
@@ -22,7 +25,7 @@ type Processor struct {
 	repository     Repository
 	transferSource TransferSource
 	proposalReader ProposalReader
-	catalogReader  *CatalogReader
+	catalogReader  *cardpublication_catalog.CatalogReader
 	planner        *Planner
 	saver          *Saver
 	logger         *zap.Logger
@@ -33,7 +36,7 @@ func NewProcessor(
 	repository Repository,
 	transferSource TransferSource,
 	proposalReader ProposalReader,
-	catalogReader *CatalogReader,
+	catalogReader *cardpublication_catalog.CatalogReader,
 	planner *Planner,
 	saver *Saver,
 	loggers ...*zap.Logger,
@@ -64,7 +67,7 @@ func (processor *Processor) ProcessPendingWithNotify(ctx context.Context, onProg
 	processor.processMu.Lock()
 	defer processor.processMu.Unlock()
 
-	var afterID transfer_service.TransferID
+	var afterID transfer_model.TransferID
 	var firstErr error
 	for {
 		transfers, err := processor.transferSource.ListAwaitingAuthorization(
@@ -101,7 +104,7 @@ func (processor *Processor) ProcessPendingWithNotify(ctx context.Context, onProg
 
 func (processor *Processor) processTransfer(
 	ctx context.Context,
-	transfer transfer_service.Transfer,
+	transfer transfer_model.Transfer,
 ) (bool, error) {
 	source, err := processor.transferSource.LoadPublicationPlanningSource(
 		ctx,
@@ -113,12 +116,11 @@ func (processor *Processor) processTransfer(
 	if len(source.Groups) == 0 {
 		return false, nil
 	}
-	queries := make([]cardprepare_service.ProposalQuery, len(source.Groups))
+	queries := make([]cardprepare_model.ProposalQuery, len(source.Groups))
 	for index, sourceGroup := range source.Groups {
-		queries[index] = cardprepare_service.ProposalQuery{
+		queries[index] = cardprepare_model.ProposalQuery{
 			TransferID:    transfer.ID,
 			GroupTargetID: sourceGroup.GroupTargetID,
-			ProposalRoot:  cardprepare_service.Digest(sourceGroup.ProposalRoot),
 		}
 	}
 	proposals, err := processor.proposalReader.LoadProposals(ctx, queries)
@@ -139,9 +141,9 @@ func (processor *Processor) processTransfer(
 	}
 
 	vendorCodesByTarget := make(map[int64][]string)
-	cabinetByTarget := make(map[int64]SellerID)
+	cabinetByTarget := make(map[int64]core_domain.SellerID)
 	for _, group := range source.Groups {
-		sellerID := SellerID(group.SellerID)
+		sellerID := core_domain.SellerID(group.SellerID)
 		if existing, ok := cabinetByTarget[group.TargetID]; ok && existing != sellerID {
 			return false, errors.New("publication target has multiple cabinets")
 		}
@@ -154,13 +156,13 @@ func (processor *Processor) processTransfer(
 		}
 	}
 
-	observations := make(map[int64]CatalogObservation, len(vendorCodesByTarget))
+	observations := make(map[int64]cardpublication_catalog.CatalogObservation, len(vendorCodesByTarget))
 	targetIDs := make([]int64, 0, len(vendorCodesByTarget))
 	for targetID := range vendorCodesByTarget {
 		targetIDs = append(targetIDs, targetID)
 	}
 	sort.Slice(targetIDs, func(left, right int) bool { return targetIDs[left] < targetIDs[right] })
-	loadedObservations := make([]CatalogObservation, len(targetIDs))
+	loadedObservations := make([]cardpublication_catalog.CatalogObservation, len(targetIDs))
 	group, readCtx := errgroup.WithContext(ctx)
 	for index, targetID := range targetIDs {
 		index, targetID := index, targetID

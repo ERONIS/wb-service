@@ -9,6 +9,7 @@ import (
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
+	core_credentials "github.com/ERONIS/wb-service/internal/core/transport/wb/credentials"
 	wbcabinet_service "github.com/ERONIS/wb-service/internal/feature/wbcabinet/service"
 
 	"github.com/jackc/pgx/v5"
@@ -61,7 +62,7 @@ func (repository *Repository) FindByOwnerAndName(
 func (repository *Repository) GetByOwner(
 	ctx context.Context,
 	ownerTelegramID int64,
-	sellerID wbcabinet_service.SellerID,
+	sellerID domain.SellerID,
 ) (wbcabinet_service.Cabinet, error) {
 	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
@@ -283,20 +284,20 @@ func (repository *Repository) ListStored(
 func (repository *Repository) ListTargets(
 	ctx context.Context,
 	ownerTelegramID int64,
-) ([]wbcabinet_service.TargetCredential, error) {
+) ([]domain.CabinetAccess, error) {
 	return repository.listTargets(ctx, &ownerTelegramID, nil)
 }
 
 func (repository *Repository) ListTargetsByOwnerRole(
 	ctx context.Context,
 	role domain.UserRole,
-) ([]wbcabinet_service.TargetCredential, error) {
+) ([]domain.CabinetAccess, error) {
 	return repository.listTargets(ctx, nil, &role)
 }
 
 func (repository *Repository) ListAllTargets(
 	ctx context.Context,
-) ([]wbcabinet_service.TargetCredential, error) {
+) ([]domain.CabinetAccess, error) {
 	return repository.listTargets(ctx, nil, nil)
 }
 
@@ -304,7 +305,7 @@ func (repository *Repository) listTargets(
 	ctx context.Context,
 	ownerTelegramID *int64,
 	ownerRole *domain.UserRole,
-) ([]wbcabinet_service.TargetCredential, error) {
+) ([]domain.CabinetAccess, error) {
 	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 	query := `
@@ -335,13 +336,13 @@ func (repository *Repository) listTargets(
 		return nil, fmt.Errorf("list active WB cabinet targets: %w", err)
 	}
 	defer rows.Close()
-	result := make([]wbcabinet_service.TargetCredential, 0, 16)
+	result := make([]domain.CabinetAccess, 0, 16)
 	for rows.Next() {
 		cabinet, err := scanCabinet(rows)
 		if err != nil {
 			return nil, fmt.Errorf("scan active WB cabinet target: %w", err)
 		}
-		result = append(result, wbcabinet_service.TargetCredential{
+		result = append(result, domain.CabinetAccess{
 			SellerID:            cabinet.ID,
 			BindingRevision:     cabinet.BindingRevision,
 			CapabilityRevision:  cabinet.CapabilityRevision,
@@ -356,7 +357,7 @@ func (repository *Repository) listTargets(
 
 func (repository *Repository) MarkStatus(
 	ctx context.Context,
-	sellerID wbcabinet_service.SellerID,
+	sellerID domain.SellerID,
 	status wbcabinet_service.Status,
 ) error {
 	if !status.IsValid() {
@@ -382,7 +383,7 @@ func (repository *Repository) MarkStatus(
 func (repository *Repository) DeleteByOwner(
 	ctx context.Context,
 	ownerTelegramID int64,
-	sellerID wbcabinet_service.SellerID,
+	sellerID domain.SellerID,
 ) error {
 	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
@@ -441,7 +442,7 @@ func scanCabinetRow(row rowScanner, withToken bool) (wbcabinet_service.Cabinet, 
 	if tokenProperties < 0 {
 		return wbcabinet_service.Cabinet{}, "", errors.New("stored WB token properties are negative")
 	}
-	cabinet.TokenProperties = wbcabinet_service.TokenProperties(tokenProperties)
+	cabinet.TokenProperties = core_credentials.TokenProperties(tokenProperties)
 	if err := setClientGeneration(&cabinet, clientGeneration); err != nil {
 		return wbcabinet_service.Cabinet{}, "", err
 	}

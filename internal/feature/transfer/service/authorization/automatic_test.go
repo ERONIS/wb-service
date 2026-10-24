@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
 
 type authorizationPlanPageCall struct {
-	transferID TransferID
+	transferID transfer_model.TransferID
 	planID     int64
 }
 
@@ -22,7 +24,7 @@ type failingAutomaticAuthorization struct {
 
 func (source *authorizationPlanPageSource) ListAutomaticAuthorizationPlans(
 	_ context.Context,
-	afterTransferID TransferID,
+	afterTransferID transfer_model.TransferID,
 	afterPlanID int64,
 	limit int,
 ) ([]AuthorizationPlanSummary, error) {
@@ -48,7 +50,7 @@ func (authorization *failingAutomaticAuthorization) Authorize(
 	_ LiveTrustedActor,
 	command RequestLiveCommand,
 ) (LiveAuthorization, error) {
-	planID := int64(command.PlanDigest[0])
+	planID := command.PlanID
 	authorization.attempts = append(authorization.attempts, planID)
 	if planID <= automaticAuthorizationPageSize {
 		return LiveAuthorization{}, errors.New("temporary authorization failure")
@@ -59,13 +61,9 @@ func (authorization *failingAutomaticAuthorization) Authorize(
 func TestAutomaticAuthorizationAdvancesPastFailingPage(t *testing.T) {
 	source := &authorizationPlanPageSource{}
 	for planID := int64(1); planID <= automaticAuthorizationPageSize+1; planID++ {
-		var digest Digest
-		digest[0] = byte(planID)
 		source.plans = append(source.plans, AuthorizationPlanSummary{
 			TransferID:       1,
 			PlanID:           planID,
-			PlanDigest:       digest,
-			TargetSetRoot:    Digest{1},
 			TargetsCount:     1,
 			AuthorTelegramID: 1,
 		})

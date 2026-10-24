@@ -12,7 +12,13 @@ import (
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
+	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
+	cardpublication_model "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/model"
+	cardpublication_monitoring "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/monitoring"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_authorization "github.com/ERONIS/wb-service/internal/feature/transfer/service/authorization"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+	transfer_publication "github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
 )
 
 const submissionClassifierVersion = 1
@@ -33,14 +39,13 @@ var (
 )
 
 type ProductActionCandidate struct {
-	TransferID            transfer_service.TransferID
+	TransferID            transfer_model.TransferID
+	PlanID                int64
 	ActionID              int64
 	TargetID              int64
-	SellerID              SellerID
-	AuthorizationID       transfer_service.LiveAuthorizationID
+	SellerID              domain.SellerID
+	AuthorizationID       transfer_authorization.LiveAuthorizationID
 	AuthorizationRevision int64
-	PlanDigest            Digest
-	TargetSetRoot         Digest
 	CatalogVendorCodes    []string
 }
 
@@ -50,7 +55,7 @@ type ProductActionMember struct {
 	TransferItemTargetID int64
 	RequestMemberIndex   int
 	VendorCode           string
-	OutcomeClass         transfer_service.ResultClass
+	OutcomeClass         transfer_model.ResultClass
 	OutcomeCode          string
 	NMID                 int64
 }
@@ -62,13 +67,10 @@ type AbortedProductAction struct {
 
 type ProductAction struct {
 	ProductActionCandidate
-	PlanID                 int64
 	Revision               int64
-	Kind                   ActionKind
+	Kind                   cardpublication_model.ActionKind
 	State                  string
-	RequestDigest          Digest
 	RequestPayload         []byte
-	MemberSetDigest        Digest
 	SellerID               domain.SellerID
 	ClientGeneration       domain.ClientGeneration
 	CredentialExpiresAt    time.Time
@@ -87,10 +89,8 @@ type ProductAction struct {
 func (action ProductAction) Validate() error {
 	if action.TransferID <= 0 || action.ActionID <= 0 || action.TargetID <= 0 ||
 		action.SellerID.Validate() != nil || action.AuthorizationID <= 0 ||
-		action.AuthorizationRevision < 0 || action.PlanDigest == (Digest{}) ||
-		action.TargetSetRoot == (Digest{}) || action.PlanID <= 0 ||
-		action.Revision < 0 || action.RequestDigest == (Digest{}) ||
-		action.MemberSetDigest == (Digest{}) || len(action.RequestPayload) == 0 ||
+		action.AuthorizationRevision < 0 || action.PlanID <= 0 ||
+		action.Revision < 0 || len(action.RequestPayload) == 0 ||
 		action.ClientGeneration.IsZero() ||
 		action.CredentialExpiresAt.IsZero() || action.PreflightObservationID <= 0 ||
 		len(action.Members) == 0 {
@@ -117,9 +117,6 @@ func (action ProductAction) Validate() error {
 			(member.OutcomeClass == transfer_service.ResultSuccess && member.NMID <= 0) {
 			return fmt.Errorf("terminal publication product member at index %d is invalid", index)
 		}
-	}
-	if digestParts("cardpublication-request:v1", action.RequestPayload) != action.RequestDigest {
-		return errors.New("publication product request digest differs")
 	}
 	requestVendorCodes := make([]string, 0, len(action.Members))
 	switch action.Kind {
@@ -194,14 +191,14 @@ func (action ProductAction) PendingVendorCodes() []string {
 }
 
 type TargetedRecheck struct {
-	Observation ObservationDraft
+	Observation cardpublication_model.ObservationDraft
 	Stable      bool
 	SafeCode    string
 }
 
 func BuildTargetedRecheck(
 	action ProductAction,
-	observation CatalogObservation,
+	observation cardpublication_catalog.CatalogObservation,
 ) (TargetedRecheck, error) {
 	if err := action.Validate(); err != nil {
 		return TargetedRecheck{}, err
@@ -232,7 +229,7 @@ func BuildTargetedRecheck(
 			relevantTrash = append(relevantTrash, card)
 		}
 	}
-	targeted := CatalogObservation{
+	targeted := cardpublication_catalog.CatalogObservation{
 		TargetID:   observation.TargetID,
 		SellerID:   observation.SellerID,
 		Normal:     relevantNormal,
@@ -274,20 +271,19 @@ func productDecisionStillStable(
 
 type ProductAttempt struct {
 	ID                   int64
-	TransferID           transfer_service.TransferID
+	TransferID           transfer_model.TransferID
 	ActionID             int64
-	AuthorizationID      transfer_service.LiveAuthorizationID
+	AuthorizationID      transfer_authorization.LiveAuthorizationID
 	RecheckObservationID int64
-	RequestDigest        Digest
 	StartedAt            time.Time
 }
 
 type ProductRetry struct {
 	ID                int64
-	TransferID        transfer_service.TransferID
+	TransferID        transfer_model.TransferID
 	ActionID          int64
-	AuthorizationID   transfer_service.LiveAuthorizationID
-	RequestDigest     Digest
+	AuthorizationID   transfer_authorization.LiveAuthorizationID
+	RequestPayload    []byte
 	StartedAt         time.Time
 	FinishedAt        time.Time
 	Delivery          SubmissionDelivery
@@ -316,7 +312,7 @@ const (
 
 type MemberSubmissionResult struct {
 	ActionMemberID int64
-	OutcomeClass   transfer_service.ResultClass
+	OutcomeClass   transfer_model.ResultClass
 	OutcomeCode    string
 }
 
@@ -332,8 +328,8 @@ type SubmissionResult struct {
 
 type BeginProductAttemptCommand struct {
 	Action               ProductAction
-	Authorization        transfer_service.LiveAuthorizationEvidence
-	Baseline             ErrorBaseline
+	Authorization        transfer_authorization.LiveAuthorizationEvidence
+	Baseline             cardpublication_monitoring.ErrorBaseline
 	RecheckObservationID int64
 }
 
@@ -363,7 +359,7 @@ type ErrorBatchMatch struct {
 
 type MemberReconciliationResult struct {
 	ActionMemberID   int64
-	OutcomeClass     transfer_service.ResultClass
+	OutcomeClass     transfer_model.ResultClass
 	OutcomeCode      string
 	NMID             int64
 	IMTID            int64
@@ -392,15 +388,15 @@ type ProductJournalRepository interface {
 	InsertActionObservation(
 		ctx context.Context,
 		tx core_postgres_transaction.DBTX,
-		transferID transfer_service.TransferID,
+		transferID transfer_model.TransferID,
 		kind string,
-		observation ObservationDraft,
+		observation cardpublication_model.ObservationDraft,
 	) (int64, error)
 
 	PlanAttemptCount(
 		ctx context.Context,
 		tx core_postgres_transaction.DBTX,
-		transferID transfer_service.TransferID,
+		transferID transfer_model.TransferID,
 		planID int64,
 	) (int, error)
 
@@ -465,7 +461,7 @@ type ProductJournalRepository interface {
 	PublicationPlanTerminal(
 		ctx context.Context,
 		tx core_postgres_transaction.DBTX,
-		transferID transfer_service.TransferID,
+		transferID transfer_model.TransferID,
 		planID int64,
 	) (bool, error)
 
@@ -475,7 +471,7 @@ type ProductJournalRepository interface {
 		action ProductAction,
 		postObservationID int64,
 		memberResults []MemberReconciliationResult,
-		actionClass transfer_service.ResultClass,
+		actionClass transfer_model.ResultClass,
 		actionCode string,
 	) error
 
@@ -487,28 +483,28 @@ type ProductJournalRepository interface {
 }
 
 type PublicationExecutionResultApplier interface {
-	BeginWithin(context.Context, core_postgres_transaction.DBTX, transfer_service.TransferID) error
-	MarkReconcilingWithin(context.Context, core_postgres_transaction.DBTX, transfer_service.TransferID) error
-	BeginMediaWithin(context.Context, core_postgres_transaction.DBTX, transfer_service.TransferID) error
+	BeginWithin(context.Context, core_postgres_transaction.DBTX, transfer_model.TransferID) error
+	MarkReconcilingWithin(context.Context, core_postgres_transaction.DBTX, transfer_model.TransferID) error
+	BeginMediaWithin(context.Context, core_postgres_transaction.DBTX, transfer_model.TransferID) error
 	ApplyWithin(
 		context.Context,
 		core_postgres_transaction.DBTX,
-		transfer_service.ApplyPublicationActionResultCommand,
+		transfer_publication.ApplyPublicationActionResultCommand,
 	) error
 	ApplyMediaWithin(
 		context.Context,
 		core_postgres_transaction.DBTX,
-		transfer_service.ApplyPublicationMediaResultCommand,
+		transfer_publication.ApplyPublicationMediaResultCommand,
 	) error
 	CorrectWithin(
 		context.Context,
 		core_postgres_transaction.DBTX,
-		transfer_service.CorrectPublicationItemResultCommand,
+		transfer_publication.CorrectPublicationItemResultCommand,
 	) error
 	ResetPlanningWithin(
 		context.Context,
 		core_postgres_transaction.DBTX,
-		transfer_service.TransferID,
+		transfer_model.TransferID,
 		int64,
 	) error
 }
@@ -517,16 +513,16 @@ type LiveAuthorizationVerifier interface {
 	LockValid(
 		context.Context,
 		core_postgres_transaction.DBTX,
-		transfer_service.LiveAuthorizationCheck,
-	) (transfer_service.LiveAuthorizationEvidence, error)
+		transfer_authorization.LiveAuthorizationCheck,
+	) (transfer_authorization.LiveAuthorizationEvidence, error)
 	SupersedeWithin(
 		context.Context,
 		core_postgres_transaction.DBTX,
-		transfer_service.ChangeLiveAuthorizationStateCommand,
-	) (transfer_service.LiveAuthorization, error)
+		transfer_authorization.ChangeLiveAuthorizationStateCommand,
+	) (transfer_authorization.LiveAuthorization, error)
 	CloseWithin(
 		context.Context,
 		core_postgres_transaction.DBTX,
-		transfer_service.ChangeLiveAuthorizationStateCommand,
-	) (transfer_service.LiveAuthorization, error)
+		transfer_authorization.ChangeLiveAuthorizationStateCommand,
+	) (transfer_authorization.LiveAuthorization, error)
 }

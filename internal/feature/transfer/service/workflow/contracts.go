@@ -3,8 +3,12 @@ package workflow
 import (
 	"context"
 
+	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+	transfer_preparation "github.com/ERONIS/wb-service/internal/feature/transfer/service/preparation"
+	transfer_publication "github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
 )
 
 type BatchHeaderReader interface {
@@ -30,68 +34,67 @@ type BatchReader interface {
 }
 
 type TargetRegistry interface {
-	MutationSnapshot(ctx context.Context, ownerTelegramID int64) (MutationTargetSnapshot, error)
-	FanoutMutationSnapshot(context.Context) (MutationTargetSnapshot, error)
+	MutationSnapshot(ctx context.Context, ownerTelegramID int64) (transfer_model.MutationTargetSnapshot, error)
+	FanoutMutationSnapshot(context.Context) (transfer_model.MutationTargetSnapshot, error)
 	MutationSnapshotForOwner(
 		ctx context.Context,
 		ownerTelegramID int64,
-		sellerIDs []SellerID,
-	) (MutationTargetSnapshot, error)
-	AllTargets(context.Context) ([]MutationTarget, error)
+		sellerIDs []core_domain.SellerID,
+	) (transfer_model.MutationTargetSnapshot, error)
+	AllTargets(context.Context) ([]transfer_model.MutationTarget, error)
 }
 
 type CreateTransfer struct {
-	Batch         cardpipeline.ReadyBatchHeader
-	Snapshot      MutationTargetSnapshot
-	TargetSetRoot Digest
-	Capacity      Capacity
+	Batch    cardpipeline.ReadyBatchHeader
+	Snapshot transfer_model.MutationTargetSnapshot
+	Capacity transfer_model.Capacity
 }
 
 type Repository interface {
 	FindByID(
 		ctx context.Context,
-		transferID TransferID,
-	) (Transfer, error)
+		transferID transfer_model.TransferID,
+	) (transfer_model.Transfer, error)
 
 	FindByBatch(
 		ctx context.Context,
 		batchID cardpipeline.BatchID,
-	) (Transfer, error)
+	) (transfer_model.Transfer, error)
 
 	ListTargetSellerIDs(
 		ctx context.Context,
-		transferID TransferID,
-	) ([]SellerID, error)
+		transferID transfer_model.TransferID,
+	) ([]core_domain.SellerID, error)
 
 	ListTargetSellerIDsWithin(
 		ctx context.Context,
 		tx core_postgres_transaction.DBTX,
-		transferID TransferID,
-	) ([]SellerID, error)
+		transferID transfer_model.TransferID,
+	) ([]core_domain.SellerID, error)
 
 	Create(
 		ctx context.Context,
 		tx core_postgres_transaction.DBTX,
 		command CreateTransfer,
-	) (transfer Transfer, created bool, err error)
+	) (transfer transfer_model.Transfer, created bool, err error)
 
 	ListInitializing(
 		ctx context.Context,
-		afterID TransferID,
+		afterID transfer_model.TransferID,
 		limit int,
-	) ([]Transfer, error)
+	) ([]transfer_model.Transfer, error)
 
 	ListPreparing(
 		ctx context.Context,
-		afterID TransferID,
+		afterID transfer_model.TransferID,
 		limit int,
-	) ([]Transfer, error)
+	) ([]transfer_model.Transfer, error)
 
 	ListAwaitingAuthorization(
 		ctx context.Context,
-		afterID TransferID,
+		afterID transfer_model.TransferID,
 		limit int,
-	) ([]Transfer, error)
+	) ([]transfer_model.Transfer, error)
 
 	Initialize(
 		ctx context.Context,
@@ -102,31 +105,31 @@ type Repository interface {
 	MarkInitializationFailed(
 		ctx context.Context,
 		tx core_postgres_transaction.DBTX,
-		transferID TransferID,
+		transferID transfer_model.TransferID,
 		failureCode string,
 	) error
 
 	BeginPreparation(
 		ctx context.Context,
 		tx core_postgres_transaction.DBTX,
-		transferID TransferID,
+		transferID transfer_model.TransferID,
 	) error
 
 	ListPendingPreparationGroups(
 		ctx context.Context,
-		transferID TransferID,
+		transferID transfer_model.TransferID,
 		limit int,
-		after PreparationPendingGroup,
-	) ([]PreparationPendingGroup, error)
+		after transfer_preparation.PreparationPendingGroup,
+	) ([]transfer_preparation.PreparationPendingGroup, error)
 
 	LoadPreparationSource(
 		ctx context.Context,
-		transferID TransferID,
+		transferID transfer_model.TransferID,
 		groupTargetID int64,
-	) (PreparationSource, error)
+	) (transfer_preparation.PreparationSource, error)
 
 	LoadPublicationPlanningSource(
 		ctx context.Context,
-		transferID TransferID,
-	) (PublicationPlanningSource, error)
+		transferID transfer_model.TransferID,
+	) (transfer_publication.PublicationPlanningSource, error)
 }

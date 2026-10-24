@@ -3,55 +3,56 @@ package preparation
 import (
 	"context"
 
+	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 )
 
 type CatalogTransport interface {
-	CardsLimits(context.Context, SellerID) (contentapi.CardsLimitsResponse, error)
+	CardsLimits(context.Context, core_domain.SellerID) (contentapi.CardsLimitsResponse, error)
 	Subjects(
 		context.Context,
-		SellerID,
+		core_domain.SellerID,
 		contentapi.SubjectsQuery,
 	) (contentapi.SubjectsResponse, error)
 	SubjectCharacteristics(
 		context.Context,
-		SellerID,
+		core_domain.SellerID,
 		int64,
 		contentapi.SubjectCharacteristicsQuery,
 	) (contentapi.SubjectCharacteristicsResponse, error)
 	Brands(
 		context.Context,
-		SellerID,
+		core_domain.SellerID,
 		contentapi.BrandsQuery,
 	) (contentapi.BrandsResponse, error)
 	Colors(
 		context.Context,
-		SellerID,
+		core_domain.SellerID,
 		contentapi.DirectoryQuery,
 	) (contentapi.DirectoryColorsResponse, error)
 	Kinds(
 		context.Context,
-		SellerID,
+		core_domain.SellerID,
 		contentapi.DirectoryQuery,
 	) (contentapi.DirectoryKindsResponse, error)
 	Countries(
 		context.Context,
-		SellerID,
+		core_domain.SellerID,
 		contentapi.DirectoryQuery,
 	) (contentapi.DirectoryCountriesResponse, error)
 	Seasons(
 		context.Context,
-		SellerID,
+		core_domain.SellerID,
 		contentapi.DirectoryQuery,
 	) (contentapi.DirectorySeasonsResponse, error)
 	VAT(
 		context.Context,
-		SellerID,
+		core_domain.SellerID,
 		contentapi.DirectoryQuery,
 	) (contentapi.DirectoryVATResponse, error)
 	TNVED(
 		context.Context,
-		SellerID,
+		core_domain.SellerID,
 		contentapi.DirectoryTNVEDQuery,
 	) (contentapi.DirectoryTNVEDResponse, error)
 }

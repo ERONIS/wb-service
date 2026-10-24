@@ -1,15 +1,15 @@
 package transfer_postgres_repository
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"time"
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_authorization "github.com/ERONIS/wb-service/internal/feature/transfer/service/authorization"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -19,12 +19,9 @@ const liveAuthorizationColumns = `
 	live_auth.id,
 	live_auth.transfer_id,
 	live_auth.plan_id,
-	live_auth.plan_digest,
-	live_auth.target_set_root,
 	live_auth.revision,
 	live_auth.state,
 	live_auth.trusted_actor_id,
-	live_auth.trusted_actor_digest,
 	live_auth.trusted_actor_name,
 	live_auth.requested_at,
 	live_auth.approved_at,
@@ -41,37 +38,33 @@ func (repository *Repository) RequestLive(
 	tx core_postgres_transaction.DBTX,
 	now time.Time,
 	expiresAt time.Time,
-	actor transfer_service.LiveTrustedActor,
-	actorDigest transfer_service.Digest,
-	command transfer_service.RequestLiveCommand,
-	commandDigest transfer_service.Digest,
-	plan transfer_service.AuthorizationPlanSummary,
-) (transfer_service.LiveAuthorization, error) {
+	actor transfer_authorization.LiveTrustedActor,
+	command transfer_authorization.RequestLiveCommand,
+	plan transfer_authorization.AuthorizationPlanSummary,
+) (transfer_authorization.LiveAuthorization, error) {
 	if replay, found, err := loadLiveCommandReplay(
 		ctx,
 		tx,
 		now,
 		"request",
 		command.IdempotencyKey,
-		actorDigest,
-		commandDigest,
+		liveCommandIdentity{actorID: actor.TelegramUserID, planID: command.PlanID},
 	); err != nil || found {
 		return replay, err
 	}
 	open, found, err := lockOpenLiveAuthorization(ctx, tx, command.TransferID, plan.PlanID)
 	if err != nil {
-		return transfer_service.LiveAuthorization{}, err
+		return transfer_authorization.LiveAuthorization{}, err
 	}
 	if found {
 		open, expired, err := expireLiveAuthorization(ctx, tx, now, open)
 		if err != nil {
-			return transfer_service.LiveAuthorization{}, err
+			return transfer_authorization.LiveAuthorization{}, err
 		}
 		if !expired {
-			if open.PlanDigest != command.PlanDigest ||
-				open.TrustedActorID != actor.TelegramUserID ||
-				open.TrustedActorDigest != actorDigest {
-				return transfer_service.LiveAuthorization{}, transfer_service.ErrLiveAuthorization
+			if open.PlanID != command.PlanID ||
+				open.TrustedActorID != actor.TelegramUserID {
+				return transfer_authorization.LiveAuthorization{}, transfer_service.ErrLiveAuthorization
 			}
 			if err := insertLiveCommand(
 				ctx,
@@ -79,10 +72,9 @@ func (repository *Repository) RequestLive(
 				open,
 				"request",
 				command.IdempotencyKey,
-				actorDigest,
-				commandDigest,
+				liveCommandIdentity{actorID: actor.TelegramUserID, planID: command.PlanID},
 			); err != nil {
-				return transfer_service.LiveAuthorization{}, err
+				return transfer_authorization.LiveAuthorization{}, err
 			}
 			return open, nil
 		}
@@ -92,17 +84,14 @@ func (repository *Repository) RequestLive(
 		INSERT INTO wb.transfer_live_authorizations AS live_auth (
 			transfer_id,
 			plan_id,
-			plan_digest,
-			target_set_root,
 			trusted_actor_id,
-			trusted_actor_digest,
 			trusted_actor_name,
 			requested_at,
 			expires_at,
 			created_at,
 			updated_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $8, $8)
+		VALUES ($1, $2, $3, $4, $5, $6, $5, $5)
 		RETURNING ` + liveAuthorizationColumns + `;
 	`
 	authorization, err := scanLiveAuthorization(tx.QueryRow(
@@ -110,16 +99,13 @@ func (repository *Repository) RequestLive(
 		insert,
 		command.TransferID,
 		plan.PlanID,
-		command.PlanDigest[:],
-		plan.TargetSetRoot[:],
 		actor.TelegramUserID,
-		actorDigest[:],
 		actor.DisplayName,
 		now,
 		expiresAt,
 	))
 	if err != nil {
-		return transfer_service.LiveAuthorization{}, fmt.Errorf(
+		return transfer_authorization.LiveAuthorization{}, fmt.Errorf(
 			"insert live authorization: %w",
 			err,
 		)
@@ -130,10 +116,9 @@ func (repository *Repository) RequestLive(
 		authorization,
 		"request",
 		command.IdempotencyKey,
-		actorDigest,
-		commandDigest,
+		liveCommandIdentity{actorID: actor.TelegramUserID, planID: command.PlanID},
 	); err != nil {
-		return transfer_service.LiveAuthorization{}, err
+		return transfer_authorization.LiveAuthorization{}, err
 	}
 	return authorization, nil
 }
@@ -142,40 +127,36 @@ func (repository *Repository) ApproveLive(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
 	now time.Time,
-	actor transfer_service.LiveTrustedActor,
-	actorDigest transfer_service.Digest,
-	command transfer_service.ApproveLiveCommand,
-	commandDigest transfer_service.Digest,
-) (transfer_service.LiveAuthorization, error) {
+	actor transfer_authorization.LiveTrustedActor,
+	command transfer_authorization.ApproveLiveCommand,
+) (transfer_authorization.LiveAuthorization, error) {
 	if replay, found, err := loadLiveCommandReplay(
 		ctx,
 		tx,
 		now,
 		"approve",
 		command.IdempotencyKey,
-		actorDigest,
-		commandDigest,
+		liveCommandIdentity{actorID: actor.TelegramUserID, planID: command.ExpectedPlanID, authorizationID: command.AuthorizationID, expectedRevision: command.ExpectedRevision},
 	); err != nil || found {
 		return replay, err
 	}
 	authorization, err := lockLiveAuthorization(ctx, tx, command.AuthorizationID)
 	if err != nil {
-		return transfer_service.LiveAuthorization{}, err
+		return transfer_authorization.LiveAuthorization{}, err
 	}
 	authorization, expired, err := expireLiveAuthorization(ctx, tx, now, authorization)
 	if err != nil {
-		return transfer_service.LiveAuthorization{}, err
+		return transfer_authorization.LiveAuthorization{}, err
 	}
 	if expired {
 		return authorization, nil
 	}
 	if authorization.TransferID != command.TransferID ||
 		authorization.Revision != command.ExpectedRevision ||
-		authorization.PlanDigest != command.ExpectedPlanDigest ||
+		authorization.PlanID != command.ExpectedPlanID ||
 		authorization.TrustedActorID != actor.TelegramUserID ||
-		authorization.TrustedActorDigest != actorDigest ||
 		authorization.State != transfer_service.LiveAuthorizationRequested {
-		return transfer_service.LiveAuthorization{}, transfer_service.ErrLiveAuthorization
+		return transfer_authorization.LiveAuthorization{}, transfer_service.ErrLiveAuthorization
 	}
 
 	const approve = `
@@ -197,7 +178,7 @@ func (repository *Repository) ApproveLive(
 		command.ExpectedRevision,
 	))
 	if err != nil {
-		return transfer_service.LiveAuthorization{}, fmt.Errorf(
+		return transfer_authorization.LiveAuthorization{}, fmt.Errorf(
 			"approve live authorization: %w",
 			err,
 		)
@@ -208,10 +189,9 @@ func (repository *Repository) ApproveLive(
 		authorization,
 		"approve",
 		command.IdempotencyKey,
-		actorDigest,
-		commandDigest,
+		liveCommandIdentity{actorID: actor.TelegramUserID, planID: command.ExpectedPlanID, authorizationID: command.AuthorizationID, expectedRevision: command.ExpectedRevision},
 	); err != nil {
-		return transfer_service.LiveAuthorization{}, err
+		return transfer_authorization.LiveAuthorization{}, err
 	}
 	return authorization, nil
 }
@@ -220,29 +200,26 @@ func (repository *Repository) RevokeLive(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
 	now time.Time,
-	actor transfer_service.LiveTrustedActor,
-	actorDigest transfer_service.Digest,
-	command transfer_service.RevokeLiveCommand,
-	commandDigest transfer_service.Digest,
-) (transfer_service.LiveAuthorization, error) {
+	actor transfer_authorization.LiveTrustedActor,
+	command transfer_authorization.RevokeLiveCommand,
+) (transfer_authorization.LiveAuthorization, error) {
 	if replay, found, err := loadLiveCommandReplay(
 		ctx,
 		tx,
 		now,
 		"revoke",
 		command.IdempotencyKey,
-		actorDigest,
-		commandDigest,
+		liveCommandIdentity{actorID: actor.TelegramUserID, authorizationID: command.AuthorizationID, expectedRevision: command.ExpectedRevision, safeReasonCode: command.SafeReasonCode},
 	); err != nil || found {
 		return replay, err
 	}
 	authorization, err := lockLiveAuthorization(ctx, tx, command.AuthorizationID)
 	if err != nil {
-		return transfer_service.LiveAuthorization{}, err
+		return transfer_authorization.LiveAuthorization{}, err
 	}
 	authorization, expired, err := expireLiveAuthorization(ctx, tx, now, authorization)
 	if err != nil {
-		return transfer_service.LiveAuthorization{}, err
+		return transfer_authorization.LiveAuthorization{}, err
 	}
 	if expired {
 		return authorization, nil
@@ -250,10 +227,9 @@ func (repository *Repository) RevokeLive(
 	if authorization.TransferID != command.TransferID ||
 		authorization.Revision != command.ExpectedRevision ||
 		authorization.TrustedActorID != actor.TelegramUserID ||
-		authorization.TrustedActorDigest != actorDigest ||
 		(authorization.State != transfer_service.LiveAuthorizationRequested &&
 			authorization.State != transfer_service.LiveAuthorizationAuthorized) {
-		return transfer_service.LiveAuthorization{}, transfer_service.ErrLiveAuthorization
+		return transfer_authorization.LiveAuthorization{}, transfer_service.ErrLiveAuthorization
 	}
 
 	const revoke = `
@@ -277,7 +253,7 @@ func (repository *Repository) RevokeLive(
 		command.ExpectedRevision,
 	))
 	if err != nil {
-		return transfer_service.LiveAuthorization{}, fmt.Errorf(
+		return transfer_authorization.LiveAuthorization{}, fmt.Errorf(
 			"revoke live authorization: %w",
 			err,
 		)
@@ -288,10 +264,9 @@ func (repository *Repository) RevokeLive(
 		authorization,
 		"revoke",
 		command.IdempotencyKey,
-		actorDigest,
-		commandDigest,
+		liveCommandIdentity{actorID: actor.TelegramUserID, authorizationID: command.AuthorizationID, expectedRevision: command.ExpectedRevision, safeReasonCode: command.SafeReasonCode},
 	); err != nil {
-		return transfer_service.LiveAuthorization{}, err
+		return transfer_authorization.LiveAuthorization{}, err
 	}
 	return authorization, nil
 }
@@ -300,19 +275,17 @@ func (repository *Repository) ChangeLiveState(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
 	now time.Time,
-	state transfer_service.LiveAuthorizationState,
-	command transfer_service.ChangeLiveAuthorizationStateCommand,
-	actorDigest transfer_service.Digest,
-	commandDigest transfer_service.Digest,
+	state transfer_authorization.LiveAuthorizationState,
+	command transfer_authorization.ChangeLiveAuthorizationStateCommand,
 	idempotencyKey string,
-) (transfer_service.LiveAuthorization, error) {
+) (transfer_authorization.LiveAuthorization, error) {
 	if state != transfer_service.LiveAuthorizationSuperseded &&
 		state != transfer_service.LiveAuthorizationClosed {
-		return transfer_service.LiveAuthorization{}, transfer_service.ErrLiveAuthorization
+		return transfer_authorization.LiveAuthorization{}, transfer_service.ErrLiveAuthorization
 	}
 	kind, err := liveAuthorizationCommandKind(state)
 	if err != nil {
-		return transfer_service.LiveAuthorization{}, err
+		return transfer_authorization.LiveAuthorization{}, err
 	}
 	if replay, found, err := loadLiveCommandReplay(
 		ctx,
@@ -320,18 +293,17 @@ func (repository *Repository) ChangeLiveState(
 		now,
 		kind,
 		idempotencyKey,
-		actorDigest,
-		commandDigest,
+		liveCommandIdentity{planID: command.ExpectedPlanID, authorizationID: command.AuthorizationID, expectedRevision: command.ExpectedRevision, safeReasonCode: command.SafeReasonCode},
 	); err != nil || found {
 		return replay, err
 	}
 	authorization, err := lockLiveAuthorization(ctx, tx, command.AuthorizationID)
 	if err != nil {
-		return transfer_service.LiveAuthorization{}, err
+		return transfer_authorization.LiveAuthorization{}, err
 	}
 	authorization, expired, err := expireLiveAuthorization(ctx, tx, now, authorization)
 	if err != nil {
-		return transfer_service.LiveAuthorization{}, err
+		return transfer_authorization.LiveAuthorization{}, err
 	}
 	if state == transfer_service.LiveAuthorizationClosed &&
 		(authorization.State == transfer_service.LiveAuthorizationClosed ||
@@ -339,9 +311,9 @@ func (repository *Repository) ChangeLiveState(
 			authorization.State == transfer_service.LiveAuthorizationExpired ||
 			authorization.State == transfer_service.LiveAuthorizationSuperseded) {
 		if authorization.TransferID != command.TransferID ||
-			authorization.PlanDigest != command.ExpectedPlanDigest ||
+			authorization.PlanID != command.ExpectedPlanID ||
 			(!expired && authorization.Revision != command.ExpectedRevision) {
-			return transfer_service.LiveAuthorization{}, transfer_service.ErrLiveAuthorization
+			return transfer_authorization.LiveAuthorization{}, transfer_service.ErrLiveAuthorization
 		}
 		return authorization, nil
 	}
@@ -355,8 +327,8 @@ func (repository *Repository) ChangeLiveState(
 	}
 	if authorization.TransferID != command.TransferID ||
 		authorization.Revision != command.ExpectedRevision ||
-		authorization.PlanDigest != command.ExpectedPlanDigest || !allowed {
-		return transfer_service.LiveAuthorization{}, transfer_service.ErrLiveAuthorization
+		authorization.PlanID != command.ExpectedPlanID || !allowed {
+		return transfer_authorization.LiveAuthorization{}, transfer_service.ErrLiveAuthorization
 	}
 
 	const change = `
@@ -408,10 +380,10 @@ func (repository *Repository) ChangeLiveState(
 		allowedStates,
 	))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return transfer_service.LiveAuthorization{}, transfer_service.ErrLiveAuthorization
+		return transfer_authorization.LiveAuthorization{}, transfer_service.ErrLiveAuthorization
 	}
 	if err != nil {
-		return transfer_service.LiveAuthorization{}, fmt.Errorf(
+		return transfer_authorization.LiveAuthorization{}, fmt.Errorf(
 			"change live authorization state: %w",
 			err,
 		)
@@ -422,16 +394,15 @@ func (repository *Repository) ChangeLiveState(
 		authorization,
 		kind,
 		idempotencyKey,
-		actorDigest,
-		commandDigest,
+		liveCommandIdentity{planID: command.ExpectedPlanID, authorizationID: command.AuthorizationID, expectedRevision: command.ExpectedRevision, safeReasonCode: command.SafeReasonCode},
 	); err != nil {
-		return transfer_service.LiveAuthorization{}, err
+		return transfer_authorization.LiveAuthorization{}, err
 	}
 	return authorization, nil
 }
 
 func liveAuthorizationCommandKind(
-	state transfer_service.LiveAuthorizationState,
+	state transfer_authorization.LiveAuthorizationState,
 ) (string, error) {
 	switch state {
 	case transfer_service.LiveAuthorizationSuperseded:
@@ -443,20 +414,29 @@ func liveAuthorizationCommandKind(
 	}
 }
 
+type liveCommandIdentity struct {
+	actorID          int64
+	planID           int64
+	authorizationID  transfer_authorization.LiveAuthorizationID
+	expectedRevision int64
+	safeReasonCode   string
+}
+
 func loadLiveCommandReplay(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
 	now time.Time,
 	kind string,
 	idempotencyKey string,
-	actorDigest transfer_service.Digest,
-	commandDigest transfer_service.Digest,
-) (transfer_service.LiveAuthorization, bool, error) {
+	identity liveCommandIdentity,
+) (transfer_authorization.LiveAuthorization, bool, error) {
 	const query = `
 		SELECT
 			command.kind,
-			command.actor_digest,
-			command.command_digest,
+			command.actor_id,
+			command.plan_id,
+			command.expected_revision,
+			command.safe_reason_code,
 			` + liveAuthorizationColumns + `
 		FROM wb.transfer_live_authorization_commands AS command
 		JOIN wb.transfer_live_authorizations AS live_auth
@@ -465,22 +445,25 @@ func loadLiveCommandReplay(
 		FOR UPDATE OF live_auth;
 	`
 	var storedKind string
-	var storedActorDigest, storedCommandDigest []byte
+	var storedActorID, storedPlanID, storedRevision int64
+	var storedReasonCode string
 	row := tx.QueryRow(ctx, query, idempotencyKey)
-	destinations := []any{&storedKind, &storedActorDigest, &storedCommandDigest}
+	destinations := []any{&storedKind, &storedActorID, &storedPlanID, &storedRevision, &storedReasonCode}
 	authorization, err := scanLiveAuthorizationWithPrefix(row, destinations)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return transfer_service.LiveAuthorization{}, false, nil
+		return transfer_authorization.LiveAuthorization{}, false, nil
 	}
 	if err != nil {
-		return transfer_service.LiveAuthorization{}, false, fmt.Errorf(
+		return transfer_authorization.LiveAuthorization{}, false, fmt.Errorf(
 			"load live command replay: %w",
 			err,
 		)
 	}
-	if storedKind != kind || !bytes.Equal(storedActorDigest, actorDigest[:]) ||
-		!bytes.Equal(storedCommandDigest, commandDigest[:]) {
-		return transfer_service.LiveAuthorization{}, true, transfer_service.ErrLiveIdempotency
+	if storedKind != kind || storedActorID != identity.actorID ||
+		storedPlanID != identity.planID || storedRevision != identity.expectedRevision ||
+		storedReasonCode != identity.safeReasonCode ||
+		(identity.authorizationID > 0 && authorization.ID != identity.authorizationID) {
+		return transfer_authorization.LiveAuthorization{}, true, transfer_service.ErrLiveIdempotency
 	}
 	authorization, _, err = expireLiveAuthorization(ctx, tx, now, authorization)
 	return authorization, true, err
@@ -489,11 +472,10 @@ func loadLiveCommandReplay(
 func insertLiveCommand(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	authorization transfer_service.LiveAuthorization,
+	authorization transfer_authorization.LiveAuthorization,
 	kind string,
 	idempotencyKey string,
-	actorDigest transfer_service.Digest,
-	commandDigest transfer_service.Digest,
+	identity liveCommandIdentity,
 ) error {
 	const insert = `
 		INSERT INTO wb.transfer_live_authorization_commands (
@@ -501,12 +483,14 @@ func insertLiveCommand(
 			authorization_id,
 			kind,
 			idempotency_key,
-			actor_digest,
-			command_digest,
+			actor_id,
+			plan_id,
+			expected_revision,
+			safe_reason_code,
 			result_state,
 			result_revision
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
 	`
 	if _, err := tx.Exec(
 		ctx,
@@ -515,8 +499,10 @@ func insertLiveCommand(
 		authorization.ID,
 		kind,
 		idempotencyKey,
-		actorDigest[:],
-		commandDigest[:],
+		identity.actorID,
+		identity.planID,
+		identity.expectedRevision,
+		identity.safeReasonCode,
 		authorization.State,
 		authorization.Revision,
 	); err != nil {
@@ -528,8 +514,8 @@ func insertLiveCommand(
 func lockLiveAuthorization(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	authorizationID transfer_service.LiveAuthorizationID,
-) (transfer_service.LiveAuthorization, error) {
+	authorizationID transfer_authorization.LiveAuthorizationID,
+) (transfer_authorization.LiveAuthorization, error) {
 	query := `
 		SELECT ` + liveAuthorizationColumns + `
 		FROM wb.transfer_live_authorizations AS live_auth
@@ -538,10 +524,10 @@ func lockLiveAuthorization(
 	`
 	authorization, err := scanLiveAuthorization(tx.QueryRow(ctx, query, authorizationID))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return transfer_service.LiveAuthorization{}, transfer_service.ErrLiveAuthorization
+		return transfer_authorization.LiveAuthorization{}, transfer_service.ErrLiveAuthorization
 	}
 	if err != nil {
-		return transfer_service.LiveAuthorization{}, fmt.Errorf(
+		return transfer_authorization.LiveAuthorization{}, fmt.Errorf(
 			"lock live authorization: %w",
 			err,
 		)
@@ -552,9 +538,9 @@ func lockLiveAuthorization(
 func lockOpenLiveAuthorization(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID transfer_service.TransferID,
+	transferID transfer_model.TransferID,
 	planID int64,
-) (transfer_service.LiveAuthorization, bool, error) {
+) (transfer_authorization.LiveAuthorization, bool, error) {
 	query := `
 		SELECT ` + liveAuthorizationColumns + `
 		FROM wb.transfer_live_authorizations AS live_auth
@@ -565,10 +551,10 @@ func lockOpenLiveAuthorization(
 	`
 	authorization, err := scanLiveAuthorization(tx.QueryRow(ctx, query, transferID, planID))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return transfer_service.LiveAuthorization{}, false, nil
+		return transfer_authorization.LiveAuthorization{}, false, nil
 	}
 	if err != nil {
-		return transfer_service.LiveAuthorization{}, false, fmt.Errorf(
+		return transfer_authorization.LiveAuthorization{}, false, fmt.Errorf(
 			"lock open live authorization: %w",
 			err,
 		)
@@ -580,8 +566,8 @@ func expireLiveAuthorization(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
 	now time.Time,
-	authorization transfer_service.LiveAuthorization,
-) (transfer_service.LiveAuthorization, bool, error) {
+	authorization transfer_authorization.LiveAuthorization,
+) (transfer_authorization.LiveAuthorization, bool, error) {
 	if authorization.ExpiresAt.After(now) ||
 		(authorization.State != transfer_service.LiveAuthorizationRequested &&
 			authorization.State != transfer_service.LiveAuthorizationAuthorized) {
@@ -599,13 +585,13 @@ func expireLiveAuthorization(
 	`
 	expired, err := scanLiveAuthorization(tx.QueryRow(ctx, expire, authorization.ID, now))
 	if err != nil {
-		return transfer_service.LiveAuthorization{}, false, fmt.Errorf(
+		return transfer_authorization.LiveAuthorization{}, false, fmt.Errorf(
 			"expire live authorization: %w",
 			err,
 		)
 	}
 	if err := insertSystemExpireCommand(ctx, tx, authorization, expired); err != nil {
-		return transfer_service.LiveAuthorization{}, false, err
+		return transfer_authorization.LiveAuthorization{}, false, err
 	}
 	return expired, true, nil
 }
@@ -613,55 +599,39 @@ func expireLiveAuthorization(
 func insertSystemExpireCommand(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	previous transfer_service.LiveAuthorization,
-	expired transfer_service.LiveAuthorization,
+	previous transfer_authorization.LiveAuthorization,
+	expired transfer_authorization.LiveAuthorization,
 ) error {
-	actorBytes := sha256.Sum256([]byte("transfer-system-actor:v1"))
-	commandBytes := sha256.Sum256([]byte(fmt.Sprintf(
-		"transfer-expire-live:v1:%d:%d:%s",
-		previous.ID,
-		previous.Revision,
-		previous.ExpiresAt.UTC().Format(time.RFC3339Nano),
-	)))
-	var actorDigest, commandDigest transfer_service.Digest
-	copy(actorDigest[:], actorBytes[:])
-	copy(commandDigest[:], commandBytes[:])
 	return insertLiveCommand(
 		ctx,
 		tx,
 		expired,
 		"expire",
 		fmt.Sprintf("system:expire-live:%d:%d", previous.ID, previous.Revision),
-		actorDigest,
-		commandDigest,
+		liveCommandIdentity{authorizationID: previous.ID, expectedRevision: previous.Revision},
 	)
 }
 
-func scanLiveAuthorization(row rowScanner) (transfer_service.LiveAuthorization, error) {
+func scanLiveAuthorization(row rowScanner) (transfer_authorization.LiveAuthorization, error) {
 	return scanLiveAuthorizationWithPrefix(row, nil)
 }
 
 func scanLiveAuthorizationWithPrefix(
 	row rowScanner,
 	prefix []any,
-) (transfer_service.LiveAuthorization, error) {
+) (transfer_authorization.LiveAuthorization, error) {
 	var (
-		authorization                   transfer_service.LiveAuthorization
+		authorization                   transfer_authorization.LiveAuthorization
 		id, transferID                  int64
-		planDigest, targetSetRoot       []byte
-		actorDigest                     []byte
 		approvedAt, revokedAt, closedAt pgtype.Timestamptz
 	)
 	destinations := append(prefix,
 		&id,
 		&transferID,
 		&authorization.PlanID,
-		&planDigest,
-		&targetSetRoot,
 		&authorization.Revision,
 		&authorization.State,
 		&authorization.TrustedActorID,
-		&actorDigest,
 		&authorization.TrustedActorName,
 		&authorization.RequestedAt,
 		&approvedAt,
@@ -673,18 +643,10 @@ func scanLiveAuthorizationWithPrefix(
 		&authorization.UpdatedAt,
 	)
 	if err := row.Scan(destinations...); err != nil {
-		return transfer_service.LiveAuthorization{}, err
+		return transfer_authorization.LiveAuthorization{}, err
 	}
-	if len(planDigest) != len(authorization.PlanDigest) ||
-		len(targetSetRoot) != len(authorization.TargetSetRoot) ||
-		len(actorDigest) != len(authorization.TrustedActorDigest) {
-		return transfer_service.LiveAuthorization{}, transfer_service.ErrLiveAuthorization
-	}
-	authorization.ID = transfer_service.LiveAuthorizationID(id)
-	authorization.TransferID = transfer_service.TransferID(transferID)
-	copy(authorization.PlanDigest[:], planDigest)
-	copy(authorization.TargetSetRoot[:], targetSetRoot)
-	copy(authorization.TrustedActorDigest[:], actorDigest)
+	authorization.ID = transfer_authorization.LiveAuthorizationID(id)
+	authorization.TransferID = transfer_model.TransferID(transferID)
 	if approvedAt.Valid {
 		value := approvedAt.Time.UTC()
 		authorization.ApprovedAt = &value
@@ -702,9 +664,9 @@ func scanLiveAuthorizationWithPrefix(
 	authorization.CreatedAt = authorization.CreatedAt.UTC()
 	authorization.UpdatedAt = authorization.UpdatedAt.UTC()
 	if err := authorization.Validate(); err != nil {
-		return transfer_service.LiveAuthorization{}, err
+		return transfer_authorization.LiveAuthorization{}, err
 	}
 	return authorization, nil
 }
 
-var _ transfer_service.LiveAuthorizationRepository = (*Repository)(nil)
+var _ transfer_authorization.LiveAuthorizationRepository = (*Repository)(nil)

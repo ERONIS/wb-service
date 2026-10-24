@@ -7,9 +7,14 @@ import (
 	"sort"
 	"time"
 
+	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
+	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+	transfer_publication "github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
+
 	"golang.org/x/sync/errgroup"
 )
 
@@ -17,7 +22,7 @@ const emptyResponseProductRetryDelay = 10 * time.Minute
 
 type productCatalogKey struct {
 	targetID int64
-	sellerID SellerID
+	sellerID core_domain.SellerID
 }
 
 type productCatalogRead struct {
@@ -62,7 +67,7 @@ func (dispatcher *ProductDispatcher) reconcilePending(ctx context.Context) error
 func (dispatcher *ProductDispatcher) readProductCatalog(
 	ctx context.Context,
 	candidates []ProductActionCandidate,
-) (map[productCatalogKey]CatalogObservation, error) {
+) (map[productCatalogKey]cardpublication_catalog.CatalogObservation, error) {
 	vendorsByTarget := make(map[productCatalogKey]map[string]struct{})
 	for _, candidate := range candidates {
 		key := productCatalogKey{
@@ -93,7 +98,7 @@ func (dispatcher *ProductDispatcher) readProductCatalog(
 		return reads[left].key.targetID < reads[right].key.targetID
 	})
 
-	loaded := make([]CatalogObservation, len(reads))
+	loaded := make([]cardpublication_catalog.CatalogObservation, len(reads))
 	readErrors := make([]error, len(reads))
 	var group errgroup.Group
 	group.SetLimit(dispatcher.concurrency)
@@ -110,7 +115,7 @@ func (dispatcher *ProductDispatcher) readProductCatalog(
 		})
 	}
 	_ = group.Wait()
-	result := make(map[productCatalogKey]CatalogObservation, len(reads))
+	result := make(map[productCatalogKey]cardpublication_catalog.CatalogObservation, len(reads))
 	for index, read := range reads {
 		if readErrors[index] == nil {
 			result[read.key] = loaded[index]
@@ -122,7 +127,7 @@ func (dispatcher *ProductDispatcher) readProductCatalog(
 func (dispatcher *ProductDispatcher) reconcile(
 	ctx context.Context,
 	candidate ProductActionCandidate,
-	observation CatalogObservation,
+	observation cardpublication_catalog.CatalogObservation,
 	now time.Time,
 ) error {
 	action, err := dispatcher.loadLockedAction(ctx, candidate)
@@ -176,7 +181,7 @@ func (dispatcher *ProductDispatcher) reconcile(
 	}
 	var memberResults []MemberReconciliationResult
 	var completeResult bool
-	var actionClass transfer_service.ResultClass
+	var actionClass transfer_model.ResultClass
 	var actionCode string
 	if retryResponseProvedRejection(action.EmptyResponseRetry) {
 		memberResults = rejectedRetryResults(action)
@@ -240,7 +245,7 @@ func (dispatcher *ProductDispatcher) reconcile(
 			if err != nil {
 				return err
 			}
-			items := make([]transfer_service.PublicationTerminalItem, 0, len(locked.Members))
+			items := make([]transfer_publication.PublicationTerminalItem, 0, len(locked.Members))
 			byMember := make(map[int64]MemberReconciliationResult, len(memberResults))
 			for _, result := range memberResults {
 				byMember[result.ActionMemberID] = result
@@ -259,7 +264,7 @@ func (dispatcher *ProductDispatcher) reconcile(
 				if !exists {
 					return ErrProductActionConflict
 				}
-				items = append(items, transfer_service.PublicationTerminalItem{
+				items = append(items, transfer_publication.PublicationTerminalItem{
 					GroupTargetID:        member.GroupTargetID,
 					TransferItemTargetID: member.TransferItemTargetID,
 					OutcomeClass:         result.OutcomeClass,
@@ -270,7 +275,7 @@ func (dispatcher *ProductDispatcher) reconcile(
 			if err := dispatcher.transferResults.ApplyWithin(
 				ctx,
 				tx,
-				transfer_service.ApplyPublicationActionResultCommand{
+				transfer_publication.ApplyPublicationActionResultCommand{
 					TransferID:         locked.TransferID,
 					ActionID:           locked.ActionID,
 					Items:              items,
@@ -286,7 +291,7 @@ func (dispatcher *ProductDispatcher) reconcile(
 
 func shouldRetryEmptyProductResponse(
 	action ProductAction,
-	observation CatalogObservation,
+	observation cardpublication_catalog.CatalogObservation,
 	matches []ErrorBatchMatch,
 	now time.Time,
 	delay time.Duration,
@@ -453,11 +458,11 @@ func (dispatcher *ProductDispatcher) recordIncompleteReconciliation(
 
 func reconcileProductEvidence(
 	action ProductAction,
-	observation CatalogObservation,
+	observation cardpublication_catalog.CatalogObservation,
 	matches []ErrorBatchMatch,
 	now time.Time,
 	timeout time.Duration,
-) ([]MemberReconciliationResult, bool, transfer_service.ResultClass, string) {
+) ([]MemberReconciliationResult, bool, transfer_model.ResultClass, string) {
 	normalByVendor := make(map[string][]contentapi.Card)
 	for _, card := range observation.Normal {
 		normalByVendor[card.VendorCode] = append(normalByVendor[card.VendorCode], card)
