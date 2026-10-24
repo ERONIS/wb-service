@@ -13,7 +13,7 @@ Database schema is managed via `golang-migrate` (`migrate/migrate:v4.19.1`) with
 5. `000005_card_preparation`: Directly creates immutable WB proposal artifacts `wb.card_preparation_artifacts` bound to `wb.transfer_group_targets(transfer_id, id)`; no old intermediate preparation tables.
 6. `000006_card_publication`: Full publication cycle and integrity triggers.
 7. `000007_statistics`: Analytical views (`wb.statistics_*`).
-Historical transition migrations `000008_card_import_memory` and `000009_transfer_ready_batch` were folded into the baseline and removed. The migration directory contains only seven `.up.sql` files; rollback `.down.sql` files were removed. The user reinitializes the database from scratch; upgrading or rolling back an existing database is out of scope. Validate fresh application of all migrations and match the resulting schema to current code.
+Historical transition migrations `000008_card_import_memory` and `000009_transfer_ready_batch` were folded into the baseline and removed. The migration directory has seven matching `.up.sql`/`.down.sql` pairs. `up` creates the current schema on a fresh database; `down` rolls back these baseline steps. The user reinitializes the database from scratch, so upgrading an existing database through transition migrations is out of scope. Validate fresh application and rollback of all migrations and match the resulting schema to current code.
 The covering index matches `ListPendingPreparationGroups`, though index-only execution still depends on planner choice and visibility-map coverage.
 
 ## Key Tables by Functional Area

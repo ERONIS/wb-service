@@ -22,7 +22,7 @@
 - `make env-wait`: Polls PostgreSQL container with `pg_isready`.
 - `make env-cleanup`: Deletes local PostgreSQL volume data in `.runtime/pgdata` (with confirmation).
 - `make migrate-up`: Applies the 7 ordered baseline database migrations located in `migration/` to a fresh database.
-- Rollback migrations and the `make migrate-down` target were removed; database recreation uses `make migrate-up` on a fresh database.
+- `make migrate-down`: Rolls back the last applied migration (`down 1`) using its paired `.down.sql` file. Transition migrations for editing an existing deployed schema are omitted from this fresh-install baseline.
 - `make migrate-action action="<command>"`: Runs custom migrate action (e.g. `action="down 2"`, `action="force 7"`, `action=version`).
 - `make migrate-create seq=<name>`: Creates a new SQL migration pair in `migration/`.
 - `make admin-bootstrap`: Executes `scripts/bootstrap_admin.sql` to upsert admin user from `.env`.
@@ -38,7 +38,7 @@
 - Build output `wb-service` and `.vscode/settings.json` are ignored artifacts. History rewrites must use a separate mirror clone so the active worktree and unpublished commits are preserved; verify every branch head before force-with-lease updates. After a rewrite, old local branches must be recreated or rebased onto the new remote history rather than merged or pushed as-is. For an old branch with unpublished commits and dirty WIP, first checkpoint the WIP on a new branch, verify the old and rewritten base trees match, then replay only the unpublished commits onto the rewritten origin. GitHub `refs/pull/*` are read-only and can retain old commits after branch history is rewritten.
 
 ## Testing & Verification Commands
-- User preference: do not add or rewrite tests during repository changes. Existing checks may be run for verification. The user will reinitialize the database personally when baseline migrations change; do not reset their database as part of refactoring.
+- User preference: add or update tests when needed. For schema changes, edit the fresh-install baseline migrations; do not add transition migrations to upgrade an existing database. The user will reinitialize their database personally; do not reset it as part of refactoring.
 - Run all unit tests: `go test ./...`
 - Test specific module: `go test ./internal/feature/transfer/...`
 - Check code compilation: `go build ./cmd/wb-service`

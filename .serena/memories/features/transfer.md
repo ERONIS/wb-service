@@ -52,7 +52,7 @@ The central State Machine and pipeline coordinator of `wb-service`. It tracks th
 3. **Scheduled Discovery**:
    - Polling engine stage 0 (`Service.ProcessPending`):
      - `resumeInitializing(ctx, onProgress)`: Resumes initialization for any transfers interrupted in `PhaseInitializing` (e.g. during pod restart).
-     - `discoverFinalizedBatches(ctx, onProgress)`: Scans ready batch headers (`batchReader.ListReadyBatches`) where `Purpose == PurposeTransfer`, advancing `batchCursor`.
+     - `discoverFinalizedBatches(ctx, onProgress)`: Scans ready batch headers from cardimport, advancing `batchCursor`. Purpose filtering belongs to cardimport; `ReadyBatchHeader` has no purpose field.
      - `Initialize(ctx, transferID)` returns `(progress bool, error)`: a transfer outside `initializing` or one persisted as terminal initialization failure does not produce downstream preparation work; successful initialization returns progress. `ProcessPendingWithNotify` signals downstream after the preparation-ready transition. A workflow test verifies terminal failure does not wake preparation.
    - `RunPolling` constructs `server.NewPolling` without an external wake channel. Transfer scans finalized batches once at startup, then on each `TRANSFER_POLL_INTERVAL` tick (default 3s). Cardimport finalization commits the batch but sends no processing signal; restart resumes discovery from PostgreSQL.
 

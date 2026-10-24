@@ -73,10 +73,6 @@ func (service *Service) discoverFinalizedBatches(ctx context.Context, onProgress
 			return fmt.Errorf("list finalized transfer batches: %w", err)
 		}
 		for _, batch := range batches {
-			if batch.Purpose != cardpipeline.PurposeTransfer {
-				service.advanceBatchCursor(batch)
-				continue
-			}
 			transferID, err := service.Start(ctx, batch.ID)
 			if err != nil {
 				if isDeterministicStartRejection(err) {

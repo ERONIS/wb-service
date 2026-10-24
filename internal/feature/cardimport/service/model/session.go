@@ -5,19 +5,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 )
 
 const (
 	MaxFilesPerSession = 0
 	MaxFileSize        = 20 << 20
-)
-
-type Purpose = cardpipeline.Purpose
-
-const (
-	PurposeTransfer = cardpipeline.PurposeTransfer
 )
 
 type SessionStatus string

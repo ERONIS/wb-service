@@ -86,7 +86,7 @@ func (s *Service) GetReadyBatch(
 
 func readyBatchHeader(header BatchHeader) cardpipeline.ReadyBatchHeader {
 	return cardpipeline.ReadyBatchHeader{
-		ID: header.ID, Purpose: header.Purpose,
+		ID:         header.ID,
 		ItemsCount: header.ItemsCount, GroupsCount: header.GroupsCount,
 		Checksum:         header.Checksum,
 		AuthorTelegramID: header.AuthorSnapshot.TelegramUserID,

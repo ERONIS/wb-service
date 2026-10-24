@@ -8,17 +8,11 @@ import (
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 )
 
-const (
-	MaxBatchPageSize         = 1000
-	PurposeTransfer  Purpose = "transfer"
-)
-
 type (
 	BatchID        int64
 	BatchItemID    int64
 	SourceGroupKey [sha256.Size]byte
 	Digest         [sha256.Size]byte
-	Purpose        string
 )
 
 type BatchCursor struct {
@@ -39,10 +33,6 @@ func (key SourceGroupKey) String() string {
 
 func (digest Digest) String() string {
 	return hex.EncodeToString(digest[:])
-}
-
-func (purpose Purpose) IsValid() bool {
-	return purpose == PurposeTransfer
 }
 
 func invalidBatch(message string) error {
