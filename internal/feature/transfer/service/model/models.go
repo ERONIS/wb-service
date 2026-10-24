@@ -11,7 +11,7 @@ import (
 
 var ErrCapacityExceeded = core_errors.CapacityExceeded("transfer capacity exceeded")
 
-type TransferID = cardpipeline.TransferID
+type TransferID int64
 type Digest = cardpipeline.Digest
 type SellerID = domain.SellerID
 type ClientGeneration = domain.ClientGeneration
@@ -175,27 +175,25 @@ func (projection ItemTargetProjection) Validate() error {
 }
 
 type Transfer struct {
-	ID                        TransferID
-	BatchID                   cardpipeline.BatchID
-	Phase                     Phase
-	Outcome                   Outcome
-	AttentionCode             string
-	Revision                  int64
-	BatchSchemaVersion        int
-	BatchNormalizationVersion int
-	BatchChecksum             cardpipeline.Digest
-	ItemsCount                int
-	GroupsCount               int
-	CohortName                string
-	TargetSnapshotRevision    Digest
-	TargetSetRoot             Digest
-	TargetsCount              int
-	ItemTargetsCount          int64
-	GroupTargetsCount         int64
-	CreatedAt                 time.Time
-	StartedAt                 time.Time
-	FinishedAt                *time.Time
-	UpdatedAt                 time.Time
+	ID                     TransferID
+	BatchID                cardpipeline.BatchID
+	Phase                  Phase
+	Outcome                Outcome
+	AttentionCode          string
+	Revision               int64
+	BatchChecksum          cardpipeline.Digest
+	ItemsCount             int
+	GroupsCount            int
+	CohortName             string
+	TargetSnapshotRevision Digest
+	TargetSetRoot          Digest
+	TargetsCount           int
+	ItemTargetsCount       int64
+	GroupTargetsCount      int64
+	CreatedAt              time.Time
+	StartedAt              time.Time
+	FinishedAt             *time.Time
+	UpdatedAt              time.Time
 }
 
 func (transfer Transfer) Validate() error {
@@ -222,10 +220,6 @@ func (transfer Transfer) Validate() error {
 		return invalidTransfer("attention code is invalid")
 	case transfer.Revision < 0:
 		return invalidTransfer("revision must not be negative")
-	case transfer.BatchSchemaVersion <= 0:
-		return invalidTransfer("batch schema version must be positive")
-	case transfer.BatchNormalizationVersion <= 0:
-		return invalidTransfer("batch normalization version must be positive")
 	case transfer.ItemsCount <= 0:
 		return invalidTransfer("items count must be positive")
 	case transfer.GroupsCount <= 0 || transfer.GroupsCount > transfer.ItemsCount:

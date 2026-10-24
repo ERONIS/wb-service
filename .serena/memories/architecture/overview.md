@@ -24,7 +24,7 @@
 - Service runs 4 concurrent daemon goroutines orchestrated by `sync.WaitGroup` and context cancellation:
   1. `wbCabinetFeature.RunRestoreRetry(ctx, 30s)`: Retries restoring/authenticating cabinets that failed token verification or ping on startup.
   2. `statisticsFeature.RunAutoAttentionResolver(ctx, 10s)`: Background poller auto-resolving pending attention items and timeout reconciliations.
-  3. `cardpublicationFeature.RunMediaPolling(ctx)`: Polls until published cards register on WB, then uploads media files (photos/videos) to `/content/v2/cards/upload/add`.
+  3. `cardpublicationFeature.RunMediaPolling(ctx)`: Polls until published cards register on WB, then submits photo/video URL lists through `/content/v3/media/save`.
   4. `transferFeature.RunPolling(ctx, processors...)`: Master polling loop executing 5 chained pipeline stages:
      - `cardprepareFeature.Processor()`: Evaluates pending transfers and builds WB-ready payloads.
      - `cardpublicationFeature.Processor()`: Plans incremental batches respecting WB size limits.
@@ -37,7 +37,7 @@
 - **Dynamic Cabinet Lifecycle**: Cabinets are restored from PostgreSQL or added through Telegram. Onboarding decodes token claims and checks Content `/ping`, then activates a `CredentialCandidate` in `Clientset`. Core credentials parsing and shared access snapshots are reused by features; no General seller-profile request is required by this flow.
 - **Atomic State Transitions**: Target convention is service-owned `uow.WithinTransaction` with explicit DBTX for multi-write scenarios; transaction objects are not stored in context. Repository-owned transaction exceptions remain in cardimport and wbcabinet (see `mem:features/modules`). Statistics now performs read-only DB access; positive WB verification uses publication-owned UoW and transfer applier. Preserve locking and revision checks while consolidating these paths.
 - **Idempotency & Cryptographic Verification**: Batches, transfer roots, and requests use canonical hashing (`canonicalhash.Digest`). Prevents duplicate submission and tracks payload drift.
-- **Core Safe-Retry Policy**: Core automatic retries require read semantics and an explicit safe-retry policy, including POST catalog reads. Core mutations and publication media mutations do not retry automatically after ambiguous delivery; only external media downloads use publication's local retry loop.
+- **Core Safe-Retry Policy**: Core automatic retries require read semantics and an explicit safe-retry policy, including POST catalog reads. Core mutations and publication media mutations do not retry automatically after ambiguous delivery. Publication submits media by links without a local file download or upload path.
 - **Audit Immutability**: Historical tables and attempt logs enforce DB triggers preventing `UPDATE` on identity columns and `DELETE` on execution facts (`reject_publication_fact_delete`).
 
 ## Related Memories

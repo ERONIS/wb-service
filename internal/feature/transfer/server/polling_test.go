@@ -9,114 +9,104 @@ import (
 	transfer_server "github.com/ERONIS/wb-service/internal/feature/transfer/server"
 )
 
-// mockProcessor эмулирует этап пайплайна для тестирования polling.
-type mockProcessor struct {
+type countingProcessor struct {
 	calls atomic.Int64
 }
 
-// mockProgressProcessor эмулирует процессор с поддержкой ProgressAwareProcessor.
-type mockProgressProcessor struct {
-	calls    atomic.Int64
-	progress atomic.Bool
+type gatedProgressProcessor struct {
+	release   <-chan struct{}
+	completed chan<- struct{}
+	progress  bool
 }
 
-func (m *mockProcessor) ProcessPending(ctx context.Context) error {
-	m.calls.Add(1)
+func (processor *countingProcessor) ProcessPending(context.Context) error {
+	processor.calls.Add(1)
 	return nil
 }
 
-// TestPolling_ChainedWake проверяет сквозное пробуждение downstream-обработчиков по цепочке.
-func TestPolling_ChainedWake(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+func (processor *gatedProgressProcessor) ProcessPending(context.Context) error {
+	panic("ожидался вызов с отчётом о прогрессе")
+}
 
-	wakeChan := make(chan struct{}, 1)
-
-	p0 := &mockProgressProcessor{}
-	p0.progress.Store(true)
-	p1 := &mockProcessor{}
-
-	polling := transfer_server.NewPollingWithWake(
-		10*time.Second, // длинный интервал, чтобы срабатывал именно wake, а не тикер
-		wakeChan,
-		p0,
-		p1,
-	)
-
-	errChan := make(chan error, 1)
-	go func() {
-		errChan <- polling.Run(ctx, func(err error) {
-			t.Errorf("неожиданная ошибка polling: %v", err)
-		})
-	}()
-
-	// Ждём завершения начального startup-цикла
-	deadline := time.Now().Add(2 * time.Second)
-	for p0.calls.Load() < 1 || p1.calls.Load() < 1 {
-		if time.Now().After(deadline) {
-			t.Fatalf("таймаут ожидания startup: p0=%d, p1=%d", p0.calls.Load(), p1.calls.Load())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	p0Initial := p0.calls.Load()
-	p1Initial := p1.calls.Load()
-
-	// Посылаем wake во внешний канал
-	wakeChan <- struct{}{}
-
-	// Ожидаем, что p0 получит wake, и следом за ним p1 будет разбужен по цепочке
-	deadline = time.Now().Add(2 * time.Second)
-	for p0.calls.Load() <= p0Initial || p1.calls.Load() <= p1Initial {
-		if time.Now().After(deadline) {
-			t.Fatalf("таймаут ожидания chained wake: p0 было=%d стало=%d, p1 было=%d стало=%d",
-				p0Initial, p0.calls.Load(), p1Initial, p1.calls.Load())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	cancel()
+func (processor *gatedProgressProcessor) ProcessPendingWithProgress(ctx context.Context) (bool, error) {
 	select {
-	case err := <-errChan:
-		if err != nil {
-			t.Errorf("ожидалось завершение без ошибки, получено: %v", err)
-		}
-	case <-time.After(1 * time.Second):
-		t.Fatal("polling не завершился после отмены контекста")
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-processor.release:
+		close(processor.completed)
+		return processor.progress, nil
 	}
 }
 
-func TestPollingWakeStopsAtStageWithoutProgress(t *testing.T) {
+func TestPollingStartupProgressWakesOnlyNextStage(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		progress bool
+		calls    int64
+	}{
+		{name: "без прогресса", progress: false, calls: 1},
+		{name: "с прогрессом", progress: true, calls: 2},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			release := make(chan struct{})
+			completed := make(chan struct{})
+			first := &gatedProgressProcessor{release: release, completed: completed, progress: testCase.progress}
+			second := &countingProcessor{}
+			third := &countingProcessor{}
+			polling := transfer_server.NewPolling(time.Hour, first, second, third)
+			done := make(chan error, 1)
+			go func() { done <- polling.Run(ctx, nil) }()
+
+			deadline := time.Now().Add(time.Second)
+			for second.calls.Load() < 1 || third.calls.Load() < 1 {
+				if time.Now().After(deadline) {
+					t.Fatal("начальный проход стадий не завершился")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			close(release)
+			select {
+			case <-completed:
+			case <-time.After(time.Second):
+				t.Fatal("первая стадия не завершилась")
+			}
+			for second.calls.Load() < testCase.calls {
+				if time.Now().After(deadline) {
+					t.Fatal("следующая стадия не получила сигнал")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			time.Sleep(20 * time.Millisecond)
+			if second.calls.Load() != testCase.calls || third.calls.Load() != 1 {
+				t.Fatalf("неверное число проходов: вторая=%d третья=%d", second.calls.Load(), third.calls.Load())
+			}
+			cancel()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("опрос не завершился после отмены")
+			}
+		})
+	}
+}
+
+func TestPollingRunsAgainOnInterval(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	wake := make(chan struct{}, 1)
-	first := &mockProgressProcessor{}
-	second := &mockProcessor{}
-	third := &mockProcessor{}
-	polling := transfer_server.NewPollingWithWake(time.Hour, wake, first, second, third)
+	processor := &countingProcessor{}
 	done := make(chan error, 1)
-	go func() { done <- polling.Run(ctx, nil) }()
-	deadline := time.Now().Add(2 * time.Second)
-	for first.calls.Load() < 1 || second.calls.Load() < 1 || third.calls.Load() < 1 {
+	go func() { done <- transfer_server.NewPolling(20*time.Millisecond, processor).Run(ctx, nil) }()
+	deadline := time.Now().Add(time.Second)
+	for processor.calls.Load() < 2 {
 		if time.Now().After(deadline) {
-			t.Fatal("начальный проход стадий не завершился")
+			t.Fatal("повторный проход по таймеру не выполнен")
 		}
 		time.Sleep(time.Millisecond)
-	}
-	secondBefore := second.calls.Load()
-	thirdBefore := third.calls.Load()
-	first.progress.Store(true)
-	wake <- struct{}{}
-	deadline = time.Now().Add(2 * time.Second)
-	for second.calls.Load() <= secondBefore {
-		if time.Now().After(deadline) {
-			t.Fatal("непосредственная следующая стадия не получила сигнал")
-		}
-		time.Sleep(time.Millisecond)
-	}
-	time.Sleep(100 * time.Millisecond)
-	if third.calls.Load() != thirdBefore {
-		t.Fatal("сигнал миновал стадию без прогресса")
 	}
 	cancel()
 	select {
@@ -126,94 +116,5 @@ func TestPollingWakeStopsAtStageWithoutProgress(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("опрос не завершился после отмены")
-	}
-}
-
-func (m *mockProgressProcessor) ProcessPending(ctx context.Context) error {
-	m.calls.Add(1)
-	return nil
-}
-
-func (m *mockProgressProcessor) ProcessPendingWithProgress(ctx context.Context) (bool, error) {
-	m.calls.Add(1)
-	return m.progress.Load(), nil
-}
-
-// TestPolling_ProgressAwareWake проверяет, что downstream-этапы пробуждаются ТОЛЬКО при progress == true.
-func TestPolling_ProgressAwareWake(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	wakeChan := make(chan struct{}, 1)
-
-	p0 := &mockProgressProcessor{}
-	p0.progress.Store(false) // Изначально прогресса нет (пустой прогон)
-	p1 := &mockProcessor{}
-
-	polling := transfer_server.NewPollingWithWake(
-		10*time.Second,
-		wakeChan,
-		p0,
-		p1,
-	)
-
-	errChan := make(chan error, 1)
-	go func() {
-		errChan <- polling.Run(ctx, func(err error) {
-			t.Errorf("неожиданная ошибка polling: %v", err)
-		})
-	}()
-
-	// Ждём завершения начального startup-цикла
-	deadline := time.Now().Add(2 * time.Second)
-	for p0.calls.Load() < 1 || p1.calls.Load() < 1 {
-		if time.Now().After(deadline) {
-			t.Fatalf("таймаут ожидания startup: p0=%d, p1=%d", p0.calls.Load(), p1.calls.Load())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	p1AfterStartup := p1.calls.Load()
-
-	// 1. Посылаем сигнал в wakeChan при progress == false
-	wakeChan <- struct{}{}
-
-	// Ждём, пока p0 выполнится
-	deadline = time.Now().Add(1 * time.Second)
-	for p0.calls.Load() < 2 {
-		if time.Now().After(deadline) {
-			t.Fatal("p0 не отреагировал на wake")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	// Даём небольшую паузу и проверяем, что p1 НЕ был вызван (нет прогресса)
-	time.Sleep(100 * time.Millisecond)
-	if p1.calls.Load() != p1AfterStartup {
-		t.Fatalf("p1 не должен был пробуждаться при отсутствии реального прогресса: p1=%d, ожидалось=%d",
-			p1.calls.Load(), p1AfterStartup)
-	}
-
-	// 2. Теперь включаем реальный прогресс у p0
-	p0.progress.Store(true)
-	wakeChan <- struct{}{}
-
-	// Ожидаем, что теперь p1 БУДЕТ разбужен
-	deadline = time.Now().Add(2 * time.Second)
-	for p1.calls.Load() <= p1AfterStartup {
-		if time.Now().After(deadline) {
-			t.Fatalf("таймаут ожидания пробуждения p1 при наличии прогресса: p1=%d", p1.calls.Load())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	cancel()
-	select {
-	case err := <-errChan:
-		if err != nil {
-			t.Errorf("ожидалось завершение без ошибки, получено: %v", err)
-		}
-	case <-time.After(1 * time.Second):
-		t.Fatal("polling не завершился после отмены контекста")
 	}
 }

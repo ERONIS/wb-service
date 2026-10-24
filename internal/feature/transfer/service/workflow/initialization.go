@@ -11,9 +11,8 @@ import (
 )
 
 const (
-	initializationBatchPageSize = cardpipeline.MaxBatchPageSize
-	failureBatchMismatch        = "initialization_batch_mismatch"
-	failureStorageMismatch      = "initialization_storage_mismatch"
+	failureBatchMismatch   = "initialization_batch_mismatch"
+	failureStorageMismatch = "initialization_storage_mismatch"
 )
 
 var (
@@ -23,15 +22,12 @@ var (
 
 type InitializationGroup struct {
 	SourceGroupKey  cardpipeline.SourceGroupKey
-	SourceFileID    cardpipeline.FileID
 	SourceGroupName string
 }
 
 type InitializationItem struct {
 	BatchItemID   cardpipeline.BatchItemID
 	Position      int
-	SourceFileID  cardpipeline.FileID
-	SourceRows    []int
 	GroupPosition int
 	VendorCode    string
 	Payload       string
@@ -57,8 +53,7 @@ func (command InitializeTransferCommand) Validate() error {
 		return ErrInitializationInvalid
 	}
 	for index, group := range command.Groups {
-		if group.SourceGroupKey == (cardpipeline.SourceGroupKey{}) ||
-			group.SourceFileID <= 0 {
+		if group.SourceGroupKey == (cardpipeline.SourceGroupKey{}) {
 			return fmt.Errorf(
 				"initialization group at position %d: %w",
 				index+1,
@@ -68,7 +63,6 @@ func (command InitializeTransferCommand) Validate() error {
 	}
 	for index, item := range command.Items {
 		if item.BatchItemID <= 0 || item.Position != index+1 ||
-			item.SourceFileID <= 0 || len(item.SourceRows) == 0 ||
 			item.GroupPosition < 0 || item.GroupPosition >= len(command.Groups) ||
 			item.VendorCode == "" || item.Payload == "" {
 			return fmt.Errorf(
@@ -139,51 +133,46 @@ func (service *Service) buildInitialization(
 	ctx context.Context,
 	transfer Transfer,
 ) (InitializeTransferCommand, error) {
-	batch, err := service.batchReader.GetBatch(ctx, transfer.BatchID)
+	ready, err := service.batchReader.GetReadyBatch(ctx, transfer.BatchID)
 	if err != nil {
 		return InitializeTransferCommand{}, fmt.Errorf(
 			"read initialization batch: %w",
 			err,
 		)
 	}
+	batch := ready.Header
+	if err := validateStartBatch(batch); err != nil {
+		return InitializeTransferCommand{}, ErrInitializationInvalid
+	}
 	if batch.ItemsCount != transfer.ItemsCount ||
 		batch.GroupsCount != transfer.GroupsCount ||
-		batch.SchemaVersion != transfer.BatchSchemaVersion ||
-		batch.NormalizationVersion != transfer.BatchNormalizationVersion ||
 		batch.Checksum != transfer.BatchChecksum {
 		return InitializeTransferCommand{}, ErrInitializationInvalid
 	}
 
-	batchItems, err := service.readAllBatchItems(ctx, batch)
-	if err != nil {
-		return InitializeTransferCommand{}, err
-	}
-	checksum, err := cardpipeline.BatchChecksum(
-		batch.Purpose,
-		batch.GroupsCount,
-		batchItems,
-	)
-	if err != nil || checksum != batch.Checksum {
+	if len(ready.Items) != batch.ItemsCount {
 		return InitializeTransferCommand{}, ErrInitializationInvalid
 	}
 
 	groups := make([]InitializationGroup, 0, batch.GroupsCount)
 	groupPositions := make(map[cardpipeline.SourceGroupKey]int, batch.GroupsCount)
-	items := make([]InitializationItem, 0, len(batchItems))
-	for _, batchItem := range batchItems {
+	items := make([]InitializationItem, 0, len(ready.Items))
+	for _, batchItem := range ready.Items {
+		if batchItem.BatchID != batch.ID || batchItem.Position != len(items)+1 ||
+			batchItem.Validate() != nil {
+			return InitializeTransferCommand{}, ErrInitializationInvalid
+		}
 		groupPosition, exists := groupPositions[batchItem.SourceGroupKey]
 		if !exists {
 			groupPosition = len(groups)
 			groupPositions[batchItem.SourceGroupKey] = groupPosition
 			groups = append(groups, InitializationGroup{
 				SourceGroupKey:  batchItem.SourceGroupKey,
-				SourceFileID:    batchItem.SourceFileID,
 				SourceGroupName: batchItem.Payload.Group,
 			})
 		} else {
 			group := groups[groupPosition]
-			if group.SourceFileID != batchItem.SourceFileID ||
-				group.SourceGroupName != batchItem.Payload.Group {
+			if group.SourceGroupName != batchItem.Payload.Group {
 				return InitializeTransferCommand{}, ErrInitializationInvalid
 			}
 		}
@@ -199,8 +188,6 @@ func (service *Service) buildInitialization(
 		items = append(items, InitializationItem{
 			BatchItemID:   batchItem.ID,
 			Position:      batchItem.Position,
-			SourceFileID:  batchItem.SourceFileID,
-			SourceRows:    append([]int(nil), batchItem.SourceRows...),
 			GroupPosition: groupPosition,
 			VendorCode:    batchItem.VendorCode,
 			Payload:       string(payload),
@@ -220,40 +207,6 @@ func (service *Service) buildInitialization(
 		return InitializeTransferCommand{}, err
 	}
 	return command, nil
-}
-
-func (service *Service) readAllBatchItems(
-	ctx context.Context,
-	batch cardpipeline.BatchHeader,
-) ([]cardpipeline.BatchItem, error) {
-	items := make([]cardpipeline.BatchItem, 0, batch.ItemsCount)
-	afterPosition := 0
-	for {
-		page, err := service.batchReader.ListBatchItems(
-			ctx,
-			batch.ID,
-			afterPosition,
-			initializationBatchPageSize,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("read initialization batch items: %w", err)
-		}
-		for _, item := range page {
-			if item.ID <= 0 || item.BatchID != batch.ID ||
-				item.Position != len(items)+1 || item.Validate() != nil {
-				return nil, ErrInitializationInvalid
-			}
-			items = append(items, item)
-		}
-		if len(page) < initializationBatchPageSize {
-			break
-		}
-		afterPosition = items[len(items)-1].Position
-	}
-	if len(items) != batch.ItemsCount {
-		return nil, ErrInitializationInvalid
-	}
-	return items, nil
 }
 
 func (service *Service) markInitializationFailed(

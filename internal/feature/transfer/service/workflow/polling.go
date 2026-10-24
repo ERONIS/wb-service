@@ -64,7 +64,7 @@ func (service *Service) resumeInitializing(ctx context.Context, onProgress func(
 
 func (service *Service) discoverFinalizedBatches(ctx context.Context, onProgress func()) error {
 	for {
-		batches, err := service.batchReader.ListFinalizedBatches(
+		batches, err := service.batchReader.ListReadyBatches(
 			ctx,
 			cloneBatchCursor(service.batchCursor),
 			pollingPageSize,
@@ -108,7 +108,7 @@ func (service *Service) discoverFinalizedBatches(ctx context.Context, onProgress
 }
 
 func (service *Service) advanceBatchCursor(
-	batch cardpipeline.BatchHeader,
+	batch cardpipeline.ReadyBatchHeader,
 ) {
 	service.batchCursor = &cardpipeline.BatchCursor{
 		FinalizedAt: batch.FinalizedAt,

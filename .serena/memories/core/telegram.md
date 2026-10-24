@@ -2,7 +2,7 @@
 
 ## Package Boundaries
 - No root package or forwarding facade. Composition root and feature Telegram adapters import the narrow packages they use.
-- `menu`: bot `Handler`, command/callback registration, text/document flow ownership, main menu, active-screen persistence, reply keyboard, notifications, and managed `tele.Context`. Its `MenuStore` contract is implemented by the PostgreSQL Telegram view repository.
+- `menu`: bot `Handler`, command/callback registration, text/document flow ownership, main menu, active-screen persistence, reply keyboard, notifications, and managed `tele.Context`. Its `MenuStore` contract is implemented by `internal/core/transport/telegram/storage/postgres.Store`; the composition root supplies that adapter, which uses the shared PostgreSQL pool.
 - `callback`: callback argument and page parsing, compact Base-36 ID encoding.
 - `identity`: `ParseTelegramID`, `SenderID`, and `UserFromContext`; constructs `domain.User` with a validated fallback name.
 - `state`: generic `StateStore[T]`, `StateLease[T]`, and claim outcomes for interactive feature flows.

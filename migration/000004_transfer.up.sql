@@ -33,10 +33,6 @@ CREATE TABLE wb.transfers (
     revision                BIGINT NOT NULL DEFAULT 0
                             CHECK (revision >= 0),
 
-    batch_schema_version    INTEGER NOT NULL
-                            CHECK (batch_schema_version > 0),
-    batch_normalization_version INTEGER NOT NULL
-                            CHECK (batch_normalization_version > 0),
     batch_checksum          BYTEA NOT NULL
                             CHECK (octet_length(batch_checksum) = 32),
     items_count             INTEGER NOT NULL
@@ -131,8 +127,6 @@ CREATE TABLE wb.transfer_groups (
                             REFERENCES wb.transfers(id),
     source_group_key        BYTEA NOT NULL
                             CHECK (octet_length(source_group_key) = 32),
-    source_file_id          BIGINT NOT NULL
-                            CHECK (source_file_id > 0),
     source_group_name       TEXT NOT NULL,
 
     created_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -151,10 +145,6 @@ CREATE TABLE wb.transfer_items (
                             CHECK (batch_item_id > 0),
     position                INTEGER NOT NULL
                             CHECK (position > 0),
-    source_file_id          BIGINT NOT NULL
-                            CHECK (source_file_id > 0),
-    source_rows             INTEGER[] NOT NULL
-                            CHECK (cardinality(source_rows) > 0),
     source_group_id         BIGINT NOT NULL,
     vendor_code             TEXT NOT NULL
                             CHECK (char_length(vendor_code) > 0),
@@ -554,8 +544,6 @@ AS $$
 BEGIN
     IF ROW(
         NEW.batch_id,
-        NEW.batch_schema_version,
-        NEW.batch_normalization_version,
         NEW.batch_checksum,
         NEW.items_count,
         NEW.groups_count,
@@ -569,8 +557,6 @@ BEGIN
         NEW.started_at
     ) IS DISTINCT FROM ROW(
         OLD.batch_id,
-        OLD.batch_schema_version,
-        OLD.batch_normalization_version,
         OLD.batch_checksum,
         OLD.items_count,
         OLD.groups_count,

@@ -315,14 +315,13 @@ func copyInitializationGroups(
 	count, err := tx.CopyFrom(
 		ctx,
 		pgx.Identifier{"wb", "transfer_groups"},
-		[]string{"id", "transfer_id", "source_group_key", "source_file_id", "source_group_name"},
+		[]string{"id", "transfer_id", "source_group_key", "source_group_name"},
 		pgx.CopyFromSlice(len(groups), func(index int) ([]any, error) {
 			group := groups[index]
 			return []any{
 				groupIDs[index],
 				transferID,
 				group.SourceGroupKey[:],
-				group.SourceFileID,
 				group.SourceGroupName,
 			}, nil
 		}),
@@ -342,18 +341,14 @@ func copyInitializationItems(
 		ctx,
 		pgx.Identifier{"wb", "transfer_items"},
 		[]string{
-			"id", "transfer_id", "batch_item_id", "position", "source_file_id",
-			"source_rows", "source_group_id", "vendor_code", "payload",
+			"id", "transfer_id", "batch_item_id", "position",
+			"source_group_id", "vendor_code", "payload",
 		},
 		pgx.CopyFromSlice(len(items), func(index int) ([]any, error) {
 			item := items[index]
-			sourceRows := make([]int32, len(item.SourceRows))
-			for rowIndex, row := range item.SourceRows {
-				sourceRows[rowIndex] = int32(row)
-			}
 			return []any{
 				itemIDs[index], transferID, item.BatchItemID, item.Position,
-				item.SourceFileID, sourceRows, groupIDs[item.GroupPosition],
+				groupIDs[item.GroupPosition],
 				item.VendorCode, item.Payload,
 			}, nil
 		}),

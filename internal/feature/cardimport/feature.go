@@ -53,12 +53,6 @@ func (f *Feature) SetCompletionNavigator(
 	f.telegramHandler.SetCompletionNavigator(navigator)
 }
 
-func (f *Feature) SetProcessingNotifier(
-	notifier cardimport_telegram_transport.ProcessingNotifier,
-) {
-	f.telegramHandler.SetProcessingNotifier(notifier)
-}
-
 func (f *Feature) RegisterTelegram(
 	menu *core_tg_menu.Handler,
 ) {

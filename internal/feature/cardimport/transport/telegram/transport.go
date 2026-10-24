@@ -103,7 +103,6 @@ type Handler struct {
 	bot                    *tele.Bot
 	service                CardImportService
 	completion             CompletionNavigator
-	processing             ProcessingNotifier
 	uploadScreenMu         sync.Mutex
 	uploadScreenGeneration map[int64]uint64
 	menu                   *core_tg_menu.Handler
@@ -124,10 +123,6 @@ type CompletionNavigator interface {
 		tele.Context,
 		cardimport_service.BatchHeader,
 	) error
-}
-
-type ProcessingNotifier interface {
-	NotifyFinalized()
 }
 
 func New(
@@ -171,16 +166,6 @@ func (h *Handler) SetCompletionNavigator(navigator CompletionNavigator) {
 	h.completion = navigator
 }
 
-func (h *Handler) SetProcessingNotifier(notifier ProcessingNotifier) {
-	if notifier == nil {
-		panic("cardimport processing notifier is nil")
-	}
-	if h.processing != nil {
-		panic("cardimport processing notifier is already configured")
-	}
-	h.processing = notifier
-}
-
 func (h *Handler) Register(menu *core_tg_menu.Handler) {
 	if menu == nil {
 		panic("cardimport Telegram menu is nil")
@@ -222,9 +207,6 @@ func (h *Handler) Register(menu *core_tg_menu.Handler) {
 	)
 	if h.completion == nil {
 		panic("cardimport completion navigator is not configured")
-	}
-	if h.processing == nil {
-		panic("cardimport processing notifier is not configured")
 	}
 	h.recoveryStart.Do(func() {
 		go h.runRecoveryScheduler()

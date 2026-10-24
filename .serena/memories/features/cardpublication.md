@@ -14,8 +14,8 @@ Orchestrates the actual submission of product cards to Wildberries Content API, 
    - **Empty-Response Safe Retry**: Tracks dropped connections or unacknowledged responses in `wb.publication_product_retries` with delivery classification before retry.
 3. **Media Pipeline (`service/execution/media_*`)**:
    - **Visibility Check (`media_visibility.go`)**: Queries WB to verify newly created cards are visible in the catalog before sending media (`wb.publication_media_visibility`).
-   - `media_dispatcher.go`: Dispatches photos and videos to `/content/v2/cards/upload/add`.
-   - Daemon `RunMediaPolling`: Continuously polls visibility and triggers media uploads. Each link/file mutation is sent once per business attempt; only external file downloads retry automatically through a helper accepting DownloadedMediaFile (not arbitrary mutation responses). Partial uploads and unknown delivery remain visible to business reconciliation.
+   - `media_dispatcher.go`: Sends photo and video URL lists with the pinned WB `/content/v3/media/save` (`SaveMediaByLinks`) mutation. There is no configurable upload method or file download/upload path. Each mutation is sent once per business attempt; unknown delivery remains visible to business reconciliation. Previously persisted partial-file-upload outcome codes remain displayable in statistics.
+   - Daemon `RunMediaPolling`: Continuously polls visibility and triggers media uploads.
 4. **Error Monitoring & Feed (`service/monitoring/`)**:
    - `error_feed.go`: Periodically polls WB `/content/v2/cards/error/list`.
    - Correlates asynchronous errors reported by WB to specific transfer items in `wb.publication_error_correlations`.

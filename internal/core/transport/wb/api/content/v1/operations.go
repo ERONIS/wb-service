@@ -235,33 +235,6 @@ func SaveMediaByLinksOperation() policy.Operation {
 	return saveMediaByLinksOperation
 }
 
-func UploadMediaFileOperation(nmID int64, mediaNumber int) (policy.Operation, error) {
-	if nmID <= 0 {
-		return policy.Operation{}, fmt.Errorf("media nmID must be positive: %d", nmID)
-	}
-	if mediaNumber <= 0 || mediaNumber > MaxMediaImages {
-		return policy.Operation{}, fmt.Errorf("media number must be between 1 and %d: %d", MaxMediaImages, mediaNumber)
-	}
-	return policy.NewOperation(policy.OperationSpec{
-		ID:               "content.media.file",
-		Method:           http.MethodPost,
-		Host:             contentAPIHost,
-		Path:             "/content/v3/media/file",
-		BucketID:         bucketIDMediaFiles,
-		Kind:             policy.OperationKindMutation,
-		RetryMode:        policy.RetryModeNever,
-		SuccessStatuses:  []int{http.StatusOK},
-		RequestMode:      policy.BodyModeMultipart,
-		ResponseMode:     policy.BodyModeJSON,
-		MaxRequestBytes:  maxUploadMediaFileRequestBytes,
-		MaxResponseBytes: maxMutationResponseBytes,
-		Headers: http.Header{
-			"X-Nm-Id":        []string{strconv.FormatInt(nmID, 10)},
-			"X-Photo-Number": []string{strconv.Itoa(mediaNumber)},
-		},
-	})
-}
-
 func mustOperation(spec policy.OperationSpec) policy.Operation {
 	operation, err := policy.NewOperation(spec)
 	if err != nil {

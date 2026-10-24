@@ -21,12 +21,6 @@ const (
 	maxUploadCardsAddRequestBytes          int64 = 10_000_000
 	maxMutationResponseBytes               int64 = 1 * mebibyte
 	maxSaveMediaByLinksRequestBytes        int64 = 256 * kibibyte
-	maxUploadMediaFileRequestBytes         int64 = 51 * mebibyte
-)
-
-const (
-	MaxMediaImageFileBytes      int64 = 32 * mebibyte
-	MaxDownloadedMediaFileBytes       = 50 * mebibyte
 )
 
 const (

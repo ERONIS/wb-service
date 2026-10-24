@@ -21,8 +21,8 @@
 - `make env-up` / `make env-down`: Start / stop PostgreSQL docker container.
 - `make env-wait`: Polls PostgreSQL container with `pg_isready`.
 - `make env-cleanup`: Deletes local PostgreSQL volume data in `.runtime/pgdata` (with confirmation).
-- `make migrate-up`: Applies pending database migrations located in `migration/` (7 domain layers).
-- `make migrate-down`: Rolls back the last applied migration (`down 1`).
+- `make migrate-up`: Applies the 7 ordered baseline database migrations located in `migration/` to a fresh database.
+- Rollback migrations and the `make migrate-down` target were removed; database recreation uses `make migrate-up` on a fresh database.
 - `make migrate-action action="<command>"`: Runs custom migrate action (e.g. `action="down 2"`, `action="force 7"`, `action=version`).
 - `make migrate-create seq=<name>`: Creates a new SQL migration pair in `migration/`.
 - `make admin-bootstrap`: Executes `scripts/bootstrap_admin.sql` to upsert admin user from `.env`.
@@ -35,11 +35,14 @@
 - New root-level Markdown is ignored by default; `README.md`, `AGENTS.md`, and `GEMINI.md` are exceptions. Project documentation under `doc/` and Serena memories under `.serena/memories/` remain eligible for tracking.
 - Root `notes/`, `drafts/`, and `scratch/` directories, personal Markdown suffixes (`.local.md`, `.draft.md`), and common editor backup files are ignored. Existing tracked files remain tracked.
 
+- Build output `wb-service` and `.vscode/settings.json` are ignored artifacts. History rewrites must use a separate mirror clone so the active worktree and unpublished commits are preserved; verify every branch head before force-with-lease updates. After a rewrite, old local branches must be recreated or rebased onto the new remote history rather than merged or pushed as-is. For an old branch with unpublished commits and dirty WIP, first checkpoint the WIP on a new branch, verify the old and rewritten base trees match, then replay only the unpublished commits onto the rewritten origin. GitHub `refs/pull/*` are read-only and can retain old commits after branch history is rewritten.
+
 ## Testing & Verification Commands
+- User preference: do not add or rewrite tests during repository changes. Existing checks may be run for verification. The user will reinitialize the database personally when baseline migrations change; do not reset their database as part of refactoring.
 - Run all unit tests: `go test ./...`
 - Test specific module: `go test ./internal/feature/transfer/...`
 - Check code compilation: `go build ./cmd/wb-service`
-- Cardimport and transfer PostgreSQL integration tests require an isolated migrated database via `POSTGRES_TEST_DSN`; absent DSN skips direct `go test` integration cases, while a configured but unavailable database fails. `make postgres-integration-test` is the strict entry point. Cardimport covers rollback after CopyFrom failure/cancellation and concurrent session revision updates; cancellation assertions rely on the canceled operation context and persisted state, not a driver-specific error string. Transfer's fixture uses the current schema and checks every required write; its integration cases also assert that an aborted preparation UoW removes both the proposal artifact and group projection. Successful preparation fixtures must compute the metadata digest from `json.RawMessage(snapshot)`, matching `ApplyPreparationResultCommand.Validate`; hashing plain `[]byte` marshals it as a base64 JSON string and rejects the command before any database write. The rollback test validates its command before entering UoW.
+- Cardimport and transfer PostgreSQL integration tests require an isolated migrated database via `POSTGRES_TEST_DSN`; absent DSN skips direct `go test` integration cases, while a configured but unavailable database fails. `make postgres-integration-test` is the strict entry point. Cardimport now covers atomic finalized batch insertion and rollback without leaving session/file/batch rows. In-memory workflow tests cover finalize retry and concurrent revision updates. Transfer's fixture uses the current schema and checks every required write; its integration cases also assert that an aborted preparation UoW removes both the proposal artifact and group projection. Successful preparation fixtures must compute the metadata digest from `json.RawMessage(snapshot)`, matching `ApplyPreparationResultCommand.Validate`; hashing plain `[]byte` marshals it as a base64 JSON string and rejects the command before any database write. The rollback test validates its command before entering UoW.
 
 ## Related Memories
 - Overall architecture: `mem:architecture/overview`

@@ -15,8 +15,8 @@ PhaseFinished ◄──────── PhaseReconciling ◄──────
 
 ### 1. Ingestion & Staging (`cardimport`)
 - **Sources**: Uploaded Excel file (`cardimport`).
-- **Validation**: Headers, mandatory fields, barcode uniqueness, variant grouping.
-- **Output**: Canonical immutable batch in `wb.card_batches` with `wb.card_batch_items`.
+- **Validation**: Headers, mandatory fields, barcode uniqueness and variant grouping run against process-memory session state. `Continue` discards invalid/duplicate cards while retaining the remaining valid cards.
+- **Durability boundary**: Only `Finalize` writes finalized session/file provenance and the immutable `wb.card_batches`/`wb.card_batch_items` in one transaction. A restart before commit loses the session and requires re-upload; after commit transfer resumes from the batch in PostgreSQL. Cardimport's model owns import session/file IDs, frozen batch validation, and the original checksum; its service verifies the checksum and exposes `ReadyBatchHeader`/`ReadyBatchItem` to transfer. Core's ready contract contains no session/file IDs. Transfer retains the opaque group key so cards are grouped correctly per source file. Its first discovery pass runs at startup; later passes use `TRANSFER_POLL_INTERVAL` (default 3s), with no cardimport-to-transfer wake signal.
 
 ### 2. Initialization (`PhaseInitializing`)
 - **Cohort Selection**: Target cabinets chosen by user or automated policy.

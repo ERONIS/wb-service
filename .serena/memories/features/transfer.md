@@ -49,12 +49,17 @@ The central State Machine and pipeline coordinator of `wb-service`. It tracks th
    - Directed transfer to a single target cabinet owned by or accessible to the batch author.
    - Dimension: `Items × 1`, `Groups × 1`.
    - When concurrent creation finds an existing transfer inside UoW, target seller IDs are read through `ListTargetSellerIDsWithin(ctx, tx, transferID)` on the same `DBTX`; the already committed fast path uses pool-backed `ListTargetSellerIDs`. Both paths share the same set comparison.
-3. **Automatic Discovery & Immediate Wake**:
+3. **Scheduled Discovery**:
    - Polling engine stage 0 (`Service.ProcessPending`):
      - `resumeInitializing(ctx, onProgress)`: Resumes initialization for any transfers interrupted in `PhaseInitializing` (e.g. during pod restart).
-     - `discoverFinalizedBatches(ctx, onProgress)`: Scans finalized batches (`batchReader.ListFinalizedBatches`) where `Purpose == PurposeTransfer`, advancing `batchCursor`.
+     - `discoverFinalizedBatches(ctx, onProgress)`: Scans ready batch headers (`batchReader.ListReadyBatches`) where `Purpose == PurposeTransfer`, advancing `batchCursor`.
      - `Initialize(ctx, transferID)` returns `(progress bool, error)`: a transfer outside `initializing` or one persisted as terminal initialization failure does not produce downstream preparation work; successful initialization returns progress. `ProcessPendingWithNotify` signals downstream after the preparation-ready transition. A workflow test verifies terminal failure does not wake preparation.
-   - `NotifyFinalized()`: As soon as `cardimport` completes and commits an Excel batch, it triggers `NotifyFinalized()`, pushing an immediate notification to `pollingWake` channel to start transfer processing without waiting for the 3s timer tick.
+   - `RunPolling` constructs `server.NewPolling` without an external wake channel. Transfer scans finalized batches once at startup, then on each `TRANSFER_POLL_INTERVAL` tick (default 3s). Cardimport finalization commits the batch but sends no processing signal; restart resumes discovery from PostgreSQL.
+
+## Ready Batch Boundary
+- `cardimport.Service` exposes `GetReadyBatchHeader`, `ListReadyBatches`, and `GetReadyBatch`. Transfer consumes `cardpipeline.ReadyBatchHeader` and `ReadyBatchItem`, which contain batch identity, author Telegram ID, card payload, item position, and opaque group key, without import session/file IDs or separate source rows.
+- `GetReadyBatch` loads all immutable items and verifies the semantic checksum before projecting them to ready items. Transfer compares counts and checksum with its persisted batch fingerprint during initialization; no batch schema/normalization version fields or compatibility gate remain. This preserves restart/idempotency behavior for batches created under the current baseline.
+- Transfer initialization stores card payload and grouping, not copied import file ID or source rows. The group key remains necessary to keep file-scoped card groups distinct.
 
 ## Live Authorization Subsystem (`service/authorization/`)
 - **Role**: Guarantees valid, unrevoked token leases before any card payload is dispatched to WB Content API.
@@ -97,7 +102,7 @@ The central State Machine and pipeline coordinator of `wb-service`. It tracks th
   - `CorrectPublicationItemResult(...)`: Applies evidence-based correction for terminal publication items from manual or verified-WB resolution; recalculates group and finished transfer outcome in the same transaction. Group correction preserves unresolved/rejected media status as unresolved/partial instead of promoting the group to success solely because the card exists. The correction path reuses the shared group-count CTE and transfer-outcome expression from `repository/postgres/outcome.go`, including open-attention counts. Product completion, terminal-item correction, and media completion also reuse SQL fragments for item-result counts, publication status, and item-derived group outcome from `outcome.go`; each path retains its distinct phase guards, media precedence, and attention handling.
 
 ## Inter-Feature Coordination Map
-1. **`cardimport`**: Provides immutable card batches and items. Wakes transfer via `NotifyFinalized()`.
+1. **`cardimport`**: Provides immutable card batches and items; transfer discovers them on startup and scheduled polls.
 2. **`wbcabinet`**: Provides cabinet access credentials (`TargetCredential`), permissions (`ContentRead`/`ContentWrite`), and active token validation.
 3. **`cardprepare`**: Validates products against WB category attributes and produces upload proposals; results are committed atomically through transfer's `PreparationResultApplier`.
 4. **`cardpublication`**: Plans batches, checks live authorization leases, dispatches cards to Content API `/content/v2/cards/upload`, uploads media to `/content/v2/cards/upload/add`, polls error feeds `/content/v2/cards/error/list`, and applies execution outcomes via transfer appliers.

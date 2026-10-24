@@ -100,7 +100,7 @@ func (service *Service) start(
 		return 0, fmt.Errorf("find existing transfer: %w", err)
 	}
 
-	batch, err := service.batchReader.GetBatch(ctx, batchID)
+	batch, err := service.batchReader.GetReadyBatchHeader(ctx, batchID)
 	if err != nil {
 		return 0, fmt.Errorf("read transfer batch: %w", err)
 	}
@@ -114,7 +114,7 @@ func (service *Service) start(
 	} else {
 		snapshot, err = service.targetRegistry.MutationSnapshotForOwner(
 			ctx,
-			batch.AuthorSnapshot.TelegramUserID,
+			batch.AuthorTelegramID,
 			targetSellerIDs,
 		)
 	}
@@ -192,7 +192,7 @@ func verifyTargetSellerIDs(stored, expected []SellerID) error {
 	return nil
 }
 
-func validateStartBatch(batch cardpipeline.BatchHeader) error {
+func validateStartBatch(batch cardpipeline.ReadyBatchHeader) error {
 	if err := batch.Validate(); err != nil {
 		return fmt.Errorf("validate transfer batch: %w", err)
 	}
@@ -200,13 +200,6 @@ func validateStartBatch(batch cardpipeline.BatchHeader) error {
 		return fmt.Errorf(
 			"cardimport batch purpose '%s' cannot start transfer: %w",
 			batch.Purpose,
-			core_errors.ErrConflict,
-		)
-	}
-	if batch.SchemaVersion != cardpipeline.BatchSchemaVersion ||
-		batch.NormalizationVersion != cardpipeline.BatchNormalizationVersion {
-		return fmt.Errorf(
-			"cardimport batch contract is unsupported: %w",
 			core_errors.ErrConflict,
 		)
 	}

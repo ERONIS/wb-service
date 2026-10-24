@@ -2,6 +2,8 @@
 
 ## Go Source Layout
 - Package-level constants, variables, aliases, structs, and interfaces precede all functions and methods in each Go source file (`AGENTS.md`).
+- `internal/core/domain/cardpipeline/batch.go` contains only shared pipeline values (`BatchID`, `BatchItemID`, `SourceGroupKey`, `Digest`, `Purpose`, `BatchCursor`) and the batch page-size/purpose constants; batch schema and normalization version fields are removed. `ready.go` defines the transfer-facing `ReadyBatchHeader`, `ReadyBatchItem`, and `ReadyBatch`; no session ID, file ID, or import batch validation lives in core. `Card.SourceRows` remains shared because card preparation uses it in diagnostics.
+- `internal/feature/cardimport/service/model/ids.go` owns `SessionID` and `FileID`; its `batch.go` owns `BatchHeader`, `BatchItem`, `AuthorSnapshot`, source-group-key derivation, checksum, and validation. The batch checksum uses the `cardimport-batch-semantic` domain tag and excludes schema/normalization version bytes. Its format differs from older frozen batches; this baseline assumes database recreation rather than in-place checksum migration. `cardimport.Service.GetReadyBatch` verifies the import checksum and projects only ready fields to transfer. `internal/feature/transfer/service/model` owns `TransferID`.
 - In WB policy, related small string types are grouped in one `type` block without repetitive per-type comments; this preserves distinct Go types while keeping declarations compact.
 - Mutex fields use value `sync.Mutex` or `sync.RWMutex` so their zero value is ready to use. A single generic lock is named `mu`; structures with several locks keep distinct purpose-based names.
 - `flowcontrol/limiter.go` places its entry points (`newBucketLimiter`, `wait`, `observe`) before the helpers they call; helpers follow caller-before-callee order and each function has a short Russian purpose comment.
@@ -39,7 +41,7 @@
 - **Strict Safe-Retry Policy (`policy/retry.go`)**:
   - Two modes: `RetryModeNever` and `RetryModeReadSafe`.
   - Core retries require read semantics (`OperationKindRead`) and `RetryModeReadSafe`; this includes POST catalog reads. `policy.DefaultMaxReadAttempts` fixes three read attempts; `policy.DefaultRetryBaseDelay` fixes the 500 ms base delay; the private client executor performs the cancellable retry wait after the retry decision. `APIClient` no longer accepts retry settings from `Clientset`.
-  - Mutation operations use `RetryModeNever` inside the core executor. Publication sends link/file mutations once per business attempt; its local retry helper is restricted to downloading external media. Unknown delivery is handled by business reconciliation.
+  - Mutation operations use `RetryModeNever` inside the core executor. Publication sends each media link mutation once per business attempt. Unknown delivery is handled by business reconciliation; no file upload or media download retry path remains.
 - **Crash Recovery & Reconciliation**:
   - `ProductDispatcher.ProcessPending` begins by calling `ListInterruptedProductActions` to re-verify actions left in-flight during a service crash before picking up new work.
 

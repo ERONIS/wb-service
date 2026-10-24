@@ -40,7 +40,6 @@ type MediaVisibilityUpdate = execution.MediaVisibilityUpdate
 type MediaGroupResult = execution.MediaGroupResult
 type MediaJournalRepository = execution.MediaJournalRepository
 type MediaDispatcher = execution.MediaDispatcher
-type MediaUploadMethod = execution.MediaUploadMethod
 
 const (
 	SubmissionNotDispatched    = execution.SubmissionNotDispatched
@@ -50,9 +49,6 @@ const (
 	SubmissionAccepted       = execution.SubmissionAccepted
 	SubmissionRejectedProven = execution.SubmissionRejectedProven
 	SubmissionUncertain      = execution.SubmissionUncertain
-
-	MediaUploadByLinks = execution.MediaUploadByLinks
-	MediaUploadByFile  = execution.MediaUploadByFile
 )
 
 var (
@@ -99,7 +95,6 @@ func NewMediaDispatcher(
 	transferResults PublicationExecutionResultApplier,
 	uow core_postgres_transaction.UnitOfWork,
 	enabled bool,
-	mediaUploadMethod MediaUploadMethod,
 	mediaCheckInterval time.Duration,
 	mediaCheckTimeout time.Duration,
 	concurrency int,
@@ -114,7 +109,6 @@ func NewMediaDispatcher(
 		transferResults,
 		uow,
 		enabled,
-		mediaUploadMethod,
 		mediaCheckInterval,
 		mediaCheckTimeout,
 		concurrency,

@@ -4,7 +4,7 @@
 Every feature module is encapsulated in `internal/feature/<name>` and follows a strict 3-tier internal layout:
 - `transport/`: External adapters — either Telegram menus/handlers (`transport/telegram/`) or WB client adapters (`transport/wb/`).
 - `service/`: Core business logic, domain models, validations, and state machines.
-- `repository/`: PostgreSQL queries. Multi-write cardimport parsing/continue/finalize and wbcabinet verified upsert use service-owned UoW with explicit repository `DBTX`. The cardimport and wbcabinet repositories supply `OperationContext` so connection acquisition and their short write transactions retain the pool operation budget. Statistics repository is read-only; positive verification goes through publication-owned UoW. Standalone reads and some single-statement writes use the pool.
+- `repository/`: PostgreSQL queries. Cardimport keeps pre-finalization state in `service/workflow`; only `PersistFinalized` uses a UoW and explicit `DBTX`. Wbcabinet verified upsert uses service-owned UoW with explicit `DBTX`. Statistics repository is read-only; positive verification goes through publication-owned UoW.
 Only Excel import creates batches; external WB-cabinet batch creation was removed. Features expose public facades via `feature.go` and interact solely through Go interfaces defined in the composition root (`cmd/wb-service/main.go`).
 
 ---
@@ -24,17 +24,12 @@ Only Excel import creates batches; external WB-cabinet batch creation was remove
   - Startup `Initialize(ctx)` performs `Restore(ctx)` from `wb.api_cabinets`. Static env cabinet parsing is removed.
   - Initial administrator cabinets are seeded using `scripts/bootstrap_cabinets.sql` via `make cabinet-bootstrap`.
 
-## 2. `cardimport` (Excel Ingestion & Batch Staging)
-- **Role**: Parses product spreadsheets uploaded via Telegram documents into immutable staging batches.
-- **Key Subsystems**:
-  - `transport/xlsx/`: Robust Excel parser based on `excelize/v2` (`columns.go`, `row.go`, `parser.go`). Validates column headers, required attributes, barcode formats, and numeric constraints.
-  - `service/aggregation/`: Normalizes spreadsheet rows, grouping color/size variants into unified `Card` domain models.
-  - `service/workflow/`: Manages upload sessions (`session.go`), parse issue recording, and final batch commit.
-  - `repository/postgres/`: Tables `wb.card_import_sessions`, `wb.card_import_files`, `wb.card_import_issues`, `wb.card_batches`, `wb.card_batch_items`.
-- **Invariants**:
-  - The cards menu exposes only Excel transfer; the extension button hook for removed features is gone.
-  - Parsing and continue writes run through service UoW; a failed CopyFrom or canceled continue transaction must roll back file/session/issue changes together. Concurrent saves for different files of one session serialize the session revision update. Dedicated PostgreSQL integration tests require `POSTGRES_TEST_DSN` and the migrated schema.
-  - Committed batches are assigned a deterministic `canonicalhash.Digest`. Once finalized, batch items are strictly immutable.
+## 2. `cardimport` (Excel Ingestion & Batch Finalization)
+- **Role**: Parses Telegram XLSX uploads into immutable batches consumed by transfer.
+- **Runtime**: `service/workflow/memory.go` owns collecting sessions, file bytes, parsed cards/issues and revisions under one mutex. `Begin` verifies the author exists through a read-only repository query, preserving the former DB admission rule without storing the session. Random high positive process prefix plus increasing counter produces session/file IDs and preserves file order. The in-process recovery scheduler retries eligible files; restart drops unfinished sessions, so users re-upload.
+- **Finalization**: `service/workflow/memory_final.go` checks all active files valid, no blocking issues and at least one card; computes source group keys and `BatchChecksum`, then freezes the session while `repository/postgres.PersistFinalized` inserts session/file provenance and immutable batch/items in one UoW. A failed transaction releases the freeze for retry. A successful transaction marks the in-memory session finalized; replay is available while that terminal session remains in memory (pruned on a later Begin after 24 hours), and batch/items stay durable for transfer.
+- **Storage**: Fresh-install migration `000003_card_import` creates only finalized provenance and batch tables; temporary issues/items and uploaded file content remain in process memory until Finalize. `wb.card_import_sessions` and `wb.card_import_files` are written only inside successful Finalize for downstream ownership/provenance joins. `wb.card_batches` and `wb.card_batch_items` remain immutable. Transfer discovers finalized batches on startup and its timer; cardimport does not notify transfer after Finalize.
+- **Invariants**: Aggregation merges rows with the same trimmed vendor code within one file. `Continue` discards row-error cards, then duplicate vendor codes, then duplicate barcodes in that order; it retains warnings for surviving files. `SourceGroupKey` scopes named groups to a source file and an empty group to vendor code. `BatchChecksum` includes purpose, group count, ordered positions, file/row provenance, group key, vendor code and typed payload; it does not include schema or normalization versions. WB category validation remains in cardprepare. The cards menu exposes only Excel transfer.
 
 ## 3. `cardprepare` (WB Schema Adaptation & Validation)
 - **Role**: Stateless calculation & validation engine that checks cards against target category rules and generates WB-compliant upload proposals.

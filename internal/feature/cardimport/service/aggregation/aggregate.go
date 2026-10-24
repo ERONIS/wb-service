@@ -12,8 +12,7 @@ type barcodeSource struct {
 }
 
 // AggregateParsedFile объединяет размеры одной карточки только внутри файла.
-// Межфайловые конфликты проверяются репозиторием по durable результатам всей
-// сессии.
+// Межфайловые конфликты проверяются по результатам всей сессии в памяти.
 func AggregateParsedFile(parsed ParsedFile) AggregatedFile {
 	result := AggregatedFile{
 		FileID:    parsed.FileID,

@@ -136,7 +136,6 @@ func (feature *Feature) ConfigureProductDispatch(
 		feature.transferExecutionResults,
 		feature.uow,
 		feature.config.MediaAutoDispatch,
-		cardpublication_service.MediaUploadMethod(feature.config.MediaUploadMethod),
 		feature.config.EffectiveMediaCheckInterval(),
 		feature.config.MediaCheckTimeout,
 		feature.config.MediaConcurrency,

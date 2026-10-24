@@ -114,6 +114,5 @@ func (h *Handler) finalize(ctx tele.Context) error {
 		return sendServiceError(ctx, err)
 	}
 
-	h.processing.NotifyFinalized()
 	return h.completion.ShowFinalizedSession(ctx, batch)
 }

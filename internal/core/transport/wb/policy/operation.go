@@ -10,7 +10,6 @@ import (
 const (
 	BodyModeNone          BodyMode      = "none"
 	BodyModeJSON          BodyMode      = "json"
-	BodyModeMultipart     BodyMode      = "multipart"
 	OperationKindRead     OperationKind = "read"
 	OperationKindMutation OperationKind = "mutation"
 )
@@ -79,10 +78,6 @@ func (mode BodyMode) IsNone() bool {
 
 func (mode BodyMode) IsJSON() bool {
 	return mode == BodyModeJSON
-}
-
-func (mode BodyMode) IsMultipart() bool {
-	return mode == BodyModeMultipart
 }
 
 func (kind OperationKind) IsRead() bool {
@@ -200,8 +195,7 @@ func validateOperationIdentityAndModes(spec OperationSpec) error {
 		)
 	}
 
-	if !spec.RequestMode.IsNone() && !spec.RequestMode.IsJSON() &&
-		!spec.RequestMode.IsMultipart() {
+	if !spec.RequestMode.IsNone() && !spec.RequestMode.IsJSON() {
 		return fmt.Errorf(
 			"operation %q has unsupported request body mode %q",
 			spec.ID,

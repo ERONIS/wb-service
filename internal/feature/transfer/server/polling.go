@@ -29,7 +29,6 @@ type ErrorHandler func(error)
 
 type Polling struct {
 	interval   time.Duration
-	wake       <-chan struct{}
 	processors []Processor
 }
 
@@ -47,19 +46,6 @@ func NewPolling(interval time.Duration, processors ...Processor) *Polling {
 		}
 	}
 	return &Polling{interval: interval, processors: clone}
-}
-
-func NewPollingWithWake(
-	interval time.Duration,
-	wake <-chan struct{},
-	processors ...Processor,
-) *Polling {
-	polling := NewPolling(interval, processors...)
-	if wake == nil {
-		panic("transfer polling wake channel is nil")
-	}
-	polling.wake = wake
-	return polling
 }
 
 func (polling *Polling) Run(ctx context.Context, onError ErrorHandler, loggers ...*zap.Logger) error {
@@ -80,25 +66,6 @@ func (polling *Polling) Run(ctx context.Context, onError ErrorHandler, loggers .
 	stageWakes := make([]chan struct{}, len(polling.processors))
 	for i := range stageWakes {
 		stageWakes[i] = make(chan struct{}, 1)
-	}
-
-	if polling.wake != nil {
-		go func() {
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case _, ok := <-polling.wake:
-					if !ok {
-						return
-					}
-					select {
-					case stageWakes[0] <- struct{}{}:
-					default:
-					}
-				}
-			}
-		}()
 	}
 
 	wakeDownstream := func(currentIndex int) {
