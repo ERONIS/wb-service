@@ -1,9 +1,11 @@
-package aggregation
+package cardimport_intake
 
 import (
 	"fmt"
 	"reflect"
 	"strings"
+
+	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 )
 
 type barcodeSource struct {
@@ -11,13 +13,12 @@ type barcodeSource struct {
 	vendorCode string
 }
 
-// AggregateParsedFile объединяет размеры одной карточки только внутри файла.
-// Межфайловые конфликты проверяются по результатам всей сессии в памяти.
+// AggregateParsedFile объединяет строки одного файла в карточки и собирает ошибки.
 func AggregateParsedFile(parsed ParsedFile) AggregatedFile {
 	result := AggregatedFile{
 		FileID:    parsed.FileID,
 		SheetName: parsed.SheetName,
-		Cards:     make([]AggregatedCard, 0, len(parsed.Rows)),
+		Cards:     make([]cardpipeline.Card, 0, len(parsed.Rows)),
 		Issues:    append([]ParseIssue(nil), parsed.Issues...),
 	}
 
@@ -62,71 +63,7 @@ func AggregateParsedFile(parsed ParsedFile) AggregatedFile {
 	return result
 }
 
-func cardFromRow(row ParsedRow) AggregatedCard {
-	return AggregatedCard{
-		SourceRows:       []int{row.SourceRow},
-		Group:            row.Group,
-		Category:         row.Category,
-		Price:            row.Price,
-		KIZRequirement:   row.KIZRequirement,
-		AdultOnly:        row.AdultOnly,
-		MarkingConfirmed: row.MarkingConfirmed,
-		VATRate:          row.VATRate,
-		Variant:          cloneVariant(row.Variant),
-		Media:            cloneMedia(row.Media),
-	}
-}
-
-func cloneVariant(variant ParsedVariant) ParsedVariant {
-	variant.Sizes = appendSizes(nil, variant.Sizes)
-	variant.Characteristics = append(
-		[]RawCharacteristic(nil),
-		variant.Characteristics...,
-	)
-
-	return variant
-}
-
-func cloneMedia(media ParsedMedia) ParsedMedia {
-	media.Photos = append([]string(nil), media.Photos...)
-
-	return media
-}
-
-func appendSizes(target []ParsedSize, sizes []ParsedSize) []ParsedSize {
-	for _, size := range sizes {
-		targetIndex := -1
-		for index := range target {
-			if target[index].TechSize == size.TechSize &&
-				target[index].WBSize == size.WBSize {
-				targetIndex = index
-				break
-			}
-		}
-
-		if targetIndex < 0 {
-			cloned := size
-			cloned.SKUs = append([]string(nil), size.SKUs...)
-			target = append(target, cloned)
-			continue
-		}
-
-		knownSKUs := make(map[string]struct{}, len(target[targetIndex].SKUs))
-		for _, sku := range target[targetIndex].SKUs {
-			knownSKUs[sku] = struct{}{}
-		}
-		for _, sku := range size.SKUs {
-			if _, exists := knownSKUs[sku]; exists {
-				continue
-			}
-			target[targetIndex].SKUs = append(target[targetIndex].SKUs, sku)
-			knownSKUs[sku] = struct{}{}
-		}
-	}
-
-	return target
-}
-
+// duplicateBarcodeIssues находит повторные баркоды в строках одного файла.
 func duplicateBarcodeIssues(
 	sheetName string,
 	row ParsedRow,
@@ -170,7 +107,8 @@ func duplicateBarcodeIssues(
 	return issues
 }
 
-func conflictingCardFields(card AggregatedCard, row ParsedRow) []string {
+// conflictingCardFields находит различия между строками одной карточки.
+func conflictingCardFields(card cardpipeline.Card, row ParsedRow) []string {
 	fields := make([]string, 0)
 	appendConflict := func(different bool, name string) {
 		if different {
@@ -208,4 +146,73 @@ func conflictingCardFields(card AggregatedCard, row ParsedRow) []string {
 	appendConflict(!reflect.DeepEqual(card.Media, row.Media), "медиа")
 
 	return fields
+}
+
+// cardFromRow создаёт карточку из первой строки товара.
+func cardFromRow(row ParsedRow) cardpipeline.Card {
+	return cardpipeline.Card{
+		SourceRows:       []int{row.SourceRow},
+		Group:            row.Group,
+		Category:         row.Category,
+		Price:            row.Price,
+		KIZRequirement:   row.KIZRequirement,
+		AdultOnly:        row.AdultOnly,
+		MarkingConfirmed: row.MarkingConfirmed,
+		VATRate:          row.VATRate,
+		Variant:          cloneVariant(row.Variant),
+		Media:            cloneMedia(row.Media),
+	}
+}
+
+// cloneVariant копирует вариант карточки вместе со срезами.
+func cloneVariant(variant cardpipeline.Variant) cardpipeline.Variant {
+	variant.Sizes = appendSizes(nil, variant.Sizes)
+	variant.Characteristics = append(
+		[]cardpipeline.RawCharacteristic(nil),
+		variant.Characteristics...,
+	)
+
+	return variant
+}
+
+// appendSizes добавляет размеры и уникальные баркоды к варианту.
+func appendSizes(target []cardpipeline.Size, sizes []cardpipeline.Size) []cardpipeline.Size {
+	for _, size := range sizes {
+		targetIndex := -1
+		for index := range target {
+			if target[index].TechSize == size.TechSize &&
+				target[index].WBSize == size.WBSize {
+				targetIndex = index
+				break
+			}
+		}
+
+		if targetIndex < 0 {
+			cloned := size
+			cloned.SKUs = append([]string(nil), size.SKUs...)
+			target = append(target, cloned)
+			continue
+		}
+
+		knownSKUs := make(map[string]struct{}, len(target[targetIndex].SKUs))
+		for _, sku := range target[targetIndex].SKUs {
+			knownSKUs[sku] = struct{}{}
+		}
+		for _, sku := range size.SKUs {
+			if _, exists := knownSKUs[sku]; exists {
+				continue
+			}
+			target[targetIndex].SKUs = append(target[targetIndex].SKUs, sku)
+			knownSKUs[sku] = struct{}{}
+		}
+	}
+
+	return target
+}
+
+// cloneMedia копирует список фотографий карточки.
+func cloneMedia(media cardpipeline.Media) cardpipeline.Media {
+	media.Photos = append([]string(nil), media.Photos...)
+
+	return media
 }

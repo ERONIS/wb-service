@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
+	cardprepare_model "github.com/ERONIS/wb-service/internal/feature/cardprepare/service/model"
 )
 
 func TestInvalidDirectoryValueIncludesBoundedDiagnostics(t *testing.T) {
@@ -23,7 +24,7 @@ func TestInvalidDirectoryValueIncludesBoundedDiagnostics(t *testing.T) {
 			CharacteristicType: 1,
 		},
 		input,
-		DirectorySnapshot{Colors: directory},
+		cardprepare_model.DirectorySnapshot{Colors: directory},
 	)
 	if result == nil || result.Outcome.Code != OutcomeDirectoryValueInvalid {
 		t.Fatalf("expected directory rejection, got %+v", result)

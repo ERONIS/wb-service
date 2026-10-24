@@ -2,12 +2,10 @@ package preparation_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
-	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	"github.com/ERONIS/wb-service/internal/feature/transfer/service/preparation"
 	"github.com/jackc/pgx/v5"
@@ -66,14 +64,10 @@ func (m *mockRepo) ApplyPreparationResult(
 
 func validArtifact() *preparation.PreparationArtifact {
 	snapshot := []byte(`{"version":1}`)
-	metadata, _ := cardpipeline.DigestJSON("cardprepare-metadata:v1", json.RawMessage(snapshot))
-	a := &preparation.PreparationArtifact{SubjectID: 1, SemanticDigest: preparation.Digest{1}, MetadataDigest: metadata,
+	a := &preparation.PreparationArtifact{SubjectID: 1,
 		RequestPayload: []byte(`[{"subjectID":1}]`), MetadataSnapshot: snapshot, LimitsObservedAt: time.Unix(1, 0)}
-	a.ProposalRoot = cardpipeline.DigestProposal(a.SemanticDigest, a.MetadataDigest, a.RequestPayload)
 	return a
 }
-
-func validDigest() preparation.Digest { return validArtifact().ProposalRoot }
 
 // TestPreparationResultApplier_Apply проверяет вызов Apply с открытием новой транзакции.
 func TestPreparationResultApplier_Apply(t *testing.T) {
@@ -89,7 +83,6 @@ func TestPreparationResultApplier_Apply(t *testing.T) {
 		OutcomeCode:   "prepared",
 		StartedAt:     now,
 		FinishedAt:    now.Add(10 * time.Millisecond),
-		ProposalRoot:  validDigest(),
 		Artifact:      validArtifact(),
 		Revision:      1,
 	}
@@ -124,7 +117,6 @@ func TestPreparationResultApplier_ApplyTx(t *testing.T) {
 		OutcomeCode:   "prepared",
 		StartedAt:     now,
 		FinishedAt:    now.Add(10 * time.Millisecond),
-		ProposalRoot:  validDigest(),
 		Artifact:      validArtifact(),
 		Revision:      1,
 	}
@@ -206,7 +198,6 @@ func TestPreparationResultApplier_ValidationErrors(t *testing.T) {
 		ItemPosition:  2,
 		StartedAt:     now,
 		FinishedAt:    now.Add(10 * time.Millisecond),
-		ProposalRoot:  validDigest(),
 		Artifact:      validArtifact(),
 		Revision:      1,
 	}
@@ -240,13 +231,12 @@ func TestPreparationResultApplier_ErrorPropagation(t *testing.T) {
 	}
 }
 
-func TestPreparationResultArtifactIntegrity(t *testing.T) {
+func TestPreparationResultArtifactShape(t *testing.T) {
 	cases := map[string]func(*preparation.PreparationArtifact){
-		"payload":  func(a *preparation.PreparationArtifact) { a.RequestPayload = []byte(`[]`) },
-		"snapshot": func(a *preparation.PreparationArtifact) { a.MetadataSnapshot = []byte(`{"version":2}`) },
-		"root":     func(a *preparation.PreparationArtifact) { a.ProposalRoot[0] ^= 1 },
-		"semantic": func(a *preparation.PreparationArtifact) { a.SemanticDigest[0] ^= 1 },
-		"metadata": func(a *preparation.PreparationArtifact) { a.MetadataDigest[0] ^= 1 },
+		"payload":  func(a *preparation.PreparationArtifact) { a.RequestPayload = []byte(`{`) },
+		"snapshot": func(a *preparation.PreparationArtifact) { a.MetadataSnapshot = []byte(`{`) },
+		"subject":  func(a *preparation.PreparationArtifact) { a.SubjectID = 0 },
+		"limits":   func(a *preparation.PreparationArtifact) { a.LimitsFree = -1 },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -254,13 +244,13 @@ func TestPreparationResultArtifactIntegrity(t *testing.T) {
 			now := time.Now()
 			cmd := preparation.ApplyPreparationResultCommand{TransferID: 1, GroupTargetID: 1,
 				Status: preparation.PreparationResultSucceeded, OutcomeCode: "prepared", Revision: 1,
-				StartedAt: now, FinishedAt: now, ProposalRoot: a.ProposalRoot, Artifact: a}
+				StartedAt: now, FinishedAt: now, Artifact: a}
 			if err := cmd.Validate(); err != nil {
 				t.Fatal(err)
 			}
 			mutate(a)
 			if err := cmd.Validate(); err == nil {
-				t.Fatal("изменённый артефакт принят")
+				t.Fatal("некорректный артефакт принят")
 			}
 		})
 	}

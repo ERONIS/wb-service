@@ -9,6 +9,8 @@ import (
 	core_postgres_sequence "github.com/ERONIS/wb-service/internal/core/repository/postgres/sequence"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+	transfer_workflow "github.com/ERONIS/wb-service/internal/feature/transfer/service/workflow"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -17,9 +19,9 @@ const initializationListPageLimit = 1000
 
 func (repository *Repository) ListInitializing(
 	ctx context.Context,
-	afterID transfer_service.TransferID,
+	afterID transfer_model.TransferID,
 	limit int,
-) ([]transfer_service.Transfer, error) {
+) ([]transfer_model.Transfer, error) {
 	const condition = `transfer.phase = 'initializing' AND transfer.outcome = 'running'`
 	return repository.listTransfers(ctx, afterID, limit, condition, "initializing")
 }
@@ -27,7 +29,7 @@ func (repository *Repository) ListInitializing(
 func (repository *Repository) Initialize(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	command transfer_service.InitializeTransferCommand,
+	command transfer_workflow.InitializeTransferCommand,
 ) error {
 	if tx == nil {
 		return errors.New("initialize transfer: DBTX is nil")
@@ -44,7 +46,6 @@ func (repository *Repository) Initialize(
 		return nil
 	}
 	if transfer.BatchID != command.BatchID ||
-		transfer.BatchChecksum != command.BatchChecksum ||
 		transfer.ItemsCount != command.ItemsCount ||
 		transfer.GroupsCount != command.GroupsCount {
 		return transfer_service.ErrInitializationConflict
@@ -155,7 +156,7 @@ func (repository *Repository) Initialize(
 func (repository *Repository) MarkInitializationFailed(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID transfer_service.TransferID,
+	transferID transfer_model.TransferID,
 	failureCode string,
 ) error {
 	if tx == nil {
@@ -208,8 +209,8 @@ func (repository *Repository) MarkInitializationFailed(
 func lockTransferByID(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID transfer_service.TransferID,
-) (transfer_service.Transfer, error) {
+	transferID transfer_model.TransferID,
+) (transfer_model.Transfer, error) {
 	query := `
 		SELECT ` + transferColumns + `
 		FROM wb.transfers AS transfer
@@ -218,10 +219,10 @@ func lockTransferByID(
 	`
 	transfer, err := scanTransfer(tx.QueryRow(ctx, query, transferID))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return transfer_service.Transfer{}, core_errors.ErrNotFound
+		return transfer_model.Transfer{}, core_errors.ErrNotFound
 	}
 	if err != nil {
-		return transfer_service.Transfer{}, fmt.Errorf("lock transfer for initialization: %w", err)
+		return transfer_model.Transfer{}, fmt.Errorf("lock transfer for initialization: %w", err)
 	}
 	return transfer, nil
 }
@@ -229,7 +230,7 @@ func lockTransferByID(
 func loadInitializationTargetIDs(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transfer transfer_service.Transfer,
+	transfer transfer_model.Transfer,
 ) ([]int64, error) {
 	const query = `
 		SELECT id
@@ -262,7 +263,7 @@ func loadInitializationTargetIDs(
 func ensureInitializationEmpty(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID transfer_service.TransferID,
+	transferID transfer_model.TransferID,
 ) error {
 	const query = `
 		SELECT
@@ -308,9 +309,9 @@ func reserveIDs(
 func copyInitializationGroups(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID transfer_service.TransferID,
+	transferID transfer_model.TransferID,
 	groupIDs []int64,
-	groups []transfer_service.InitializationGroup,
+	groups []transfer_workflow.InitializationGroup,
 ) error {
 	count, err := tx.CopyFrom(
 		ctx,
@@ -332,10 +333,10 @@ func copyInitializationGroups(
 func copyInitializationItems(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID transfer_service.TransferID,
+	transferID transfer_model.TransferID,
 	groupIDs []int64,
 	itemIDs []int64,
-	items []transfer_service.InitializationItem,
+	items []transfer_workflow.InitializationItem,
 ) error {
 	count, err := tx.CopyFrom(
 		ctx,
@@ -359,7 +360,7 @@ func copyInitializationItems(
 func copyInitializationGroupTargets(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID transfer_service.TransferID,
+	transferID transfer_model.TransferID,
 	groupIDs []int64,
 	targetIDs []int64,
 	groupTargetIDs []int64,
@@ -386,12 +387,12 @@ func copyInitializationGroupTargets(
 func copyInitializationItemTargets(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID transfer_service.TransferID,
+	transferID transfer_model.TransferID,
 	groupIDs []int64,
 	itemIDs []int64,
 	targetIDs []int64,
 	groupTargetIDs []int64,
-	items []transfer_service.InitializationItem,
+	items []transfer_workflow.InitializationItem,
 ) error {
 	targetCount := len(targetIDs)
 	rowCount := len(items) * targetCount
@@ -434,7 +435,7 @@ func exactCopied(name string, count int64, expected int, err error) error {
 func validateInitializationCounts(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transfer transfer_service.Transfer,
+	transfer transfer_model.Transfer,
 ) error {
 	const query = `
 		SELECT
@@ -465,4 +466,4 @@ func maxIntValue() int64 {
 	return int64(^uint(0) >> 1)
 }
 
-var _ transfer_service.Repository = (*Repository)(nil)
+var _ transfer_workflow.Repository = (*Repository)(nil)

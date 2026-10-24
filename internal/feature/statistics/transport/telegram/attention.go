@@ -8,8 +8,10 @@ import (
 	core_tg_identity "github.com/ERONIS/wb-service/internal/core/transport/telegram/identity"
 	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
 	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
+	cardpublication_resolution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/resolution"
 	statistics_service "github.com/ERONIS/wb-service/internal/feature/statistics/service"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 
 	tele "gopkg.in/telebot.v3"
 )
@@ -119,7 +121,7 @@ func (handler *Handler) closeAttention(ctx tele.Context) error {
 
 func (handler *Handler) resolve(
 	ctx tele.Context,
-	kind cardpublication_service.ManualResolutionKind,
+	kind cardpublication_resolution.ManualResolutionKind,
 ) error {
 	expectedArguments := 3
 	if kind == cardpublication_service.ManualCloseUnresolvedNoRetry {
@@ -157,8 +159,8 @@ func (handler *Handler) resolve(
 	if err != nil {
 		return presentError(ctx, err)
 	}
-	command := cardpublication_service.ManualResolutionCommand{
-		TransferID:             transfer_service.TransferID(item.TransferID),
+	command := cardpublication_resolution.ManualResolutionCommand{
+		TransferID:             transfer_model.TransferID(item.TransferID),
 		ActionID:               item.ActionID,
 		ActionMemberID:         item.ActionMemberID,
 		ExpectedActionRevision: revision,
@@ -201,12 +203,12 @@ func (handler *Handler) getAttention(itemTargetID int64) (statistics_service.Att
 	return items[0], true, nil
 }
 
-func manualActor(ctx tele.Context) (cardpublication_service.ManualTrustedActor, error) {
+func manualActor(ctx tele.Context) (cardpublication_resolution.ManualTrustedActor, error) {
 	user, err := core_tg_identity.UserFromContext(ctx)
 	if err != nil {
-		return cardpublication_service.ManualTrustedActor{}, err
+		return cardpublication_resolution.ManualTrustedActor{}, err
 	}
-	return cardpublication_service.ManualTrustedActor{
+	return cardpublication_resolution.ManualTrustedActor{
 		ID:          user.TelegramID,
 		DisplayName: user.FullName,
 	}, nil
@@ -223,7 +225,7 @@ func attentionReason(code string) string {
 	}
 }
 
-func resolutionResultText(outcome transfer_service.ResultClass) string {
+func resolutionResultText(outcome transfer_model.ResultClass) string {
 	switch outcome {
 	case transfer_service.ResultSuccess:
 		return "Карточка отмечена как присутствующая в WB."

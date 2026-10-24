@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	cardpublication_resolution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/resolution"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
 
 type Service struct {
@@ -156,8 +156,8 @@ func (service *Service) ResolveVerifiedCard(
 	if item.ItemTargetID <= 0 || info.NMID <= 0 || info.NMID != info.Card.NMID {
 		return errors.New("invalid arguments for resolve verified card")
 	}
-	return service.resolver.Resolve(ctx, cardpublication_service.VerifiedCardCommand{
-		TransferID:             transfer_service.TransferID(item.TransferID),
+	return service.resolver.Resolve(ctx, cardpublication_resolution.VerifiedCardCommand{
+		TransferID:             transfer_model.TransferID(item.TransferID),
 		ActionID:               item.ActionID,
 		ActionMemberID:         item.ActionMemberID,
 		ExpectedActionRevision: item.ActionRevision,
@@ -165,7 +165,7 @@ func (service *Service) ResolveVerifiedCard(
 		AttemptID:              item.AttemptID,
 		SellerID:               item.SellerID,
 		VendorCode:             item.VendorCode,
-	}, cardpublication_service.VerifiedCardEvidence{
+	}, cardpublication_resolution.VerifiedCardEvidence{
 		Card:       info.Card,
 		ObservedAt: info.ObservedAt,
 	})

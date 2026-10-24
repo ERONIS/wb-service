@@ -16,16 +16,16 @@ PhaseFinished ◄──────── PhaseReconciling ◄──────
 ### 1. Ingestion & Staging (`cardimport`)
 - **Sources**: Uploaded Excel file (`cardimport`).
 - **Validation**: Headers, mandatory fields, barcode uniqueness and variant grouping run against process-memory session state. `Continue` discards invalid/duplicate cards while retaining the remaining valid cards.
-- **Durability boundary**: Only `Finalize` writes finalized session/file provenance and the immutable `wb.card_batches`/`wb.card_batch_items` in one transaction. A restart before commit loses the session and requires re-upload; after commit transfer resumes from the batch in PostgreSQL. Cardimport's model owns import session/file IDs, frozen batch validation, and the original checksum; its service verifies the checksum and exposes `ReadyBatchHeader`/`ReadyBatchItem` to transfer. Core's ready contract contains no session/file IDs. Transfer retains the opaque group key so cards are grouped correctly per source file. Its first discovery pass runs at startup; later passes use `TRANSFER_POLL_INTERVAL` (default 3s), with no cardimport-to-transfer wake signal.
+- **Durability boundary**: Only `Finalize` writes `wb.card_batches`/`wb.card_batch_items` in one transaction. The header carries source session ID and author Telegram ID and is sealed after item insertion; source file IDs/rows live on items while full file metadata stays only in memory; no separate session/file tables remain. A restart before commit loses the in-memory session and requires re-upload; after commit transfer resumes from the sealed batch in PostgreSQL. Cardimport's `service/intake` owns session/file IDs, `service/batch` owns frozen batch validation, and `service/staging` owns collecting state and freezes sessions; `service/importflow` validates loaded items and exposes `ReadyBatchHeader`/`ReadyBatchItem` to transfer. No imported-batch checksum or finalize-command digest is stored or compared. Core's ready contract contains no session/file IDs. Transfer retains the opaque group key so cards are grouped correctly per source file. Its first discovery pass runs at startup; later passes use `TRANSFER_POLL_INTERVAL` (default 3s), with no cardimport-to-transfer wake signal.
 
 ### 2. Initialization (`PhaseInitializing`)
 - **Cohort Selection**: Target cabinets chosen by user or automated policy.
-- **Root Hash**: Generates `TargetSetRoot` (canonical SHA-256 combining cabinet IDs, seller keys, revisions, capabilities).
+- **Target Snapshot**: Stores selected cabinet rows, client generations, binding/capability revisions, expiry, and permissions under the transfer ID; no target-set root or snapshot hash is created.
 - **Projections**: Seeds `wb.transfers`, `wb.transfer_targets`, and initial `pending` projections in `wb.transfer_group_targets` and `wb.transfer_item_targets`.
 
 ### 3. Card Preparation (`PhasePreparing`)
 - **Validator**: `cardprepare.Processor()` evaluates pending group targets against live WB category requirements, characteristics, and constraints.
-- **Single-Transaction Persistence**: Atomically persists proposal artifacts into `wb.card_preparation_artifacts` (keyed directly by `group_target_id`) and updates `wb.transfer_group_targets` projections via `ApplyTx` within a single Unit of Work commit.
+- **Single-Transaction Persistence**: Atomically persists hash-free proposal artifacts into `wb.card_preparation_artifacts` (keyed directly by `group_target_id`) and updates `wb.transfer_group_targets` projections via `ApplyTx` within a single Unit of Work commit.
 - **Transitions**: Groups failing validation transition to `rejected` or `unresolved`; valid groups become `succeeded` and immediately wake downstream publication planning without waiting for batch completion.
 
 ### 4. Live Authorization (`PhaseAwaitingAuthorization`)

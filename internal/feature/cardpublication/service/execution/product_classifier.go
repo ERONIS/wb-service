@@ -8,12 +8,13 @@ import (
 
 	core_wb "github.com/ERONIS/wb-service/internal/core/transport/wb"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
+	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 )
 
 func executeProductMutation(
 	ctx context.Context,
-	transport CatalogTransport,
+	transport cardpublication_catalog.CatalogTransport,
 	action ProductAction,
 ) SubmissionResult {
 	var meta contentapi.ResponseMeta

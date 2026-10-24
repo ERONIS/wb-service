@@ -6,12 +6,12 @@ import (
 
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
 	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
-	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
+	cardpublication_resolution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/resolution"
 	statistics_postgres_repository "github.com/ERONIS/wb-service/internal/feature/statistics/repository/postgres"
 	statistics_service "github.com/ERONIS/wb-service/internal/feature/statistics/service"
 	statistics_telegram_transport "github.com/ERONIS/wb-service/internal/feature/statistics/transport/telegram"
-	"go.uber.org/zap"
 
+	"go.uber.org/zap"
 	tele "gopkg.in/telebot.v3"
 )
 
@@ -25,8 +25,8 @@ func New(
 	ctx context.Context,
 	pool core_postgres_pool.Pool,
 	bot *tele.Bot,
-	manualResolver *cardpublication_service.ManualResolver,
-	verifiedResolver *cardpublication_service.VerifiedCardResolver,
+	manualResolver *cardpublication_resolution.ManualResolver,
+	verifiedResolver *cardpublication_resolution.VerifiedCardResolver,
 	batches statistics_telegram_transport.BatchReader,
 	cabinetNames map[string]string,
 	cardVerifier statistics_service.CardVerifier,

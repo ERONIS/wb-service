@@ -1,20 +1,22 @@
 package cardpublication_postgres_repository
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
+	cardpublication_execution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/execution"
 )
 
 // BeginMediaAttempt начинает попытку исполнения медиа-действия, связывая идентичность товара и создавая запись попытки.
 func (repository *Repository) BeginMediaAttempt(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	command cardpublication_service.BeginMediaAttemptCommand,
-) (cardpublication_service.MediaAttempt, error) {
+	command cardpublication_execution.BeginMediaAttemptCommand,
+) (cardpublication_execution.MediaAttempt, error) {
 	action := command.Action
 	if tx == nil || action.State != "planned" || action.AttemptID != 0 ||
 		command.Authorization.AuthorizationID != action.AuthorizationID ||
@@ -23,15 +25,15 @@ func (repository *Repository) BeginMediaAttempt(
 		command.Baseline.TransferID != action.TransferID ||
 		command.Baseline.ActionID != action.ActionID ||
 		command.Baseline.SellerID != action.SellerID ||
-		command.RecheckObservationID <= 0 || command.RequestDigest == (cardpublication_service.Digest{}) ||
+		command.RecheckObservationID <= 0 ||
 		len(command.RequestPayload) == 0 {
-		return cardpublication_service.MediaAttempt{},
+		return cardpublication_execution.MediaAttempt{},
 			errors.New("begin publication media attempt command is invalid")
 	}
-	request, payload, digest, err := action.FinalRequest()
-	if err != nil || request.NMID != action.NMID || digest != command.RequestDigest ||
-		!equalBytes(payload, command.RequestPayload) {
-		return cardpublication_service.MediaAttempt{},
+	request, payload, err := action.FinalRequest()
+	if err != nil || request.NMID != action.NMID ||
+		!bytes.Equal(payload, command.RequestPayload) {
+		return cardpublication_execution.MediaAttempt{},
 			cardpublication_service.ErrMediaActionConflict
 	}
 	const bindIdentity = `
@@ -58,11 +60,11 @@ func (repository *Repository) BeginMediaAttempt(
 		action.IdentityRevision,
 	)
 	if err != nil {
-		return cardpublication_service.MediaAttempt{},
+		return cardpublication_execution.MediaAttempt{},
 			fmt.Errorf("bind publication media identity: %w", err)
 	}
 	if result.RowsAffected() != 1 {
-		return cardpublication_service.MediaAttempt{},
+		return cardpublication_execution.MediaAttempt{},
 			cardpublication_service.ErrMediaActionConflict
 	}
 	const beginAction = `
@@ -88,11 +90,11 @@ func (repository *Repository) BeginMediaAttempt(
 		action.AuthorizationID,
 	)
 	if err != nil {
-		return cardpublication_service.MediaAttempt{},
+		return cardpublication_execution.MediaAttempt{},
 			fmt.Errorf("begin publication media action: %w", err)
 	}
 	if result.RowsAffected() != 1 {
-		return cardpublication_service.MediaAttempt{},
+		return cardpublication_execution.MediaAttempt{},
 			cardpublication_service.ErrMediaActionConflict
 	}
 	const beginPlan = `
@@ -107,11 +109,11 @@ func (repository *Repository) BeginMediaAttempt(
 	`
 	result, err = tx.Exec(ctx, beginPlan, action.TransferID, action.PlanID)
 	if err != nil {
-		return cardpublication_service.MediaAttempt{},
+		return cardpublication_execution.MediaAttempt{},
 			fmt.Errorf("touch publication plan for media: %w", err)
 	}
 	if result.RowsAffected() != 1 {
-		return cardpublication_service.MediaAttempt{},
+		return cardpublication_execution.MediaAttempt{},
 			cardpublication_service.ErrMediaActionConflict
 	}
 	const insertAttempt = `
@@ -119,19 +121,18 @@ func (repository *Repository) BeginMediaAttempt(
 			transfer_id, action_id, authorization_id, recheck_observation_id,
 			baseline_seller_id, baseline_cursor_revision,
 			baseline_cursor_updated_at, baseline_cursor_batch_uuid,
-			baseline_captured_at, request_digest, request_payload,
+			baseline_captured_at, request_payload,
 			attribution_id
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING id, started_at;
 	`
-	attempt := cardpublication_service.MediaAttempt{
+	attempt := cardpublication_execution.MediaAttempt{
 		TransferID:           action.TransferID,
 		ActionID:             action.ActionID,
 		AuthorizationID:      action.AuthorizationID,
 		RecheckObservationID: command.RecheckObservationID,
 		AttributionID:        action.AttributionID,
-		RequestDigest:        command.RequestDigest,
 		RequestPayload:       append([]byte(nil), command.RequestPayload...),
 	}
 	if err := tx.QueryRow(
@@ -146,11 +147,10 @@ func (repository *Repository) BeginMediaAttempt(
 		nullableTime(command.Baseline.CursorUpdatedAt),
 		command.Baseline.CursorBatchUUID,
 		command.Baseline.CapturedAt,
-		command.RequestDigest[:],
 		command.RequestPayload,
 		nullablePositive(action.AttributionID),
 	).Scan(&attempt.ID, &attempt.StartedAt); err != nil {
-		return cardpublication_service.MediaAttempt{},
+		return cardpublication_execution.MediaAttempt{},
 			fmt.Errorf("insert publication media attempt: %w", err)
 	}
 	return attempt, nil
@@ -160,12 +160,12 @@ func (repository *Repository) BeginMediaAttempt(
 func (repository *Repository) FinishMediaWithoutAttempt(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	action cardpublication_service.MediaAction,
+	action cardpublication_execution.MediaAction,
 	safeCode string,
-) (cardpublication_service.MediaGroupResult, error) {
+) (cardpublication_execution.MediaGroupResult, error) {
 	if tx == nil || action.State != "planned" || action.AttemptID != 0 ||
 		safeCode == "" || len(safeCode) > 128 {
-		return cardpublication_service.MediaGroupResult{},
+		return cardpublication_execution.MediaGroupResult{},
 			errors.New("finish publication media without attempt command is invalid")
 	}
 	const finishMember = `
@@ -190,11 +190,11 @@ func (repository *Repository) FinishMediaWithoutAttempt(
 		action.NMID,
 	)
 	if err != nil {
-		return cardpublication_service.MediaGroupResult{},
+		return cardpublication_execution.MediaGroupResult{},
 			fmt.Errorf("skip publication media member: %w", err)
 	}
 	if result.RowsAffected() != 1 {
-		return cardpublication_service.MediaGroupResult{},
+		return cardpublication_execution.MediaGroupResult{},
 			cardpublication_service.ErrMediaActionConflict
 	}
 	const finishAction = `
@@ -213,15 +213,15 @@ func (repository *Repository) FinishMediaWithoutAttempt(
 	`
 	result, err = tx.Exec(ctx, finishAction, action.TransferID, action.ActionID, safeCode)
 	if err != nil {
-		return cardpublication_service.MediaGroupResult{},
+		return cardpublication_execution.MediaGroupResult{},
 			fmt.Errorf("skip publication media action: %w", err)
 	}
 	if result.RowsAffected() != 1 {
-		return cardpublication_service.MediaGroupResult{},
+		return cardpublication_execution.MediaGroupResult{},
 			cardpublication_service.ErrMediaActionConflict
 	}
 	if err := reducePublicationPlan(ctx, tx, action.TransferID, action.PlanID); err != nil {
-		return cardpublication_service.MediaGroupResult{}, err
+		return cardpublication_execution.MediaGroupResult{}, err
 	}
 	return loadMediaGroupResult(ctx, tx, action)
 }

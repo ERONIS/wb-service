@@ -1,4 +1,4 @@
-package workflow
+package cardimport_flow
 
 import (
 	"context"
@@ -6,22 +6,13 @@ import (
 
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
+	cardimport_batch "github.com/ERONIS/wb-service/internal/feature/cardimport/service/batch"
 )
 
-func (s *Service) GetReadyBatchHeader(
-	ctx context.Context,
-	batchID BatchID,
-) (cardpipeline.ReadyBatchHeader, error) {
-	header, err := s.GetBatch(ctx, batchID)
-	if err != nil {
-		return cardpipeline.ReadyBatchHeader{}, err
-	}
-	return readyBatchHeader(header), nil
-}
-
+// ListReadyBatches выдаёт transfer заголовки готовых пачек.
 func (s *Service) ListReadyBatches(
 	ctx context.Context,
-	after *BatchCursor,
+	after *cardpipeline.BatchCursor,
 	limit int,
 ) ([]cardpipeline.ReadyBatchHeader, error) {
 	batchHeaders, err := s.ListFinalizedBatches(ctx, after, limit)
@@ -35,21 +26,22 @@ func (s *Service) ListReadyBatches(
 	return ready, nil
 }
 
+// GetReadyBatch собирает и проверяет всю пачку для transfer.
 func (s *Service) GetReadyBatch(
 	ctx context.Context,
-	batchID BatchID,
+	batchID cardpipeline.BatchID,
 ) (cardpipeline.ReadyBatch, error) {
 	header, err := s.GetBatch(ctx, batchID)
 	if err != nil {
 		return cardpipeline.ReadyBatch{}, err
 	}
-	items := make([]BatchItem, 0, header.ItemsCount)
+	items := make([]cardimport_batch.BatchItem, 0, header.ItemsCount)
 	for len(items) < header.ItemsCount {
 		afterPosition := 0
 		if len(items) > 0 {
 			afterPosition = items[len(items)-1].Position
 		}
-		page, err := s.ListBatchItems(ctx, batchID, afterPosition, MaxBatchPageSize)
+		page, err := s.ListBatchItems(ctx, batchID, afterPosition, cardimport_batch.MaxBatchPageSize)
 		if err != nil {
 			return cardpipeline.ReadyBatch{}, err
 		}
@@ -60,15 +52,14 @@ func (s *Service) GetReadyBatch(
 			if item.ID <= 0 || item.BatchID != batchID || item.Position != len(items)+1 {
 				return cardpipeline.ReadyBatch{}, fmt.Errorf("cardimport batch item order is invalid: %w", core_errors.ErrConflict)
 			}
+			if err := item.Validate(); err != nil {
+				return cardpipeline.ReadyBatch{}, fmt.Errorf("cardimport batch item is invalid: %v: %w", err, core_errors.ErrConflict)
+			}
 			items = append(items, item)
 		}
 		if len(items) > header.ItemsCount {
 			return cardpipeline.ReadyBatch{}, fmt.Errorf("cardimport batch item count differs: %w", core_errors.ErrConflict)
 		}
-	}
-	checksum, err := BatchChecksum(header.Purpose, header.GroupsCount, items)
-	if err != nil || checksum != header.Checksum {
-		return cardpipeline.ReadyBatch{}, fmt.Errorf("cardimport batch checksum differs: %w", core_errors.ErrConflict)
 	}
 	ready := cardpipeline.ReadyBatch{
 		Header: readyBatchHeader(header),
@@ -84,12 +75,24 @@ func (s *Service) GetReadyBatch(
 	return ready, nil
 }
 
-func readyBatchHeader(header BatchHeader) cardpipeline.ReadyBatchHeader {
+// GetReadyBatchHeader возвращает transfer заголовок одной пачки.
+func (s *Service) GetReadyBatchHeader(
+	ctx context.Context,
+	batchID cardpipeline.BatchID,
+) (cardpipeline.ReadyBatchHeader, error) {
+	header, err := s.GetBatch(ctx, batchID)
+	if err != nil {
+		return cardpipeline.ReadyBatchHeader{}, err
+	}
+	return readyBatchHeader(header), nil
+}
+
+// readyBatchHeader убирает внутренние данные импорта из заголовка пачки.
+func readyBatchHeader(header cardimport_batch.BatchHeader) cardpipeline.ReadyBatchHeader {
 	return cardpipeline.ReadyBatchHeader{
 		ID:         header.ID,
 		ItemsCount: header.ItemsCount, GroupsCount: header.GroupsCount,
-		Checksum:         header.Checksum,
-		AuthorTelegramID: header.AuthorSnapshot.TelegramUserID,
+		AuthorTelegramID: header.AuthorTelegramID,
 		FinalizedAt:      header.FinalizedAt,
 	}
 }

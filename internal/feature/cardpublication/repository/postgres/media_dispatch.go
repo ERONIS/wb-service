@@ -5,14 +5,14 @@ import (
 	"errors"
 	"fmt"
 
-	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
+	cardpublication_execution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/execution"
 )
 
 // ListDispatchableMediaActions возвращает список медиа-действий, готовых к диспетчеризации.
 func (repository *Repository) ListDispatchableMediaActions(
 	ctx context.Context,
 	limit int,
-) ([]cardpublication_service.MediaActionCandidate, error) {
+) ([]cardpublication_execution.ProductActionCandidate, error) {
 	if limit <= 0 || limit > 100 {
 		return nil, errors.New("dispatchable media action limit is invalid")
 	}
@@ -27,8 +27,7 @@ func (repository *Repository) ListDispatchableMediaActions(
 				target.seller_id,
 				live_auth.id AS authorization_id,
 				live_auth.revision AS authorization_revision,
-				plan.plan_digest,
-				plan.target_set_root,
+				plan.id AS plan_id,
 				target.position AS target_position,
 				ROW_NUMBER() OVER (
 					PARTITION BY target.seller_id
@@ -46,7 +45,6 @@ func (repository *Repository) ListDispatchableMediaActions(
 			JOIN wb.transfer_live_authorizations AS live_auth
 			  ON live_auth.transfer_id = action.transfer_id
 			 AND live_auth.plan_id = action.plan_id
-			 AND live_auth.plan_digest = plan.plan_digest
 			JOIN wb.publication_action_members AS media_member
 			  ON media_member.transfer_id = action.transfer_id
 			 AND media_member.action_id = action.id
@@ -62,7 +60,6 @@ func (repository *Repository) ListDispatchableMediaActions(
 			  ON attribution.transfer_id = product_member.transfer_id
 			 AND attribution.action_member_id = product_member.id
 			 AND attribution.level IN ('direct', 'observed_after_attempt')
-			 AND attribution.plan_digest = plan.plan_digest
 			 AND attribution.seller_id = target.seller_id
 			 AND attribution.group_target_id = media_member.group_target_id
 			JOIN wb.product_identities AS identity
@@ -98,7 +95,7 @@ func (repository *Repository) ListDispatchableMediaActions(
 		)
 		SELECT
 			transfer_id, action_id, target_id, seller_id,
-			authorization_id, authorization_revision, plan_digest, target_set_root
+			authorization_id, authorization_revision, plan_id
 		FROM dispatchable
 		ORDER BY cabinet_rank, target_position, seller_id, action_id
 		LIMIT $1;
@@ -108,7 +105,7 @@ func (repository *Repository) ListDispatchableMediaActions(
 		return nil, fmt.Errorf("list dispatchable publication media actions: %w", err)
 	}
 	defer rows.Close()
-	result := make([]cardpublication_service.MediaActionCandidate, 0)
+	result := make([]cardpublication_execution.ProductActionCandidate, 0)
 	for rows.Next() {
 		candidate, err := scanProductActionCandidate(rows)
 		if err != nil {
@@ -126,7 +123,7 @@ func (repository *Repository) ListDispatchableMediaActions(
 func (repository *Repository) ListInterruptedMediaActions(
 	ctx context.Context,
 	limit int,
-) ([]cardpublication_service.MediaActionCandidate, error) {
+) ([]cardpublication_execution.ProductActionCandidate, error) {
 	if limit <= 0 || limit > 100 {
 		return nil, errors.New("interrupted media action limit is invalid")
 	}
@@ -140,8 +137,7 @@ func (repository *Repository) ListInterruptedMediaActions(
 			target.seller_id,
 			live_auth.id,
 			live_auth.revision,
-			plan.plan_digest,
-			plan.target_set_root
+			plan.id
 		FROM wb.publication_actions AS action
 		JOIN wb.publication_plans AS plan
 		  ON plan.transfer_id = action.transfer_id
@@ -167,7 +163,7 @@ func (repository *Repository) ListInterruptedMediaActions(
 		return nil, fmt.Errorf("list interrupted publication media actions: %w", err)
 	}
 	defer rows.Close()
-	result := make([]cardpublication_service.MediaActionCandidate, 0)
+	result := make([]cardpublication_execution.ProductActionCandidate, 0)
 	for rows.Next() {
 		candidate, err := scanProductActionCandidate(rows)
 		if err != nil {
@@ -185,7 +181,7 @@ func (repository *Repository) ListInterruptedMediaActions(
 func (repository *Repository) ListPendingMediaActions(
 	ctx context.Context,
 	limit int,
-) ([]cardpublication_service.MediaActionCandidate, error) {
+) ([]cardpublication_execution.ProductActionCandidate, error) {
 	if limit <= 0 || limit > 100 {
 		return nil, errors.New("pending media action limit is invalid")
 	}
@@ -200,8 +196,7 @@ func (repository *Repository) ListPendingMediaActions(
 				target.seller_id,
 				live_auth.id AS authorization_id,
 				live_auth.revision AS authorization_revision,
-				plan.plan_digest,
-				plan.target_set_root,
+				plan.id AS plan_id,
 				target.position AS target_position,
 				ROW_NUMBER() OVER (
 					PARTITION BY action.transfer_id, action.target_id
@@ -221,7 +216,6 @@ func (repository *Repository) ListPendingMediaActions(
 				FROM wb.transfer_live_authorizations AS live
 				WHERE live.transfer_id = action.transfer_id
 				  AND live.plan_id = action.plan_id
-				  AND live.plan_digest = plan.plan_digest
 				ORDER BY live.id DESC
 				LIMIT 1
 			) AS live_auth ON TRUE
@@ -256,7 +250,6 @@ func (repository *Repository) ListPendingMediaActions(
 						  AND product_member.transfer_item_target_id
 						      = media_member.transfer_item_target_id
 						  AND product_action.plan_id = action.plan_id
-						  AND attribution.plan_digest = plan.plan_digest
 						  AND attribution.seller_id = target.seller_id
 						  AND attribution.group_target_id = media_member.group_target_id
 						  AND (attribution.nm_id IS NULL OR identity.nm_id = attribution.nm_id)
@@ -274,7 +267,7 @@ func (repository *Repository) ListPendingMediaActions(
 		)
 		SELECT
 			transfer_id, action_id, target_id, seller_id,
-			authorization_id, authorization_revision, plan_digest, target_set_root
+			authorization_id, authorization_revision, plan_id
 		FROM pending
 		WHERE lane_position = 1
 		ORDER BY target_position, action_id
@@ -285,7 +278,7 @@ func (repository *Repository) ListPendingMediaActions(
 		return nil, fmt.Errorf("list pending publication media actions: %w", err)
 	}
 	defer rows.Close()
-	result := make([]cardpublication_service.MediaActionCandidate, 0)
+	result := make([]cardpublication_execution.ProductActionCandidate, 0)
 	for rows.Next() {
 		candidate, err := scanProductActionCandidate(rows)
 		if err != nil {

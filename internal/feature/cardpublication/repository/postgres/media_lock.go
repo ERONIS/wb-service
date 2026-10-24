@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 
+	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
+	cardpublication_execution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/execution"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -16,11 +18,11 @@ import (
 func (repository *Repository) LockMediaAction(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	candidate cardpublication_service.MediaActionCandidate,
-) (cardpublication_service.MediaAction, error) {
-	if tx == nil || candidate.TransferID <= 0 || candidate.ActionID <= 0 ||
+	candidate cardpublication_execution.ProductActionCandidate,
+) (cardpublication_execution.MediaAction, error) {
+	if tx == nil || candidate.TransferID <= 0 || candidate.PlanID <= 0 || candidate.ActionID <= 0 ||
 		candidate.AuthorizationID <= 0 {
-		return cardpublication_service.MediaAction{},
+		return cardpublication_execution.MediaAction{},
 			errors.New("lock publication media action: identity is invalid")
 	}
 	const query = `
@@ -28,10 +30,7 @@ func (repository *Repository) LockMediaAction(
 			action.plan_id,
 			action.revision,
 			action.state,
-			action.request_digest,
 			action.request_payload,
-			action.member_set_digest,
-			action.media_link_set_root,
 			target.seller_id,
 			target.client_generation,
 			target.credential_expires_at,
@@ -55,7 +54,6 @@ func (repository *Repository) LockMediaAction(
 			identity.revision,
 			attempt.id,
 			attempt.recheck_observation_id,
-			attempt.request_digest,
 			attempt.request_payload,
 			attempt.started_at,
 			live_auth.revision,
@@ -81,7 +79,6 @@ func (repository *Repository) LockMediaAction(
 				  AND counted_product_member.transfer_item_target_id
 				      = media_member.transfer_item_target_id
 				  AND counted_product_action.plan_id = action.plan_id
-				  AND counted_attribution.plan_digest = plan.plan_digest
 				  AND counted_attribution.seller_id = target.seller_id
 				  AND counted_attribution.group_target_id = media_member.group_target_id
 			),
@@ -111,7 +108,6 @@ func (repository *Repository) LockMediaAction(
 		  ON attribution.transfer_id = product_member.transfer_id
 		 AND attribution.action_member_id = product_member.id
 		 AND attribution.level IN ('direct', 'observed_after_attempt')
-		 AND attribution.plan_digest = plan.plan_digest
 		 AND attribution.seller_id = target.seller_id
 		 AND attribution.group_target_id = media_member.group_target_id
 		JOIN wb.product_identities AS identity
@@ -133,8 +129,7 @@ func (repository *Repository) LockMediaAction(
 				OR
 				product_action.id IS NULL
 			)
-			AND plan.plan_digest = $6
-			AND plan.target_set_root = $7
+			AND plan.id = $6
 			AND identity.state = 'remote_present'
 			AND identity.nm_id IS NOT NULL
 			AND (
@@ -149,20 +144,18 @@ func (repository *Repository) LockMediaAction(
 			)
 		FOR UPDATE OF action, plan, media_member, identity;
 	`
-	action := cardpublication_service.MediaAction{ProductActionCandidate: candidate}
+	action := cardpublication_execution.MediaAction{ProductActionCandidate: candidate}
 	var (
-		requestDigest, memberDigest, mediaRoot []byte
-		generation                             []byte
-		sellerID                               cardpublication_service.SellerID
-		preflightID                            pgtype.Int8
-		attemptID, recheckID                   pgtype.Int8
-		attributionID                          pgtype.Int8
-		attemptRequestDigest                   []byte
-		attemptRequestPayload                  []byte
-		attemptStartedAt                       pgtype.Timestamptz
-		currentAuthorizationRevision           int64
-		memberCount, attributionCount          int64
-		hasProductAction                       bool
+		generation                    []byte
+		sellerID                      core_domain.SellerID
+		preflightID                   pgtype.Int8
+		attemptID, recheckID          pgtype.Int8
+		attributionID                 pgtype.Int8
+		attemptRequestPayload         []byte
+		attemptStartedAt              pgtype.Timestamptz
+		currentAuthorizationRevision  int64
+		memberCount, attributionCount int64
+		hasProductAction              bool
 	)
 	err := tx.QueryRow(
 		ctx,
@@ -172,16 +165,12 @@ func (repository *Repository) LockMediaAction(
 		candidate.TargetID,
 		candidate.SellerID,
 		candidate.AuthorizationID,
-		candidate.PlanDigest[:],
-		candidate.TargetSetRoot[:],
+		candidate.PlanID,
 	).Scan(
 		&action.PlanID,
 		&action.Revision,
 		&action.State,
-		&requestDigest,
 		&action.RequestPayload,
-		&memberDigest,
-		&mediaRoot,
 		&sellerID,
 		&generation,
 		&action.CredentialExpiresAt,
@@ -196,7 +185,6 @@ func (repository *Repository) LockMediaAction(
 		&action.IdentityRevision,
 		&attemptID,
 		&recheckID,
-		&attemptRequestDigest,
 		&attemptRequestPayload,
 		&attemptStartedAt,
 		&currentAuthorizationRevision,
@@ -205,28 +193,22 @@ func (repository *Repository) LockMediaAction(
 		&hasProductAction,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return cardpublication_service.MediaAction{},
+		return cardpublication_execution.MediaAction{},
 			cardpublication_service.ErrMediaActionConflict
 	}
 	if err != nil {
-		return cardpublication_service.MediaAction{},
+		return cardpublication_execution.MediaAction{},
 			fmt.Errorf("lock publication media action: %w", err)
 	}
-	if len(requestDigest) != len(action.RequestDigest) ||
-		len(memberDigest) != len(action.MemberSetDigest) ||
-		len(mediaRoot) != len(action.MediaLinkSetRoot) ||
-		sellerID.Validate() != nil ||
+	if sellerID.Validate() != nil ||
 		len(generation) != len(action.ClientGeneration) || !preflightID.Valid ||
 		memberCount != 1 || (hasProductAction && attributionCount != 1) || (!hasProductAction && attributionCount != 0) {
-		return cardpublication_service.MediaAction{},
+		return cardpublication_execution.MediaAction{},
 			cardpublication_service.ErrMediaActionConflict
 	}
 	if attributionID.Valid {
 		action.AttributionID = attributionID.Int64
 	}
-	copy(action.RequestDigest[:], requestDigest)
-	copy(action.MemberSetDigest[:], memberDigest)
-	copy(action.MediaLinkSetRoot[:], mediaRoot)
 	action.SellerID = sellerID
 	copy(action.ClientGeneration[:], generation)
 	action.PreflightObservationID = preflightID.Int64
@@ -237,13 +219,6 @@ func (repository *Repository) LockMediaAction(
 	if recheckID.Valid {
 		action.RecheckObservationID = recheckID.Int64
 	}
-	if len(attemptRequestDigest) > 0 {
-		if len(attemptRequestDigest) != len(action.AttemptRequestDigest) {
-			return cardpublication_service.MediaAction{},
-				cardpublication_service.ErrMediaActionConflict
-		}
-		copy(action.AttemptRequestDigest[:], attemptRequestDigest)
-	}
 	if len(attemptRequestPayload) > 0 {
 		action.AttemptRequestPayload = append([]byte(nil), attemptRequestPayload...)
 	}
@@ -251,7 +226,7 @@ func (repository *Repository) LockMediaAction(
 		action.AttemptStartedAt = attemptStartedAt.Time.UTC()
 	}
 	if err := action.Validate(); err != nil {
-		return cardpublication_service.MediaAction{}, err
+		return cardpublication_execution.MediaAction{}, err
 	}
 	return action, nil
 }

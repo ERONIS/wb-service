@@ -1,7 +1,6 @@
 package cardprepare_postgres_repository
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +8,9 @@ import (
 	"strings"
 
 	cardprepare_service "github.com/ERONIS/wb-service/internal/feature/cardprepare/service"
+	cardprepare_model "github.com/ERONIS/wb-service/internal/feature/cardprepare/service/model"
+	cardprepare_workflow "github.com/ERONIS/wb-service/internal/feature/cardprepare/service/workflow"
+
 	"golang.org/x/sync/errgroup"
 )
 
@@ -19,9 +21,8 @@ const (
 
 type storedProposalRow struct {
 	position                       int64
-	stored                         cardprepare_service.StoredProposal
-	semanticDigest, metadataDigest []byte
-	proposalRoot, requestPayload   []byte
+	stored                         cardprepare_model.StoredProposal
+	requestPayload                 []byte
 	snapshotPayload                []byte
 	transferItemIDs, itemPositions []int64
 	vendorCodes                    []string
@@ -29,19 +30,19 @@ type storedProposalRow struct {
 
 func (repository *Repository) LoadProposal(
 	ctx context.Context,
-	query cardprepare_service.ProposalQuery,
-) (cardprepare_service.StoredProposal, error) {
-	stored, err := repository.LoadProposals(ctx, []cardprepare_service.ProposalQuery{query})
+	query cardprepare_model.ProposalQuery,
+) (cardprepare_model.StoredProposal, error) {
+	stored, err := repository.LoadProposals(ctx, []cardprepare_model.ProposalQuery{query})
 	if err != nil {
-		return cardprepare_service.StoredProposal{}, err
+		return cardprepare_model.StoredProposal{}, err
 	}
 	return stored[0], nil
 }
 
 func (repository *Repository) LoadProposals(
 	ctx context.Context,
-	queries []cardprepare_service.ProposalQuery,
-) ([]cardprepare_service.StoredProposal, error) {
+	queries []cardprepare_model.ProposalQuery,
+) ([]cardprepare_model.StoredProposal, error) {
 	if ctx == nil {
 		return nil, errors.New("load card preparation proposals: context is nil")
 	}
@@ -50,7 +51,6 @@ func (repository *Repository) LoadProposals(
 	}
 	transferID := queries[0].TransferID
 	groupTargetIDs := make([]int64, len(queries))
-	proposalRoots := make([][]byte, len(queries))
 	for index, query := range queries {
 		if err := query.Validate(); err != nil {
 			return nil, err
@@ -59,7 +59,6 @@ func (repository *Repository) LoadProposals(
 			return nil, errors.New("card preparation proposal batch spans transfers")
 		}
 		groupTargetIDs[index] = query.GroupTargetID
-		proposalRoots[index] = append([]byte(nil), query.ProposalRoot[:]...)
 	}
 	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
@@ -68,12 +67,10 @@ func (repository *Repository) LoadProposals(
 		WITH requested AS (
 			SELECT
 				request.group_target_id,
-				request.proposal_root,
 				request.position
-			FROM UNNEST($2::bigint[], $3::bytea[])
+			FROM UNNEST($2::bigint[])
 				WITH ORDINALITY AS request(
 					group_target_id,
-					proposal_root,
 					position
 				)
 		)
@@ -83,9 +80,6 @@ func (repository *Repository) LoadProposals(
 			group_target.target_id,
 			target.seller_id,
 			artifact.subject_id,
-			artifact.semantic_digest,
-			artifact.metadata_digest,
-			artifact.proposal_root,
 			artifact.request_payload,
 			artifact.limits_free,
 			artifact.limits_paid,
@@ -99,14 +93,12 @@ func (repository *Repository) LoadProposals(
 		  ON group_target.transfer_id = $1
 		 AND group_target.id = request.group_target_id
 		 AND group_target.preparation_status = 'succeeded'
-		 AND group_target.preparation_proposal_root = request.proposal_root
 		JOIN wb.transfer_targets AS target
 		  ON target.transfer_id = group_target.transfer_id
 		 AND target.id = group_target.target_id
 		JOIN wb.card_preparation_artifacts AS artifact
 		  ON artifact.transfer_id = group_target.transfer_id
 		 AND artifact.group_target_id = group_target.id
-		 AND artifact.proposal_root = request.proposal_root
 		JOIN LATERAL (
 			SELECT
 				ARRAY_AGG(item.id ORDER BY item.position) AS transfer_item_ids,
@@ -123,7 +115,6 @@ func (repository *Repository) LoadProposals(
 		load,
 		transferID,
 		groupTargetIDs,
-		proposalRoots,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("query card preparation proposals: %w", err)
@@ -140,9 +131,6 @@ func (repository *Repository) LoadProposals(
 			&loaded.stored.TargetID,
 			&loaded.stored.SellerID,
 			&loaded.stored.Proposal.SubjectID,
-			&loaded.semanticDigest,
-			&loaded.metadataDigest,
-			&loaded.proposalRoot,
 			&loaded.requestPayload,
 			&loaded.stored.Proposal.Limits.FreeLimits,
 			&loaded.stored.Proposal.Limits.PaidLimits,
@@ -171,7 +159,7 @@ func (repository *Repository) LoadProposals(
 		}
 	}
 
-	storedProposals := make([]cardprepare_service.StoredProposal, len(queries))
+	storedProposals := make([]cardprepare_model.StoredProposal, len(queries))
 	var decodeGroup errgroup.Group
 	decodeGroup.SetLimit(proposalDecodeConcurrency)
 	for _, loaded := range loadedRows {
@@ -185,9 +173,6 @@ func (repository *Repository) LoadProposals(
 			if err := decodeStoredProposal(
 				&stored,
 				query,
-				loaded.semanticDigest,
-				loaded.metadataDigest,
-				loaded.proposalRoot,
 				loaded.requestPayload,
 				loaded.snapshotPayload,
 				loaded.transferItemIDs,
@@ -207,11 +192,8 @@ func (repository *Repository) LoadProposals(
 }
 
 func decodeStoredProposal(
-	stored *cardprepare_service.StoredProposal,
-	query cardprepare_service.ProposalQuery,
-	semanticDigest []byte,
-	metadataDigest []byte,
-	proposalRoot []byte,
+	stored *cardprepare_model.StoredProposal,
+	query cardprepare_model.ProposalQuery,
 	requestPayload []byte,
 	snapshotPayload []byte,
 	transferItemIDs []int64,
@@ -223,31 +205,15 @@ func decodeStoredProposal(
 		len(transferItemIDs) != len(vendorCodes) {
 		return cardprepare_service.ErrPreparationMismatch
 	}
-	if err := decodeDigest(semanticDigest, &stored.Proposal.SemanticDigest); err != nil {
-		return err
-	}
-	if err := decodeDigest(metadataDigest, &stored.Proposal.MetadataDigest); err != nil {
-		return err
-	}
-	if err := decodeDigest(proposalRoot, &stored.Proposal.ProposalRoot); err != nil {
-		return err
-	}
-	if stored.Proposal.ProposalRoot != query.ProposalRoot {
-		return cardprepare_service.ErrPreparationMismatch
-	}
 	if err := json.Unmarshal(requestPayload, &stored.Proposal.Request); err != nil {
 		return fmt.Errorf("decode card preparation request: %w", err)
-	}
-	canonicalRequest, err := json.Marshal(stored.Proposal.Request)
-	if err != nil || !bytes.Equal(canonicalRequest, requestPayload) {
-		return cardprepare_service.ErrPreparationMismatch
 	}
 	stored.Proposal.EncodedRequest = append([]byte(nil), requestPayload...)
 	if err := json.Unmarshal(snapshotPayload, &stored.Proposal.MetadataSnapshot); err != nil {
 		return fmt.Errorf("decode card preparation metadata snapshot: %w", err)
 	}
 	stored.Proposal.LimitsObservedAt = stored.Proposal.LimitsObservedAt.UTC()
-	stored.Members = make([]cardprepare_service.PreparedMember, len(transferItemIDs))
+	stored.Members = make([]cardprepare_model.PreparedMember, len(transferItemIDs))
 	for index := range transferItemIDs {
 		if transferItemIDs[index] <= 0 || itemPositions[index] <= 0 ||
 			(index > 0 && itemPositions[index] <= itemPositions[index-1]) ||
@@ -255,7 +221,7 @@ func decodeStoredProposal(
 			vendorCodes[index] == "" {
 			return cardprepare_service.ErrPreparationMismatch
 		}
-		stored.Members[index] = cardprepare_service.PreparedMember{
+		stored.Members[index] = cardprepare_model.PreparedMember{
 			TransferItemID: transferItemIDs[index],
 			ItemPosition:   int(itemPositions[index]),
 			VendorCode:     vendorCodes[index],
@@ -275,22 +241,14 @@ func decodeStoredProposal(
 	return nil
 }
 
-func validateStoredProposal(stored cardprepare_service.StoredProposal) error {
+func validateStoredProposal(stored cardprepare_model.StoredProposal) error {
 	if stored.SourceGroupID <= 0 ||
 		stored.TargetID <= 0 ||
 		strings.TrimSpace(string(stored.SellerID)) != string(stored.SellerID) ||
-		stored.SellerID == "" || stored.Proposal.ValidateIntegrity() != nil {
+		stored.SellerID == "" || stored.Proposal.Validate() != nil {
 		return cardprepare_service.ErrPreparationMismatch
 	}
 	return nil
 }
 
-func decodeDigest(source []byte, destination *cardprepare_service.Digest) error {
-	if len(source) != len(destination) {
-		return cardprepare_service.ErrPreparationMismatch
-	}
-	copy(destination[:], source)
-	return nil
-}
-
-var _ cardprepare_service.ProposalReader = (*Repository)(nil)
+var _ cardprepare_workflow.ProposalReader = (*Repository)(nil)

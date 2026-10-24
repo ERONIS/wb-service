@@ -12,12 +12,33 @@ type (
 	BatchID        int64
 	BatchItemID    int64
 	SourceGroupKey [sha256.Size]byte
-	Digest         [sha256.Size]byte
 )
 
 type BatchCursor struct {
 	FinalizedAt time.Time
 	BatchID     BatchID
+}
+
+type ReadyBatch struct {
+	Header ReadyBatchHeader
+	Items  []ReadyBatchItem
+}
+
+type ReadyBatchHeader struct {
+	ID               BatchID
+	ItemsCount       int
+	GroupsCount      int
+	AuthorTelegramID int64
+	FinalizedAt      time.Time
+}
+
+type ReadyBatchItem struct {
+	ID             BatchItemID
+	BatchID        BatchID
+	Position       int
+	SourceGroupKey SourceGroupKey
+	VendorCode     string
+	Payload        Card
 }
 
 func (cursor BatchCursor) Validate() error {
@@ -27,12 +48,28 @@ func (cursor BatchCursor) Validate() error {
 	return nil
 }
 
-func (key SourceGroupKey) String() string {
-	return hex.EncodeToString(key[:])
+func (header ReadyBatchHeader) Validate() error {
+	if header.ID <= 0 ||
+		header.ItemsCount <= 0 || header.GroupsCount <= 0 ||
+		header.GroupsCount > header.ItemsCount ||
+		header.AuthorTelegramID <= 0 ||
+		header.FinalizedAt.IsZero() {
+		return invalidBatch("ready batch header is invalid")
+	}
+	return nil
 }
 
-func (digest Digest) String() string {
-	return hex.EncodeToString(digest[:])
+func (item ReadyBatchItem) Validate() error {
+	if item.ID <= 0 || item.BatchID <= 0 || item.Position <= 0 ||
+		item.SourceGroupKey == (SourceGroupKey{}) ||
+		item.VendorCode == "" || item.Payload.Variant.VendorCode != item.VendorCode {
+		return invalidBatch("ready batch item is invalid")
+	}
+	return nil
+}
+
+func (key SourceGroupKey) String() string {
+	return hex.EncodeToString(key[:])
 }
 
 func invalidBatch(message string) error {

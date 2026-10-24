@@ -7,12 +7,14 @@ import (
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+	transfer_publication "github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
 )
 
 func (repository *Repository) BeginPublicationAction(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID transfer_service.TransferID,
+	transferID transfer_model.TransferID,
 ) error {
 	if tx == nil {
 		return errors.New("begin publication action: DBTX is nil")
@@ -39,7 +41,7 @@ func (repository *Repository) BeginPublicationAction(
 func (repository *Repository) MarkPublicationReconciling(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID transfer_service.TransferID,
+	transferID transfer_model.TransferID,
 ) error {
 	if tx == nil {
 		return errors.New("mark publication reconciling: DBTX is nil")
@@ -66,7 +68,7 @@ func (repository *Repository) MarkPublicationReconciling(
 func (repository *Repository) BeginPublicationMedia(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID transfer_service.TransferID,
+	transferID transfer_model.TransferID,
 ) error {
 	if tx == nil {
 		return errors.New("begin publication media: DBTX is nil")
@@ -95,7 +97,7 @@ func (repository *Repository) BeginPublicationMedia(
 func (repository *Repository) ApplyPublicationActionResult(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	command transfer_service.ApplyPublicationActionResultCommand,
+	command transfer_publication.ApplyPublicationActionResultCommand,
 ) error {
 	if tx == nil {
 		return errors.New("apply publication action result: DBTX is nil")
@@ -141,7 +143,7 @@ func (repository *Repository) ApplyPublicationActionResult(
 func finishPublicationActionItems(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	command transfer_service.ApplyPublicationActionResultCommand,
+	command transfer_publication.ApplyPublicationActionResultCommand,
 ) error {
 	groupTargetIDs := make([]int64, len(command.Items))
 	itemTargetIDs := make([]int64, len(command.Items))
@@ -209,7 +211,7 @@ func finishPublicationActionItems(
 func skipPublicationActionMedia(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	command transfer_service.ApplyPublicationActionResultCommand,
+	command transfer_publication.ApplyPublicationActionResultCommand,
 ) error {
 	if len(command.SkipMediaForGroups) == 0 {
 		return nil
@@ -243,7 +245,7 @@ func skipPublicationActionMedia(
 func finishPublicationActionGroups(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID transfer_service.TransferID,
+	transferID transfer_model.TransferID,
 	groupTargetIDs []int64,
 ) error {
 	finish := fmt.Sprintf(`
@@ -312,7 +314,7 @@ func finishPublicationActionGroups(
 func (repository *Repository) CorrectPublicationItemResult(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	command transfer_service.CorrectPublicationItemResultCommand,
+	command transfer_publication.CorrectPublicationItemResultCommand,
 ) error {
 	if tx == nil {
 		return errors.New("correct publication item result: DBTX is nil")
@@ -450,7 +452,7 @@ func (repository *Repository) CorrectPublicationItemResult(
 func (repository *Repository) ApplyPublicationMediaResult(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	command transfer_service.ApplyPublicationMediaResultCommand,
+	command transfer_publication.ApplyPublicationMediaResultCommand,
 ) error {
 	if tx == nil {
 		return errors.New("apply publication media result: DBTX is nil")
@@ -539,8 +541,8 @@ func (repository *Repository) ApplyPublicationMediaResult(
 func advanceOrFinishPublicationTransfer(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID transfer_service.TransferID,
-	activePhase transfer_service.Phase,
+	transferID transfer_model.TransferID,
+	activePhase transfer_model.Phase,
 ) error {
 	transfer, err := lockTransferByID(ctx, tx, transferID)
 	if err != nil {
@@ -585,7 +587,7 @@ func advanceOrFinishPublicationTransfer(
 func (repository *Repository) ResetPublicationPlanning(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID transfer_service.TransferID,
+	transferID transfer_model.TransferID,
 	planID int64,
 ) error {
 	if tx == nil || planID <= 0 {
@@ -662,4 +664,4 @@ func (repository *Repository) ResetPublicationPlanning(
 	return nil
 }
 
-var _ transfer_service.PublicationExecutionResultRepository = (*Repository)(nil)
+var _ transfer_publication.PublicationExecutionResultRepository = (*Repository)(nil)

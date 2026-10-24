@@ -11,11 +11,6 @@ import (
 
 const MaxCabinetNameLength = 128
 
-type SellerID = domain.SellerID
-type ClientGeneration = domain.ClientGeneration
-
-type TokenProperties = credentials.TokenProperties
-
 type Status string
 
 const (
@@ -35,16 +30,16 @@ func (status Status) IsValid() bool {
 }
 
 type Cabinet struct {
-	ID                  SellerID
+	ID                  domain.SellerID
 	OwnerTelegramID     int64
 	Name                string
 	BindingRevision     int64
 	CapabilityRevision  int64
 	ContentRead         bool
 	ContentWrite        bool
-	TokenProperties     TokenProperties
+	TokenProperties     credentials.TokenProperties
 	CredentialExpiresAt time.Time
-	ClientGeneration    ClientGeneration
+	ClientGeneration    domain.ClientGeneration
 	VerifiedAt          time.Time
 	Status              Status
 	CreatedAt           time.Time
@@ -78,23 +73,21 @@ type StoredCabinet struct {
 }
 
 type VerifiedCredential struct {
-	SellerID            SellerID
+	SellerID            domain.SellerID
 	OwnerTelegramID     int64
 	Name                string
 	ContentRead         bool
 	ContentWrite        bool
-	TokenProperties     TokenProperties
+	TokenProperties     credentials.TokenProperties
 	CredentialExpiresAt time.Time
-	ClientGeneration    ClientGeneration
+	ClientGeneration    domain.ClientGeneration
 	VerifiedAt          time.Time
 	Token               string
 }
-
-type TargetCredential = domain.CabinetAccess
 
 type AddCommand struct {
 	OwnerTelegramID int64
 	Name            string
 	Token           string
-	SellerID        SellerID
+	SellerID        domain.SellerID
 }

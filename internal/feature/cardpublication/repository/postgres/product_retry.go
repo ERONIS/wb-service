@@ -7,6 +7,7 @@ import (
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
+	cardpublication_execution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/execution"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -15,21 +16,21 @@ import (
 func (repository *Repository) BeginProductRetry(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	command cardpublication_service.BeginProductRetryCommand,
-) (cardpublication_service.ProductRetry, error) {
+	command cardpublication_execution.BeginProductRetryCommand,
+) (cardpublication_execution.ProductRetry, error) {
 	action := command.Action
 	if tx == nil || action.State != "reconciling" || action.AttemptID <= 0 ||
 		action.EmptyResponseRetry.ID != 0 || action.AuthorizationID <= 0 {
-		return cardpublication_service.ProductRetry{}, errors.New(
+		return cardpublication_execution.ProductRetry{}, errors.New(
 			"begin publication product retry command is invalid",
 		)
 	}
 	const insert = `
 		INSERT INTO wb.publication_product_retries (
-			transfer_id, action_id, authorization_id, request_digest, request_payload
+			transfer_id, action_id, authorization_id, request_payload
 		)
 		SELECT action.transfer_id, action.id, action.authorization_id,
-		       action.request_digest, action.request_payload
+		       action.request_payload
 		FROM wb.publication_actions AS action
 		JOIN wb.publication_attempts AS attempt
 		  ON attempt.transfer_id = action.transfer_id
@@ -56,11 +57,11 @@ func (repository *Repository) BeginProductRetry(
 		  )
 		RETURNING id, started_at;
 	`
-	retry := cardpublication_service.ProductRetry{
+	retry := cardpublication_execution.ProductRetry{
 		TransferID:      action.TransferID,
 		ActionID:        action.ActionID,
 		AuthorizationID: action.AuthorizationID,
-		RequestDigest:   action.RequestDigest,
+		RequestPayload:  append([]byte(nil), action.RequestPayload...),
 	}
 	if err := tx.QueryRow(
 		ctx,
@@ -71,9 +72,9 @@ func (repository *Repository) BeginProductRetry(
 		action.AttemptID,
 	).Scan(&retry.ID, &retry.StartedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return cardpublication_service.ProductRetry{}, cardpublication_service.ErrProductActionConflict
+			return cardpublication_execution.ProductRetry{}, cardpublication_service.ErrProductActionConflict
 		}
-		return cardpublication_service.ProductRetry{}, fmt.Errorf(
+		return cardpublication_execution.ProductRetry{}, fmt.Errorf(
 			"insert publication product retry: %w",
 			err,
 		)
@@ -89,13 +90,13 @@ func (repository *Repository) BeginProductRetry(
 	`
 	updated, err := tx.Exec(ctx, touchAction, action.TransferID, action.ActionID)
 	if err != nil {
-		return cardpublication_service.ProductRetry{}, fmt.Errorf(
+		return cardpublication_execution.ProductRetry{}, fmt.Errorf(
 			"touch publication action for product retry: %w",
 			err,
 		)
 	}
 	if updated.RowsAffected() != 1 {
-		return cardpublication_service.ProductRetry{}, cardpublication_service.ErrProductActionConflict
+		return cardpublication_execution.ProductRetry{}, cardpublication_service.ErrProductActionConflict
 	}
 	return retry, nil
 }
@@ -104,7 +105,7 @@ func (repository *Repository) BeginProductRetry(
 func (repository *Repository) RecordProductRetry(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	command cardpublication_service.RecordProductRetryCommand,
+	command cardpublication_execution.RecordProductRetryCommand,
 ) error {
 	if tx == nil {
 		return errors.New("record publication product retry: DBTX is nil")
@@ -116,7 +117,7 @@ func (repository *Repository) RecordProductRetry(
 	if action.State != "reconciling" || retry.ID <= 0 ||
 		retry.TransferID != action.TransferID || retry.ActionID != action.ActionID ||
 		retry.AuthorizationID != action.AuthorizationID ||
-		retry.RequestDigest != action.RequestDigest || !retry.FinishedAt.IsZero() {
+		!equalBytes(retry.RequestPayload, action.RequestPayload) || !retry.FinishedAt.IsZero() {
 		return cardpublication_service.ErrProductActionConflict
 	}
 	if result.Disposition == cardpublication_service.SubmissionRejectedProven {
@@ -154,7 +155,7 @@ func (repository *Repository) RecordProductRetry(
 		  AND id = $2
 		  AND action_id = $3
 		  AND authorization_id = $4
-		  AND request_digest = $11
+		  AND request_payload = $11
 		  AND finished_at IS NULL;
 	`
 	updated, err := tx.Exec(
@@ -170,7 +171,7 @@ func (repository *Repository) RecordProductRetry(
 		result.ClassifierVersion,
 		result.SafeCode,
 		result.UnmatchedCount,
-		action.RequestDigest[:],
+		action.RequestPayload,
 	)
 	if err != nil {
 		return fmt.Errorf("finish publication product retry: %w", err)

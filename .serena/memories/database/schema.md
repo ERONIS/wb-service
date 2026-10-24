@@ -8,7 +8,7 @@
 Database schema is managed via `golang-migrate` (`migrate/migrate:v4.19.1`) with 7 ordered baseline migrations for a fresh database:
 1. `000001_users`: Schema `wb`, `wb.users` with `BIGSERIAL` ID (roles: `user`, `partner`, `admin`), `wb.telegram_active_screens`.
 2. `000002_wbcabinet`: `wb.api_cabinets` keyed by `seller_id VARCHAR(36)` (with `token_properties`, owner FK, status index).
-3. `000003_card_import`: Finalized session/file provenance, batch header and items. No intermediate `card_import_issues`/`card_import_items` or uploaded `content BYTEA`; these are kept in process memory before finalization. File metadata uses `card_import_files_metadata_check`.
+3. `000003_card_import`: Only `wb.card_batches` and `wb.card_batch_items`. Collecting sessions and XLSX bytes remain in process memory; the header stores source session ID, author Telegram ID, retry key/revision and counts; item rows retain source file ID/rows.
 4. `000004_transfer`: Pipeline master and targets: `wb.transfers`, `wb.transfer_targets`, `wb.transfer_groups`, `wb.transfer_items`, `wb.transfer_group_targets` (includes diagnostics `preparation_item_position`, `preparation_field`, `preparation_started_at`, `preparation_finished_at`), `wb.transfer_item_targets` and partial status/running indexes, including the pending keyset covering index `transfer_group_targets_pending_keyset_idx`. Transfer groups/items do not duplicate batch source file or source rows; `wb.card_batch_items` retains provenance.
 5. `000005_card_preparation`: Directly creates immutable WB proposal artifacts `wb.card_preparation_artifacts` bound to `wb.transfer_group_targets(transfer_id, id)`; no old intermediate preparation tables.
 6. `000006_card_publication`: Full publication cycle and integrity triggers.
@@ -24,25 +24,23 @@ The covering index matches `ListPendingPreparationGroups`, though index-only exe
 
 ### 2. Ingestion & Finalized Batches
 - Before Finalize, sessions, uploaded XLSX bytes, parsed cards/issues and revisions are held only in process memory, not PostgreSQL. Restart drops them.
-- `wb.card_import_sessions`: Finalized session provenance and author (`author_user_id BIGINT`, nullable FK to users), finalize command revision/key/digest and batch link. A collecting row exists only inside the uncommitted Finalize transaction.
-- `wb.card_import_files`: Finalized file metadata, SHA-256 and size; no raw XLSX content. Source IDs remain FK targets for batch items.
-- `wb.card_batches`: Immutable header with checksum and author snapshot, source session link, `xlsx`/`transfer` source constraints; no schema/normalization version columns. Joined finalized session gates batch readers and cardpublication author queries.
-- `wb.card_batch_items`: Immutable typed payload JSONB plus source file/row provenance, group key and vendor code. Finalization inserts session, file metadata, batch/items and status change in a single UoW transaction; the item insert trigger observes the session temporarily in `collecting` status.
+- `wb.card_batches`: One row per finalized source session (`source_session_id` unique), with author Telegram ID, finalize revision/idempotency key, counts, and `sealed` flag. No purpose/source-kind, author snapshot, session timestamps or file-metadata JSONB are persisted. Batch readers and cardpublication use the sealed batch directly; no separate persisted session/file tables exist.
+- `wb.card_batch_items`: Immutable `Card` payload JSONB plus source file ID/rows, group key, vendor code and position. Source file ID/rows remain as provenance in each item; the service validates membership of item file IDs in the finalized in-memory file set before insert. The insert trigger allows items only while their batch is unsealed. Finalize inserts the unsealed header, copies items, then seals it in one UoW transaction. Only this seal transition is allowed; sealed batches/items reject later updates and deletes. No raw XLSX bytes or intermediate issues are persisted.
 
 ### 3. Transfer Pipeline & Orchestration
-- `wb.transfers`: Master transfer job, source batch checksum and counts, phase (`initializing`, `preparing`, `awaiting_authorization`, `publishing`, `reconciling`, `media`, `finished`), outcome, owner. Batch schema/normalization version columns and their immutable-trigger comparisons were removed from the fresh-install migration baseline; existing databases need recreation because historical checksums use a different format. The separate `product_identities.normalization_version` is unrelated and remains.
+- `wb.transfers`: Master transfer job with source batch ID and item/group counts, phase (`initializing`, `preparing`, `awaiting_authorization`, `publishing`, `reconciling`, `media`, `finished`), and outcome. Batch checksum, batch versions, target snapshot revision, and target-set root are absent from the baseline and frozen-field trigger. `transfer_targets` stores selected cabinet state; `product_identities.normalization_version` remains unrelated.
 - `wb.transfer_targets`: Cohort of target cabinets keyed per transfer by `seller_id VARCHAR(36)`, with token generation, revisions, expiry and capabilities.
 - `wb.transfer_items`: Items attached to the transfer job.
 - `wb.transfer_item_targets` & `wb.transfer_group_targets`: Granular item status per target cabinet with projections (`pending`, `running`, `terminal`). Keyset dispatch optimized via partial covering index `transfer_group_targets_pending_keyset_idx`.
 - `wb.transfer_live_authorizations`: Live token leases per transfer and publication plan.
 
 ### 4. Preparation & Publication
-- `wb.card_preparation_artifacts`: Validated WB-ready proposals, payload, metadata snapshot, and limits bound directly to `wb.transfer_group_targets(transfer_id, id)` with `reject_card_preparation_artifact_mutation()` immutability trigger.
-- `wb.publication_plans`: Planned API batches for upload.
-- `wb.publication_actions`: Specific API actions within a publication plan.
+- `wb.card_preparation_artifacts`: WB-ready proposals, payload, metadata snapshot, and limits (without digest/root columns) bound directly to `wb.transfer_group_targets(transfer_id, id)` with `reject_card_preparation_artifact_mutation()` immutability trigger.
+- `wb.publication_plans`: Incremental API upload plans identified by numeric ID; a transfer can have multiple plans as preparation groups become ready. Group-target state and plan IDs coordinate retries and concurrent planning.
+- `wb.publication_actions`: Specific API actions within a publication plan, identified by numeric ID and unique numeric position per plan. Plans, actions, attempts, observations, attribution, live authorization, error batches, and manual resolution no longer store Digest-family hash columns.
 - `wb.publication_attempts`: Execution attempts against WB Content API (`/content/v2/cards/upload`).
 - `wb.product_identities`: Mapping of vendorCode / barcode to WB NMID (nomenclature ID) and chrtID.
-- `wb.publication_product_retries`: Safe retry tracker for ambiguous or empty responses from WB.
+- `wb.publication_product_retries`: Safe retry tracker for ambiguous or empty responses from WB; retries compare stored request payload and action/authorization IDs instead of a request digest.
 - `wb.publication_media_visibility`: Tracks whether newly uploaded cards are visible in WB before uploading media.
 - `wb.publication_error_correlations`: Error mapping from WB `/content/v2/cards/error/list` to specific transfer items.
 - `wb.publication_manual_resolutions`: User intervention logs for rejected/failed items.

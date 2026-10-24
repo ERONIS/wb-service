@@ -1,7 +1,7 @@
 # Transfer Orchestrator Simplification & State Consolidation Plan
 
 ## Status & Scope
-- **Document Reference**: Complete engineering design and implementation specification in `doc/transfer-simplification-plan.md`.
+- **Document Reference**: `doc/transfer-simplification-plan.md` is a historical implementation plan. Its digest/root requirements were superseded by the current ID-and-state contracts in `mem:features/transfer`, `mem:features/cardpublication`, and `mem:database/schema`.
 - **Status**: Full implementation completed and verified in codebase. All 7 prioritized steps completed:
   - Step 1 (Migrations & Clean DB Schema): Migrations 000001–000007 directly define target schema (34 tables). Migration 000008 permanently deleted. Three old preparation tables (`card_preparations`, `card_preparation_groups`, `card_preparation_items`) never created; `wb.card_preparation_artifacts` directly references `wb.transfer_group_targets(transfer_id, id)`.
   - Step 2 (Diagnostics): Diagnostics (`preparation_item_position`, `preparation_field`, `preparation_started_at`, `preparation_finished_at`) stored in `wb.transfer_group_targets` and updated on completion/rejection.
@@ -12,7 +12,7 @@
   - Step 7 (Verification & Metrics): Clean migration deployment to PostgreSQL container verified. Integration tests, race detector (`go test -race ./...`), concurrency tests (10 parallel workers on same batch), and recovery tests (>1000 groups with transient errors) all pass.
   - Net Reduction Achieved: ~1 900 lines of Go code and SQL eliminated (exceeding the 1 200–2 000 target). Production binary builds cleanly.
 - **Core Directive**: `transfer` becomes the sole owner of the transfer process and state; `cardprepare` is converted from a separate persisted workflow into a stateless calculation/validation engine without its own database job queues.
-- **Safety Boundary**: Security perimeter (cabinet authorization, token leases, `TargetSetRoot`, WB rate limits, mutation retry prohibition, audit immutability triggers) remains strictly unchanged.
+- **Safety Boundary**: Cabinet authorization, token leases, WB rate limits, mutation retry prohibition, and audit immutability triggers remain. Plan/action/request matching now uses numeric IDs, expected revisions, payload comparison, and database state; `TargetSetRoot` was removed.
 
 ## Current Bottlenecks & Motivation
 1. **Dual State Management**:
@@ -32,7 +32,7 @@
   - `wb.transfers`: Master transfer identity, frozen snapshot, overall phase/outcome, preparation timing.
   - `wb.transfer_group_targets`: Single source of truth for group target progress; maintains independent status columns for preparation, publication, and media.
   - `wb.transfer_item_targets`: Granular item status per cabinet, NMID, source action ID, attention codes.
-  - `wb.card_preparation_artifacts`: Immutable preparation artifacts (WB payload, metadata snapshot, limits snapshot, digests), bound directly to `transfer_group_targets`.
+  - `wb.card_preparation_artifacts`: Immutable preparation artifacts (WB payload, metadata snapshot, limits snapshot) bound directly to `transfer_group_targets`.
   - `wb.publication_*`: Retains plan, action, attempt, and execution audit history.
 
 ## Table Transition Matrix (25 -> 22 -> 21 Tables)
@@ -41,7 +41,7 @@
 | `wb.card_preparations` | **Remove (Phase 1)** | Batch identity already in `wb.transfers`. Preparation metrics and timestamps tracked in `wb.transfers` or derived from groups. |
 | `wb.card_preparation_groups` | **Remove (Phase 1)** | State, diagnostics (`outcome_code`, `outcome_field`, `outcome_item_position`), timestamps, and artifact links stored directly in `wb.transfer_group_targets`. |
 | `wb.card_preparation_items` | **Remove (Phase 1)** | Group membership and variant positions obtained directly from frozen `wb.transfer_items`. |
-| `wb.card_preparation_artifacts` | **Retain** | Re-bound directly to `wb.transfer_group_targets` (`group_target_id`). Preserves exact payload bytes, snapshots, digests, and uniqueness. |
+| `wb.card_preparation_artifacts` | **Retain** | Bound directly to `wb.transfer_group_targets` (`group_target_id`). Preserves payload bytes, snapshots, and uniqueness without digest columns. |
 | `wb.transfer_items` | **Separate Evaluation (Phase 2)** | Evaluate referencing immutable `wb.card_batch_items` directly. Kept as separate stage due to source provenance (`SourceFileID`) and audit linkages. |
 | `wb.transfer_groups` & targets | **Retain** | Retains group aggregation for Excel reporting and multi-level progress tracking. |
 
@@ -69,7 +69,7 @@
 
 ## Invariants & Compliance Rules
 - **No Degradation of WB Client Safety**: Mutation endpoints (`/content/v2/cards/upload`) strictly prohibit automated retries (`RetryModeNever`).
-- **Cryptographic Verification**: `TargetSetRoot`, `semantic_digest`, `metadata_digest`, and `proposal_root` must match canonical definitions.
+- **Current Identity Rule**: `TargetSetRoot`, `semantic_digest`, `metadata_digest`, and `proposal_root` were removed. Use transfer/plan/action/attempt IDs, expected revisions, explicit states, and persisted payloads for the relevant checks.
 - **Russian Code Comments**: All new or modified Go code and comments must be strictly in Russian.
 - **Post-Modification Memory Sync**: Every subsequent code change implementing this plan requires immediate Serena memory updates.
 

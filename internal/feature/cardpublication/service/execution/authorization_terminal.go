@@ -4,14 +4,15 @@ import (
 	"context"
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_authorization "github.com/ERONIS/wb-service/internal/feature/transfer/service/authorization"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
 
 type terminalPlanRepository interface {
 	PublicationPlanTerminal(
 		context.Context,
 		core_postgres_transaction.DBTX,
-		transfer_service.TransferID,
+		transfer_model.TransferID,
 		int64,
 	) (bool, error)
 }
@@ -31,12 +32,12 @@ func closeTerminalPlanAuthorization(
 	_, err = authorization.CloseWithin(
 		ctx,
 		tx,
-		transfer_service.ChangeLiveAuthorizationStateCommand{
-			TransferID:         candidate.TransferID,
-			AuthorizationID:    candidate.AuthorizationID,
-			ExpectedRevision:   candidate.AuthorizationRevision,
-			ExpectedPlanDigest: transfer_service.Digest(candidate.PlanDigest),
-			SafeReasonCode:     "publication_plan_terminal",
+		transfer_authorization.ChangeLiveAuthorizationStateCommand{
+			TransferID:       candidate.TransferID,
+			AuthorizationID:  candidate.AuthorizationID,
+			ExpectedRevision: candidate.AuthorizationRevision,
+			ExpectedPlanID:   planID,
+			SafeReasonCode:   "publication_plan_terminal",
 		},
 	)
 	return err

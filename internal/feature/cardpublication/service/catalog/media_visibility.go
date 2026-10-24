@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+
+	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 )
 
 type MediaVisibility struct {
@@ -14,7 +16,7 @@ type MediaVisibility struct {
 	VideoVisible bool
 }
 
-func (reader *CatalogReader) CheckMediaVisibility(ctx context.Context, sellerID SellerID,
+func (reader *CatalogReader) CheckMediaVisibility(ctx context.Context, sellerID core_domain.SellerID,
 	vendorCode string, nmID int64, expectedPhotos int, expectedVideo bool,
 ) (MediaVisibility, error) {
 	vendorCode = normalizeCatalogVendorCode(vendorCode)

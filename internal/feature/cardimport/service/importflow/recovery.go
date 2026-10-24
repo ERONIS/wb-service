@@ -1,4 +1,4 @@
-package workflow
+package cardimport_flow
 
 import (
 	"context"
@@ -6,14 +6,16 @@ import (
 	"time"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
+	cardimport_contract "github.com/ERONIS/wb-service/internal/feature/cardimport/service/contract"
 )
 
+// ListRecoverableFiles находит файлы, обработку которых можно повторить.
 func (s *Service) ListRecoverableFiles(
 	ctx context.Context,
 	staleParsingBefore time.Time,
 	reparsePriceErrorsBefore time.Time,
 	limit int,
-) ([]RecoverableFile, error) {
+) ([]cardimport_contract.RecoverableFile, error) {
 	if ctx == nil || staleParsingBefore.IsZero() ||
 		reparsePriceErrorsBefore.IsZero() || limit <= 0 {
 		return nil, fmt.Errorf(
@@ -22,7 +24,7 @@ func (s *Service) ListRecoverableFiles(
 		)
 	}
 
-	files, err := s.sessions.recoverable(
+	files, err := s.sessions.Recoverable(
 		ctx,
 		staleParsingBefore,
 		reparsePriceErrorsBefore,

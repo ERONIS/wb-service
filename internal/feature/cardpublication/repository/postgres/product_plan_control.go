@@ -7,14 +7,15 @@ import (
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	cardpublication_execution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/execution"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
 
 // PlanAttemptCount подсчитывает количество попыток публикации для плана.
 func (repository *Repository) PlanAttemptCount(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID transfer_service.TransferID,
+	transferID transfer_model.TransferID,
 	planID int64,
 ) (int, error) {
 	const query = `
@@ -36,7 +37,7 @@ func (repository *Repository) PlanAttemptCount(
 func (repository *Repository) SupersedePlanBeforeDispatch(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	action cardpublication_service.ProductAction,
+	action cardpublication_execution.ProductAction,
 	safeCode string,
 ) error {
 	if tx == nil || safeCode == "" || len(safeCode) > 128 {
@@ -112,9 +113,9 @@ func (repository *Repository) SupersedePlanBeforeDispatch(
 func (repository *Repository) AbortPlanAfterDispatch(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	action cardpublication_service.ProductAction,
+	action cardpublication_execution.ProductAction,
 	safeCode string,
-) ([]cardpublication_service.AbortedProductAction, error) {
+) ([]cardpublication_execution.AbortedProductAction, error) {
 	if tx == nil || action.State != "planned" || safeCode == "" || len(safeCode) > 128 {
 		return nil, errors.New("abort publication plan command is invalid")
 	}
@@ -141,11 +142,11 @@ func (repository *Repository) AbortPlanAfterDispatch(
 	if err != nil {
 		return nil, fmt.Errorf("lock aborted publication plan actions: %w", err)
 	}
-	byAction := make(map[int64]*cardpublication_service.AbortedProductAction)
+	byAction := make(map[int64]*cardpublication_execution.AbortedProductAction)
 	order := make([]int64, 0)
 	for rows.Next() {
 		var actionID int64
-		var member cardpublication_service.ProductActionMember
+		var member cardpublication_execution.ProductActionMember
 		if err := rows.Scan(
 			&actionID,
 			&member.ID,
@@ -159,7 +160,7 @@ func (repository *Repository) AbortPlanAfterDispatch(
 		}
 		aborted := byAction[actionID]
 		if aborted == nil {
-			aborted = &cardpublication_service.AbortedProductAction{ActionID: actionID}
+			aborted = &cardpublication_execution.AbortedProductAction{ActionID: actionID}
 			byAction[actionID] = aborted
 			order = append(order, actionID)
 		}
@@ -249,7 +250,7 @@ func (repository *Repository) AbortPlanAfterDispatch(
 	if err := reducePublicationPlan(ctx, tx, action.TransferID, action.PlanID); err != nil {
 		return nil, err
 	}
-	result := make([]cardpublication_service.AbortedProductAction, 0, len(order))
+	result := make([]cardpublication_execution.AbortedProductAction, 0, len(order))
 	for _, actionID := range order {
 		result = append(result, *byAction[actionID])
 	}
@@ -260,7 +261,7 @@ func (repository *Repository) AbortPlanAfterDispatch(
 func (repository *Repository) PublicationPlanTerminal(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID transfer_service.TransferID,
+	transferID transfer_model.TransferID,
 	planID int64,
 ) (bool, error) {
 	if tx == nil || transferID <= 0 || planID <= 0 {
@@ -290,7 +291,7 @@ func (repository *Repository) PublicationPlanTerminal(
 func reducePublicationPlan(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID transfer_service.TransferID,
+	transferID transfer_model.TransferID,
 	planID int64,
 ) error {
 	const lockPlan = `

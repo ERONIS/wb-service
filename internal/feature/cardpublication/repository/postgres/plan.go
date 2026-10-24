@@ -8,7 +8,8 @@ import (
 
 	core_postgres_sequence "github.com/ERONIS/wb-service/internal/core/repository/postgres/sequence"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
+	cardpublication_model "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/model"
+	cardpublication_planning "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/planning"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 
 	"github.com/jackc/pgx/v5"
@@ -17,18 +18,18 @@ import (
 func (repository *Repository) InsertPlan(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	draft cardpublication_service.PlanDraft,
-) (cardpublication_service.PersistedPlan, error) {
+	draft cardpublication_model.PlanDraft,
+) (cardpublication_model.PersistedPlan, error) {
 	if tx == nil {
-		return cardpublication_service.PersistedPlan{}, errors.New(
+		return cardpublication_model.PersistedPlan{}, errors.New(
 			"insert publication plan: DBTX is nil",
 		)
 	}
 	if err := draft.Validate(); err != nil {
-		return cardpublication_service.PersistedPlan{}, err
+		return cardpublication_model.PersistedPlan{}, err
 	}
 	if err := insertPlanObservations(ctx, tx, draft); err != nil {
-		return cardpublication_service.PersistedPlan{}, err
+		return cardpublication_model.PersistedPlan{}, err
 	}
 
 	state := "awaiting_authorization"
@@ -44,32 +45,28 @@ func (repository *Repository) InsertPlan(
 	const insertPlan = `
 		INSERT INTO wb.publication_plans (
 			transfer_id,
-			plan_digest,
-			target_set_root,
 			state,
 			outcome_class,
 			outcome_code,
 			finished_at
 		)
 		VALUES (
-			$1, $2, $3, $4, $5, $6,
-			CASE WHEN $7 THEN CURRENT_TIMESTAMP ELSE NULL END
+			$1, $2, $3, $4,
+			CASE WHEN $5 THEN CURRENT_TIMESTAMP ELSE NULL END
 		)
 		RETURNING id;
 	`
-	persisted := cardpublication_service.PersistedPlan{}
+	persisted := cardpublication_model.PersistedPlan{}
 	if err := tx.QueryRow(
 		ctx,
 		insertPlan,
 		draft.TransferID,
-		draft.Digest[:],
-		draft.TargetSetRoot[:],
 		state,
 		outcomeClass,
 		outcomeCode,
 		finished,
 	).Scan(&persisted.ID); err != nil {
-		return cardpublication_service.PersistedPlan{}, fmt.Errorf(
+		return cardpublication_model.PersistedPlan{}, fmt.Errorf(
 			"insert publication plan: %w",
 			err,
 		)
@@ -77,21 +74,21 @@ func (repository *Repository) InsertPlan(
 
 	actionIDs, err := reservePublicationActionIDs(ctx, tx, len(draft.Actions))
 	if err != nil {
-		return cardpublication_service.PersistedPlan{}, err
+		return cardpublication_model.PersistedPlan{}, err
 	}
 	if err := copyPlanActions(ctx, tx, draft, persisted.ID, actionIDs); err != nil {
-		return cardpublication_service.PersistedPlan{}, err
+		return cardpublication_model.PersistedPlan{}, err
 	}
 	if err := copyPlanActionMembers(ctx, tx, draft, actionIDs); err != nil {
-		return cardpublication_service.PersistedPlan{}, err
+		return cardpublication_model.PersistedPlan{}, err
 	}
 	if err := upsertPlanIdentities(ctx, tx, draft.Identities); err != nil {
-		return cardpublication_service.PersistedPlan{}, err
+		return cardpublication_model.PersistedPlan{}, err
 	}
-	persisted.Actions = make([]cardpublication_service.PersistedAction, len(draft.Actions))
+	persisted.Actions = make([]cardpublication_model.PersistedAction, len(draft.Actions))
 	for index, action := range draft.Actions {
-		persisted.Actions[index] = cardpublication_service.PersistedAction{
-			ID: actionIDs[index], Key: action.Key,
+		persisted.Actions[index] = cardpublication_model.PersistedAction{
+			ID: actionIDs[index], Position: action.Position,
 		}
 	}
 	return persisted, nil
@@ -100,14 +97,13 @@ func (repository *Repository) InsertPlan(
 func insertPlanObservations(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	draft cardpublication_service.PlanDraft,
+	draft cardpublication_model.PlanDraft,
 ) error {
 	if len(draft.Observations) == 0 {
 		return nil
 	}
 	targetIDs := make([]int64, len(draft.Observations))
 	sellerIDs := make([]string, len(draft.Observations))
-	digests := make([][]byte, len(draft.Observations))
 	normalCounts := make([]int32, len(draft.Observations))
 	trashCounts := make([]int32, len(draft.Observations))
 	snapshots := make([]string, len(draft.Observations))
@@ -115,7 +111,6 @@ func insertPlanObservations(
 	for index, observation := range draft.Observations {
 		targetIDs[index] = observation.TargetID
 		sellerIDs[index] = string(observation.SellerID)
-		digests[index] = observation.Digest[:]
 		normalCounts[index] = int32(observation.NormalCount)
 		trashCounts[index] = int32(observation.TrashCount)
 		snapshots[index] = string(observation.Payload)
@@ -123,23 +118,20 @@ func insertPlanObservations(
 	}
 	const insert = `
 		INSERT INTO wb.publication_observations (
-			transfer_id, target_id, seller_id, kind, observation_digest,
+			transfer_id, target_id, seller_id, kind,
 			normal_count, trash_count, snapshot, observed_at
 		)
 		SELECT
 			$1, source.target_id, source.seller_id, 'normal_trash_preflight',
-			source.observation_digest, source.normal_count, source.trash_count,
+			source.normal_count, source.trash_count,
 			source.snapshot::jsonb, source.observed_at
 		FROM UNNEST(
-			$2::bigint[], $3::text[], $4::bytea[], $5::integer[],
-			$6::integer[], $7::text[], $8::timestamptz[]
+			$2::bigint[], $3::text[], $4::integer[],
+			$5::integer[], $6::text[], $7::timestamptz[]
 		) AS source(
-			target_id, seller_id, observation_digest, normal_count,
+			target_id, seller_id, normal_count,
 			trash_count, snapshot, observed_at
 		)
-		ON CONFLICT (
-			transfer_id, target_id, kind, observation_digest
-		) DO NOTHING;
 	`
 	if _, err := tx.Exec(
 		ctx,
@@ -147,7 +139,6 @@ func insertPlanObservations(
 		draft.TransferID,
 		targetIDs,
 		sellerIDs,
-		digests,
 		normalCounts,
 		trashCounts,
 		snapshots,
@@ -181,7 +172,7 @@ func reservePublicationActionIDs(
 func copyPlanActions(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	draft cardpublication_service.PlanDraft,
+	draft cardpublication_model.PlanDraft,
 	planID int64,
 	actionIDs []int64,
 ) error {
@@ -192,19 +183,14 @@ func copyPlanActions(
 		ctx,
 		pgx.Identifier{"wb", "publication_actions"},
 		[]string{
-			"id", "transfer_id", "plan_id", "target_id", "action_key", "kind",
-			"request_digest", "request_payload", "member_set_digest", "media_link_set_root",
+			"id", "transfer_id", "plan_id", "target_id", "position", "kind",
+			"request_payload",
 		},
 		pgx.CopyFromSlice(len(draft.Actions), func(index int) ([]any, error) {
 			action := draft.Actions[index]
-			var mediaRoot any
-			if action.MediaLinkSetRoot != (cardpublication_service.Digest{}) {
-				mediaRoot = action.MediaLinkSetRoot[:]
-			}
 			return []any{
 				actionIDs[index], draft.TransferID, planID, action.TargetID,
-				action.Key[:], string(action.Kind), action.RequestDigest[:],
-				action.RequestPayload, action.MemberSetDigest[:], mediaRoot,
+				action.Position, string(action.Kind), action.RequestPayload,
 			}, nil
 		}),
 	)
@@ -214,7 +200,7 @@ func copyPlanActions(
 func copyPlanActionMembers(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	draft cardpublication_service.PlanDraft,
+	draft cardpublication_model.PlanDraft,
 	actionIDs []int64,
 ) error {
 	membersCount := 0
@@ -253,7 +239,7 @@ func copyPlanActionMembers(
 func upsertPlanIdentities(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	identities []cardpublication_service.IdentityDraft,
+	identities []cardpublication_model.IdentityDraft,
 ) error {
 	if len(identities) == 0 {
 		return nil
@@ -264,7 +250,6 @@ func upsertPlanIdentities(
 	nmIDs := make([]int64, len(identities))
 	imtIDs := make([]int64, len(identities))
 	subjectIDs := make([]int64, len(identities))
-	observationDigests := make([][]byte, len(identities))
 	for index, identity := range identities {
 		sellerIDs[index] = string(identity.SellerID)
 		vendorCodes[index] = identity.VendorCode
@@ -272,40 +257,37 @@ func upsertPlanIdentities(
 		nmIDs[index] = identity.NMID
 		imtIDs[index] = identity.IMTID
 		subjectIDs[index] = identity.SubjectID
-		observationDigests[index] = identity.ObservationDigest[:]
 	}
 	const upsert = `
 		WITH incoming AS (
 			SELECT *
 			FROM UNNEST(
 				$1::text[], $2::text[], $3::text[], $4::bigint[],
-				$5::bigint[], $6::bigint[], $7::bytea[]
+				$5::bigint[], $6::bigint[]
 			) WITH ORDINALITY AS source(
 				seller_id, vendor_code_key, state, nm_id, imt_id,
-				subject_id, observation_digest, position
+				subject_id, position
 			)
 		), deduplicated AS (
 			SELECT DISTINCT ON (seller_id, vendor_code_key)
 				seller_id, vendor_code_key, state, nm_id, imt_id,
-				subject_id, observation_digest
+				subject_id
 			FROM incoming
 			ORDER BY seller_id, vendor_code_key, position DESC
 		)
 		INSERT INTO wb.product_identities (
 			seller_id, vendor_code_key, normalization_version, state,
-			nm_id, imt_id, subject_id, observation_digest
+			nm_id, imt_id, subject_id
 		)
 		SELECT
 			seller_id, vendor_code_key, 1, state,
-			NULLIF(nm_id, 0), NULLIF(imt_id, 0), NULLIF(subject_id, 0),
-			observation_digest
+			NULLIF(nm_id, 0), NULLIF(imt_id, 0), NULLIF(subject_id, 0)
 		FROM deduplicated
 		ON CONFLICT (seller_id, vendor_code_key) DO UPDATE
 		SET state = EXCLUDED.state,
 		    nm_id = EXCLUDED.nm_id,
 		    imt_id = EXCLUDED.imt_id,
 		    subject_id = EXCLUDED.subject_id,
-		    observation_digest = EXCLUDED.observation_digest,
 		    revision = wb.product_identities.revision + 1,
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE wb.product_identities.state NOT IN (
@@ -321,7 +303,6 @@ func upsertPlanIdentities(
 		nmIDs,
 		imtIDs,
 		subjectIDs,
-		observationDigests,
 	); err != nil {
 		return fmt.Errorf("upsert publication plan identities: %w", err)
 	}
@@ -339,7 +320,7 @@ func exactPlanCopy(name string, copied int64, expected int, err error) error {
 }
 
 func zeroActionPlanOutcome(
-	groups []cardpublication_service.PlannedGroupDraft,
+	groups []cardpublication_model.PlannedGroupDraft,
 ) (string, string) {
 	if len(groups) == 0 {
 		return "skipped", "NO_PREPARED_GROUPS"
@@ -363,4 +344,4 @@ func zeroActionPlanOutcome(
 	}
 }
 
-var _ cardpublication_service.Repository = (*Repository)(nil)
+var _ cardpublication_planning.Repository = (*Repository)(nil)

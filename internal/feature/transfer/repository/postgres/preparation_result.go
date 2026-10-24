@@ -1,13 +1,14 @@
 package transfer_postgres_repository
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+	transfer_preparation "github.com/ERONIS/wb-service/internal/feature/transfer/service/preparation"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -15,7 +16,7 @@ import (
 func (repository *Repository) ApplyPreparationResult(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	command transfer_service.ApplyPreparationResultCommand,
+	command transfer_preparation.ApplyPreparationResultCommand,
 ) error {
 	if tx == nil {
 		return errors.New("apply preparation result: DBTX is nil")
@@ -34,7 +35,6 @@ func (repository *Repository) ApplyPreparationResult(
 			preparation_status,
 			preparation_result_revision,
 			preparation_result_code,
-			preparation_proposal_root,
 			preparation_item_position,
 			preparation_field
 		FROM wb.transfer_group_targets
@@ -45,7 +45,6 @@ func (repository *Repository) ApplyPreparationResult(
 		currentStatus       string
 		currentRevision     int64
 		currentResultCode   *string
-		currentProposalRoot []byte
 		currentItemPosition *int
 		currentField        *string
 	)
@@ -53,7 +52,6 @@ func (repository *Repository) ApplyPreparationResult(
 		&currentStatus,
 		&currentRevision,
 		&currentResultCode,
-		&currentProposalRoot,
 		&currentItemPosition,
 		&currentField,
 	)
@@ -71,14 +69,10 @@ func (repository *Repository) ApplyPreparationResult(
 			currentStatus,
 			currentRevision,
 			currentResultCode,
-			currentProposalRoot,
 			currentItemPosition,
 			currentField,
 		) {
 			// Идентичный повторный вызов — идемпотентный no-op
-			if command.Artifact != nil {
-				return verifyStoredPreparationArtifact(ctx, tx, command)
-			}
 			return nil
 		}
 		// Конфликтующий повторный вызов с другими данными
@@ -97,16 +91,13 @@ func (repository *Repository) ApplyPreparationResult(
 				group_target_id,
 				transfer_id,
 				subject_id,
-				semantic_digest,
-				metadata_digest,
-				proposal_root,
 				request_payload,
 				metadata_snapshot,
 				limits_free,
 				limits_paid,
 				limits_observed_at
 			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11);
+			VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8);
 		`
 		artifact := command.Artifact
 		if _, err := tx.Exec(
@@ -115,9 +106,6 @@ func (repository *Repository) ApplyPreparationResult(
 			command.GroupTargetID,
 			command.TransferID,
 			artifact.SubjectID,
-			artifact.SemanticDigest[:],
-			artifact.MetadataDigest[:],
-			artifact.ProposalRoot[:],
 			artifact.RequestPayload,
 			string(artifact.MetadataSnapshot),
 			artifact.LimitsFree,
@@ -130,13 +118,9 @@ func (repository *Repository) ApplyPreparationResult(
 
 	// 5. Подготавливаем аргументы диагностики для обновления проекции
 	var (
-		proposalRootArg []byte
 		itemPositionArg *int
 		fieldArg        *string
 	)
-	if command.Status == transfer_service.PreparationResultSucceeded {
-		proposalRootArg = command.ProposalRoot[:]
-	}
 	if command.ItemPosition > 0 {
 		pos := command.ItemPosition
 		itemPositionArg = &pos
@@ -152,11 +136,10 @@ func (repository *Repository) ApplyPreparationResult(
 			preparation_status = $3,
 			preparation_result_revision = $4,
 			preparation_result_code = $5,
-			preparation_proposal_root = $6,
-			preparation_item_position = $7,
-			preparation_field = $8,
-			preparation_started_at = $9::TIMESTAMPTZ,
-			preparation_finished_at = $10::TIMESTAMPTZ,
+			preparation_item_position = $6,
+			preparation_field = $7,
+			preparation_started_at = $8::TIMESTAMPTZ,
+			preparation_finished_at = $9::TIMESTAMPTZ,
 			publication_status = CASE
 				WHEN $3 = 'succeeded' THEN group_target.publication_status
 				ELSE 'skipped'
@@ -175,7 +158,7 @@ func (repository *Repository) ApplyPreparationResult(
 				ELSE NULL
 			END,
 			finished_at = CASE
-				WHEN $3 IN ('rejected', 'unresolved') THEN $10::TIMESTAMPTZ
+				WHEN $3 IN ('rejected', 'unresolved') THEN $9::TIMESTAMPTZ
 				ELSE NULL
 			END,
 			revision = group_target.revision + 1,
@@ -193,7 +176,6 @@ func (repository *Repository) ApplyPreparationResult(
 		command.Status,
 		command.Revision,
 		command.OutcomeCode,
-		proposalRootArg,
 		itemPositionArg,
 		fieldArg,
 		command.StartedAt,
@@ -241,11 +223,10 @@ func (repository *Repository) ApplyPreparationResult(
 
 // isSamePreparationResult проверяет совпадение существующего терминального результата подготовки с командой.
 func isSamePreparationResult(
-	command transfer_service.ApplyPreparationResultCommand,
+	command transfer_preparation.ApplyPreparationResultCommand,
 	currentStatus string,
 	currentRevision int64,
 	currentResultCode *string,
-	currentProposalRoot []byte,
 	currentItemPosition *int,
 	currentField *string,
 ) bool {
@@ -256,16 +237,10 @@ func isSamePreparationResult(
 		return false
 	}
 	if command.Status == transfer_service.PreparationResultSucceeded {
-		if !bytes.Equal(currentProposalRoot, command.ProposalRoot[:]) {
-			return false
-		}
 		if currentItemPosition != nil || currentField != nil {
 			return false
 		}
 	} else {
-		if len(currentProposalRoot) > 0 {
-			return false
-		}
 		if command.ItemPosition == 0 {
 			if currentItemPosition != nil {
 				return false
@@ -300,7 +275,7 @@ func preparationPipelinePhase(phase string) bool {
 func lockTransferForPipelineResult(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID transfer_service.TransferID,
+	transferID transfer_model.TransferID,
 ) (string, string, error) {
 	const query = `
 		SELECT phase, outcome
@@ -318,26 +293,6 @@ func lockTransferForPipelineResult(
 	return phase, outcome, nil
 }
 
-var _ transfer_service.PreparationResultRepository = (*Repository)(nil)
+var _ transfer_preparation.PreparationResultRepository = (*Repository)(nil)
 
 // verifyStoredPreparationArtifact сравнивает все факты артефакта без изменения сохранённого результата.
-func verifyStoredPreparationArtifact(ctx context.Context, tx core_postgres_transaction.DBTX, command transfer_service.ApplyPreparationResultCommand) error {
-	const query = `SELECT EXISTS (
-        SELECT 1 FROM wb.card_preparation_artifacts
-        WHERE transfer_id = $1 AND group_target_id = $2
-          AND subject_id = $3 AND semantic_digest = $4 AND metadata_digest = $5
-          AND proposal_root = $6 AND request_payload = $7 AND metadata_snapshot = $8::jsonb
-          AND limits_free = $9 AND limits_paid = $10 AND limits_observed_at = $11
-    );`
-	a := command.Artifact
-	var same bool
-	if err := tx.QueryRow(ctx, query, command.TransferID, command.GroupTargetID,
-		a.SubjectID, a.SemanticDigest[:], a.MetadataDigest[:], a.ProposalRoot[:], a.RequestPayload,
-		string(a.MetadataSnapshot), a.LimitsFree, a.LimitsPaid, a.LimitsObservedAt).Scan(&same); err != nil {
-		return fmt.Errorf("compare preparation artifact: %w", err)
-	}
-	if !same {
-		return transfer_service.ErrPreparationResultConflict
-	}
-	return nil
-}

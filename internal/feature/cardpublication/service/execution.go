@@ -4,42 +4,12 @@ import (
 	"time"
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
+	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
 	"github.com/ERONIS/wb-service/internal/feature/cardpublication/service/execution"
+	cardpublication_monitoring "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/monitoring"
+
 	"go.uber.org/zap"
 )
-
-type ProductActionCandidate = execution.ProductActionCandidate
-type ProductActionMember = execution.ProductActionMember
-type AbortedProductAction = execution.AbortedProductAction
-type ProductAction = execution.ProductAction
-type TargetedRecheck = execution.TargetedRecheck
-type ProductAttempt = execution.ProductAttempt
-type ProductRetry = execution.ProductRetry
-type SubmissionDelivery = execution.SubmissionDelivery
-type SubmissionDisposition = execution.SubmissionDisposition
-type MemberSubmissionResult = execution.MemberSubmissionResult
-type SubmissionResult = execution.SubmissionResult
-type BeginProductAttemptCommand = execution.BeginProductAttemptCommand
-type RecordSubmissionCommand = execution.RecordSubmissionCommand
-type BeginProductRetryCommand = execution.BeginProductRetryCommand
-type RecordProductRetryCommand = execution.RecordProductRetryCommand
-type ErrorBatchMatch = execution.ErrorBatchMatch
-type MemberReconciliationResult = execution.MemberReconciliationResult
-type ProductJournalRepository = execution.ProductJournalRepository
-type PublicationExecutionResultApplier = execution.PublicationExecutionResultApplier
-type LiveAuthorizationVerifier = execution.LiveAuthorizationVerifier
-type ProductDispatcher = execution.ProductDispatcher
-
-type MediaActionCandidate = execution.MediaActionCandidate
-type MediaAction = execution.MediaAction
-type MediaAttempt = execution.MediaAttempt
-type BeginMediaAttemptCommand = execution.BeginMediaAttemptCommand
-type MediaMutationResult = execution.MediaMutationResult
-type MediaVisibilityJob = execution.MediaVisibilityJob
-type MediaVisibilityUpdate = execution.MediaVisibilityUpdate
-type MediaGroupResult = execution.MediaGroupResult
-type MediaJournalRepository = execution.MediaJournalRepository
-type MediaDispatcher = execution.MediaDispatcher
 
 const (
 	SubmissionNotDispatched    = execution.SubmissionNotDispatched
@@ -59,18 +29,18 @@ var (
 )
 
 func NewProductDispatcher(
-	repository ProductJournalRepository,
-	transport CatalogTransport,
-	catalogReader *CatalogReader,
-	errorFeed *ErrorFeed,
-	authorization LiveAuthorizationVerifier,
-	transferResults PublicationExecutionResultApplier,
+	repository execution.ProductJournalRepository,
+	transport cardpublication_catalog.CatalogTransport,
+	catalogReader *cardpublication_catalog.CatalogReader,
+	errorFeed *cardpublication_monitoring.ErrorFeed,
+	authorization execution.LiveAuthorizationVerifier,
+	transferResults execution.PublicationExecutionResultApplier,
 	uow core_postgres_transaction.UnitOfWork,
 	reconciliationDelay time.Duration,
 	reconciliationTimeout time.Duration,
 	concurrency int,
 	loggers ...*zap.Logger,
-) *ProductDispatcher {
+) *execution.ProductDispatcher {
 	return execution.NewProductDispatcher(
 		repository,
 		transport,
@@ -87,19 +57,19 @@ func NewProductDispatcher(
 }
 
 func NewMediaDispatcher(
-	repository MediaJournalRepository,
-	transport CatalogTransport,
-	catalogReader *CatalogReader,
-	errorFeed *ErrorFeed,
-	authorization LiveAuthorizationVerifier,
-	transferResults PublicationExecutionResultApplier,
+	repository execution.MediaJournalRepository,
+	transport cardpublication_catalog.CatalogTransport,
+	catalogReader *cardpublication_catalog.CatalogReader,
+	errorFeed *cardpublication_monitoring.ErrorFeed,
+	authorization execution.LiveAuthorizationVerifier,
+	transferResults execution.PublicationExecutionResultApplier,
 	uow core_postgres_transaction.UnitOfWork,
 	enabled bool,
 	mediaCheckInterval time.Duration,
 	mediaCheckTimeout time.Duration,
 	concurrency int,
 	loggers ...*zap.Logger,
-) *MediaDispatcher {
+) *execution.MediaDispatcher {
 	return execution.NewMediaDispatcher(
 		repository,
 		transport,
@@ -117,26 +87,26 @@ func NewMediaDispatcher(
 }
 
 func BuildTargetedRecheck(
-	action ProductAction,
-	observation CatalogObservation,
-) (TargetedRecheck, error) {
+	action execution.ProductAction,
+	observation cardpublication_catalog.CatalogObservation,
+) (execution.TargetedRecheck, error) {
 	return execution.BuildTargetedRecheck(action, observation)
 }
 
 func BuildMediaRecheck(
-	action MediaAction,
-	observation CatalogObservation,
-) (TargetedRecheck, error) {
+	action execution.MediaAction,
+	observation cardpublication_catalog.CatalogObservation,
+) (execution.TargetedRecheck, error) {
 	return execution.BuildMediaRecheck(action, observation)
 }
 
-func ValidateSubmissionResult(result SubmissionResult) error {
+func ValidateSubmissionResult(result execution.SubmissionResult) error {
 	return execution.ValidateSubmissionResult(result)
 }
 
 func ValidateMemberReconciliationResults(
-	action ProductAction,
-	results []MemberReconciliationResult,
+	action execution.ProductAction,
+	results []execution.MemberReconciliationResult,
 ) error {
 	return execution.ValidateMemberReconciliationResults(action, results)
 }

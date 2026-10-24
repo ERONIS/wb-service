@@ -4,6 +4,7 @@
 Orchestrates the actual submission of product cards to Wildberries Content API, monitors asynchronous processing, uploads media, tracks errors from the WB error feed, and provides manual resolution.
 
 ## Subsystems & Layout
+- Service, feature, repository, and transport signatures use owner types directly from model/planning/execution/monitoring/catalog/resolution. Forwarding `type X = Y` aliases were removed; value constants and error sentinels may still be exposed at the service boundary.
 1. **Planning (`service/planning/`)**:
    - `planner.go` & `processor.go`: Slices prepared card proposals into discrete upload actions grouped into `wb.publication_plans` and `wb.publication_actions`, enforcing WB batch limits (e.g., max items per request). The processor implements `ProcessPendingWithNotify`; it notifies downstream after a planning save succeeds for a nonempty source wave.
    - Incremental planning ensures new proposals can be planned as they finish preparation without waiting for the whole transfer.
@@ -17,7 +18,7 @@ Orchestrates the actual submission of product cards to Wildberries Content API, 
    - `media_dispatcher.go`: Sends photo and video URL lists with the pinned WB `/content/v3/media/save` (`SaveMediaByLinks`) mutation. There is no configurable upload method or file download/upload path. Each mutation is sent once per business attempt; unknown delivery remains visible to business reconciliation. Previously persisted partial-file-upload outcome codes remain displayable in statistics.
    - Daemon `RunMediaPolling`: Continuously polls visibility and triggers media uploads.
 4. **Error Monitoring & Feed (`service/monitoring/`)**:
-   - `error_feed.go`: Periodically polls WB `/content/v2/cards/error/list`.
+   - `error_feed.go`: Periodically polls WB `/content/v2/cards/error/list`. For each batch it deduplicates distinct raw messages in memory, stores only numbered `wb_error_1...N` codes, and identifies repeated batches by seller ID, batch UUID, and WB update time rather than a source digest. A focused unit test covers distinct-code count and rejected vendor codes.
    - Correlates asynchronous errors reported by WB to specific transfer items in `wb.publication_error_correlations`.
 5. **Resolution (`service/resolution/`)**:
    - `VerifiedCardResolver` applies positive WB catalog evidence through one UoW: locks the terminal publication subject using transfer/action/member/revision/attempt identity, stores a time-specific post-submission observation, validates it against the original upload request, updates member/identity/attribution/action/plan, and invokes the transfer corrector in the same transaction. Statistics remains a read/presentation feature and calls this resolver; failed or stale evidence leaves the item in attention.
@@ -38,5 +39,7 @@ Orchestrates the actual submission of product cards to Wildberries Content API, 
 - `transport/wb/catalog.go` selects only the Content catalog, error-feed, and pinned publication/media mutation operations from the shared core executor registry; core still owns operation specs, retry policy and rate limiting. Active/trash pagination is delegated to core `wb/api/content/v1/catalog`. Publication retains observation capture, bulk-probe budgets, attribution, and reconciliation decisions. An incomplete probe falls back to targeted searches; incomplete targeted searches return errors.
 
 ## Invariants & Database Triggers
+- Publication authorization queries resolve the import author from `wb.card_batches.author_telegram_id` and require a sealed batch; there is no join to a persisted import-session table.
+- Publication stores plans/actions/attempts under numeric IDs and explicit states. Action positions link draft items before persistence; reserved `publication_actions.id` values link them afterward. Request payloads are compared directly where retry identity matters. Live authorization and manual resolution replays compare actor IDs, command fields, expected revisions, and state. No plan/action/request/observation/member/media digest columns remain.
 - `reject_publication_fact_delete`: `DELETE` statements on attempts, correlations, and identities are rejected at database level.
 - `protect_publication_product_retry`: Identity, payload, and timestamps are immutable once finalized.

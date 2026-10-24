@@ -11,8 +11,6 @@ CREATE TABLE wb.publication_observations (
                                 'targeted_recheck',
                                 'post_submission'
                             )),
-    observation_digest      BYTEA NOT NULL
-                            CHECK (octet_length(observation_digest) = 32),
     normal_count            INTEGER NOT NULL
                             CHECK (normal_count >= 0),
     trash_count             INTEGER NOT NULL
@@ -24,7 +22,6 @@ CREATE TABLE wb.publication_observations (
 
     UNIQUE (transfer_id, id),
     UNIQUE (transfer_id, target_id, id),
-    UNIQUE (transfer_id, target_id, kind, observation_digest),
 
     FOREIGN KEY (transfer_id, target_id)
         REFERENCES wb.transfer_targets (transfer_id, id),
@@ -43,10 +40,6 @@ CREATE TABLE wb.publication_plans (
                             REFERENCES wb.transfers(id),
     revision                BIGINT NOT NULL DEFAULT 0
                             CHECK (revision >= 0),
-    plan_digest             BYTEA NOT NULL
-                            CHECK (octet_length(plan_digest) = 32),
-    target_set_root         BYTEA NOT NULL
-                            CHECK (octet_length(target_set_root) = 32),
     state                   TEXT NOT NULL DEFAULT 'planned'
                             CHECK (state IN (
                                 'planned', 'awaiting_authorization',
@@ -73,7 +66,6 @@ CREATE TABLE wb.publication_plans (
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE (transfer_id, id),
-    UNIQUE (transfer_id, plan_digest),
 
     CHECK (
         (
@@ -108,8 +100,7 @@ CREATE TABLE wb.publication_actions (
     target_id               BIGINT NOT NULL,
     revision                BIGINT NOT NULL DEFAULT 0
                             CHECK (revision >= 0),
-    action_key              BYTEA NOT NULL
-                            CHECK (octet_length(action_key) = 32),
+    position                INTEGER NOT NULL CHECK (position > 0),
     kind                    TEXT NOT NULL
                             CHECK (kind IN (
                                 'create_group', 'add_to_group', 'upload_media'
@@ -132,19 +123,10 @@ CREATE TABLE wb.publication_actions (
                                 outcome_code IS NULL
                                 OR char_length(outcome_code) > 0
                             ),
-    request_digest          BYTEA NOT NULL
-                            CHECK (octet_length(request_digest) = 32),
     request_payload         BYTEA NOT NULL
                             CHECK (
                                 octet_length(request_payload) > 0
                                 AND octet_length(request_payload) <= 10000000
-                            ),
-    member_set_digest       BYTEA NOT NULL
-                            CHECK (octet_length(member_set_digest) = 32),
-    media_link_set_root     BYTEA
-                            CHECK (
-                                media_link_set_root IS NULL
-                                OR octet_length(media_link_set_root) = 32
                             ),
     authorization_id        BIGINT
                             CHECK (
@@ -161,20 +143,13 @@ CREATE TABLE wb.publication_actions (
     UNIQUE (transfer_id, target_id, id),
     UNIQUE (transfer_id, plan_id, id),
     UNIQUE (transfer_id, id, authorization_id),
-    UNIQUE (transfer_id, plan_id, action_key),
+    UNIQUE (transfer_id, plan_id, position),
 
     FOREIGN KEY (transfer_id, plan_id)
         REFERENCES wb.publication_plans (transfer_id, id),
     FOREIGN KEY (transfer_id, target_id)
         REFERENCES wb.transfer_targets (transfer_id, id),
 
-    CHECK (
-        (kind = 'upload_media' AND media_link_set_root IS NOT NULL)
-        OR (
-            kind IN ('create_group', 'add_to_group')
-            AND media_link_set_root IS NULL
-        )
-    ),
     CHECK (
         (
             state IN ('planned', 'authorized', 'dispatching', 'reconciling')
@@ -227,11 +202,6 @@ CREATE TABLE wb.product_identities (
                             CHECK (imt_id IS NULL OR imt_id > 0),
     subject_id              BIGINT
                             CHECK (subject_id IS NULL OR subject_id > 0),
-    observation_digest      BYTEA
-                            CHECK (
-                                observation_digest IS NULL
-                                OR octet_length(observation_digest) = 32
-                            ),
     active_transfer_id      BIGINT,
     active_action_id        BIGINT,
     revision                BIGINT NOT NULL DEFAULT 0
@@ -266,10 +236,6 @@ CREATE TABLE wb.transfer_live_authorizations (
 
     transfer_id             BIGINT NOT NULL,
     plan_id                 BIGINT NOT NULL,
-    plan_digest             BYTEA NOT NULL
-                            CHECK (octet_length(plan_digest) = 32),
-    target_set_root         BYTEA NOT NULL
-                            CHECK (octet_length(target_set_root) = 32),
     revision                BIGINT NOT NULL DEFAULT 0
                             CHECK (revision >= 0),
     state                   TEXT NOT NULL DEFAULT 'requested'
@@ -279,8 +245,6 @@ CREATE TABLE wb.transfer_live_authorizations (
                             )),
     trusted_actor_id        BIGINT NOT NULL
                             CHECK (trusted_actor_id > 0),
-    trusted_actor_digest    BYTEA NOT NULL
-                            CHECK (octet_length(trusted_actor_digest) = 32),
     trusted_actor_name      VARCHAR(256) NOT NULL
                             CHECK (char_length(trusted_actor_name) > 0),
     requested_at            TIMESTAMPTZ NOT NULL,
@@ -353,10 +317,10 @@ CREATE TABLE wb.transfer_live_authorization_commands (
                             )),
     idempotency_key         VARCHAR(160) NOT NULL
                             CHECK (char_length(idempotency_key) > 0),
-    actor_digest            BYTEA NOT NULL
-                            CHECK (octet_length(actor_digest) = 32),
-    command_digest          BYTEA NOT NULL
-                            CHECK (octet_length(command_digest) = 32),
+    actor_id                BIGINT NOT NULL CHECK (actor_id >= 0),
+    plan_id                 BIGINT NOT NULL CHECK (plan_id >= 0),
+    expected_revision       BIGINT NOT NULL CHECK (expected_revision >= 0),
+    safe_reason_code        VARCHAR(128) NOT NULL DEFAULT '',
     result_state            TEXT NOT NULL
                             CHECK (result_state IN (
                                 'requested', 'authorized', 'revoked',
@@ -436,8 +400,6 @@ CREATE TABLE wb.publication_error_batches (
     batch_uuid              VARCHAR(128) NOT NULL
                             CHECK (char_length(batch_uuid) > 0),
     batch_updated_at        TIMESTAMPTZ NOT NULL,
-    source_digest           BYTEA NOT NULL
-                            CHECK (octet_length(source_digest) = 32),
     vendor_codes            TEXT[] NOT NULL,
     rejected_vendor_codes   TEXT[] NOT NULL,
     error_codes             TEXT[] NOT NULL
@@ -445,7 +407,7 @@ CREATE TABLE wb.publication_error_batches (
     observed_at             TIMESTAMPTZ NOT NULL,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (seller_id, batch_uuid, source_digest),
+    UNIQUE (seller_id, batch_uuid, batch_updated_at),
 
     FOREIGN KEY (seller_id)
         REFERENCES wb.publication_error_cursors (seller_id),
@@ -549,8 +511,6 @@ CREATE TABLE wb.publication_attempts (
     baseline_cursor_updated_at TIMESTAMPTZ,
     baseline_cursor_batch_uuid VARCHAR(128) NOT NULL DEFAULT '',
     baseline_captured_at    TIMESTAMPTZ NOT NULL,
-    request_digest          BYTEA NOT NULL
-                            CHECK (octet_length(request_digest) = 32),
     request_payload         BYTEA NOT NULL
                             CHECK (
                                 octet_length(request_payload) > 0
@@ -691,8 +651,6 @@ CREATE TABLE wb.publication_attributions (
                             CHECK (seller_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
     nm_id                   BIGINT NOT NULL
                             CHECK (nm_id > 0),
-    plan_digest             BYTEA NOT NULL
-                            CHECK (octet_length(plan_digest) = 32),
     attempt_id              BIGINT,
     preflight_observation_id BIGINT NOT NULL,
     post_observation_id     BIGINT,
@@ -748,12 +706,8 @@ CREATE TABLE wb.publication_manual_resolutions (
                             )),
     idempotency_key         VARCHAR(160) NOT NULL
                             CHECK (char_length(idempotency_key) > 0),
-    command_digest          BYTEA NOT NULL
-                            CHECK (octet_length(command_digest) = 32),
     actor_id                BIGINT NOT NULL
                             CHECK (actor_id > 0),
-    actor_digest            BYTEA NOT NULL
-                            CHECK (octet_length(actor_digest) = 32),
     actor_name              VARCHAR(256) NOT NULL
                             CHECK (char_length(actor_name) > 0),
     expected_action_revision BIGINT NOT NULL
@@ -879,7 +833,6 @@ CREATE TABLE wb.publication_product_retries (
     transfer_id             BIGINT NOT NULL,
     action_id               BIGINT NOT NULL,
     authorization_id        BIGINT NOT NULL CHECK (authorization_id > 0),
-    request_digest          BYTEA NOT NULL CHECK (octet_length(request_digest) = 32),
     request_payload         BYTEA NOT NULL CHECK (
                                 octet_length(request_payload) > 0
                                 AND octet_length(request_payload) <= 10000000
@@ -952,13 +905,9 @@ AS $$
 BEGIN
     IF ROW(
         NEW.transfer_id,
-        NEW.plan_digest,
-        NEW.target_set_root,
         NEW.created_at
     ) IS DISTINCT FROM ROW(
         OLD.transfer_id,
-        OLD.plan_digest,
-        OLD.target_set_root,
         OLD.created_at
     ) THEN
         RAISE EXCEPTION 'publication plan identity is immutable'
@@ -1001,10 +950,7 @@ BEGIN
     IF ROW(
         NEW.transfer_id,
         NEW.plan_id,
-        NEW.plan_digest,
-        NEW.target_set_root,
         NEW.trusted_actor_id,
-        NEW.trusted_actor_digest,
         NEW.trusted_actor_name,
         NEW.requested_at,
         NEW.expires_at,
@@ -1012,10 +958,7 @@ BEGIN
     ) IS DISTINCT FROM ROW(
         OLD.transfer_id,
         OLD.plan_id,
-        OLD.plan_digest,
-        OLD.target_set_root,
         OLD.trusted_actor_id,
-        OLD.trusted_actor_digest,
         OLD.trusted_actor_name,
         OLD.requested_at,
         OLD.expires_at,
@@ -1093,23 +1036,17 @@ BEGIN
         NEW.transfer_id,
         NEW.plan_id,
         NEW.target_id,
-        NEW.action_key,
+        NEW.position,
         NEW.kind,
-        NEW.request_digest,
         NEW.request_payload,
-        NEW.member_set_digest,
-        NEW.media_link_set_root,
         NEW.created_at
     ) IS DISTINCT FROM ROW(
         OLD.transfer_id,
         OLD.plan_id,
         OLD.target_id,
-        OLD.action_key,
+        OLD.position,
         OLD.kind,
-        OLD.request_digest,
         OLD.request_payload,
-        OLD.member_set_digest,
-        OLD.media_link_set_root,
         OLD.created_at
     ) THEN
         RAISE EXCEPTION 'publication action identity is immutable'
@@ -1177,7 +1114,6 @@ BEGIN
         NEW.baseline_cursor_updated_at,
         NEW.baseline_cursor_batch_uuid,
         NEW.baseline_captured_at,
-        NEW.request_digest,
         NEW.request_payload,
         NEW.attribution_id,
         NEW.started_at
@@ -1191,7 +1127,6 @@ BEGIN
         OLD.baseline_cursor_updated_at,
         OLD.baseline_cursor_batch_uuid,
         OLD.baseline_captured_at,
-        OLD.request_digest,
         OLD.request_payload,
         OLD.attribution_id,
         OLD.started_at
@@ -1242,14 +1177,12 @@ BEGIN
         NEW.transfer_id,
         NEW.action_id,
         NEW.authorization_id,
-        NEW.request_digest,
         NEW.request_payload,
         NEW.started_at
     ) IS DISTINCT FROM ROW(
         OLD.transfer_id,
         OLD.action_id,
         OLD.authorization_id,
-        OLD.request_digest,
         OLD.request_payload,
         OLD.started_at
     ) THEN

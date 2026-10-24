@@ -10,7 +10,12 @@ import (
 
 	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
+	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
+	cardpublication_monitoring "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/monitoring"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_authorization "github.com/ERONIS/wb-service/internal/feature/transfer/service/authorization"
+	transfer_publication "github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
+
 	"go.uber.org/zap"
 )
 
@@ -18,9 +23,9 @@ const productDispatchPageSize = 20
 
 type ProductDispatcher struct {
 	repository            ProductJournalRepository
-	transport             CatalogTransport
-	catalogReader         *CatalogReader
-	errorFeed             *ErrorFeed
+	transport             cardpublication_catalog.CatalogTransport
+	catalogReader         *cardpublication_catalog.CatalogReader
+	errorFeed             *cardpublication_monitoring.ErrorFeed
 	authorization         LiveAuthorizationVerifier
 	transferResults       PublicationExecutionResultApplier
 	uow                   core_postgres_transaction.UnitOfWork
@@ -34,9 +39,9 @@ type ProductDispatcher struct {
 
 func NewProductDispatcher(
 	repository ProductJournalRepository,
-	transport CatalogTransport,
-	catalogReader *CatalogReader,
-	errorFeed *ErrorFeed,
+	transport cardpublication_catalog.CatalogTransport,
+	catalogReader *cardpublication_catalog.CatalogReader,
+	errorFeed *cardpublication_monitoring.ErrorFeed,
 	authorization LiveAuthorizationVerifier,
 	transferResults PublicationExecutionResultApplier,
 	uow core_postgres_transaction.UnitOfWork,
@@ -166,7 +171,7 @@ func isExpectedProductDispatchStop(err error) bool {
 func (dispatcher *ProductDispatcher) dispatch(
 	ctx context.Context,
 	candidate ProductActionCandidate,
-	observation CatalogObservation,
+	observation cardpublication_catalog.CatalogObservation,
 ) error {
 	var (
 		planSuperseded       bool
@@ -224,10 +229,10 @@ func (dispatcher *ProductDispatcher) dispatch(
 						return err
 					}
 					for _, abortedAction := range aborted {
-						items := make([]transfer_service.PublicationTerminalItem, 0, len(abortedAction.Members))
+						items := make([]transfer_publication.PublicationTerminalItem, 0, len(abortedAction.Members))
 						groupSet := make(map[int64]struct{})
 						for _, member := range abortedAction.Members {
-							items = append(items, transfer_service.PublicationTerminalItem{
+							items = append(items, transfer_publication.PublicationTerminalItem{
 								GroupTargetID:        member.GroupTargetID,
 								TransferItemTargetID: member.TransferItemTargetID,
 								OutcomeClass:         transfer_service.ResultUnresolved,
@@ -242,7 +247,7 @@ func (dispatcher *ProductDispatcher) dispatch(
 						if err := dispatcher.transferResults.ApplyWithin(
 							ctx,
 							tx,
-							transfer_service.ApplyPublicationActionResultCommand{
+							transfer_publication.ApplyPublicationActionResultCommand{
 								TransferID:         action.TransferID,
 								ActionID:           abortedAction.ActionID,
 								Items:              items,
@@ -261,12 +266,12 @@ func (dispatcher *ProductDispatcher) dispatch(
 				if _, err := dispatcher.authorization.SupersedeWithin(
 					ctx,
 					tx,
-					transfer_service.ChangeLiveAuthorizationStateCommand{
-						TransferID:         action.TransferID,
-						AuthorizationID:    action.AuthorizationID,
-						ExpectedRevision:   action.AuthorizationRevision,
-						ExpectedPlanDigest: transfer_service.Digest(action.PlanDigest),
-						SafeReasonCode:     "targeted_recheck_changed",
+					transfer_authorization.ChangeLiveAuthorizationStateCommand{
+						TransferID:       action.TransferID,
+						AuthorizationID:  action.AuthorizationID,
+						ExpectedRevision: action.AuthorizationRevision,
+						ExpectedPlanID:   action.PlanID,
+						SafeReasonCode:   "targeted_recheck_changed",
 					},
 				); err != nil {
 					return err
@@ -294,13 +299,12 @@ func (dispatcher *ProductDispatcher) dispatch(
 			authorization, err := dispatcher.authorization.LockValid(
 				ctx,
 				tx,
-				transfer_service.LiveAuthorizationCheck{
+				transfer_authorization.LiveAuthorizationCheck{
 					TransferID:                    action.TransferID,
 					ActionID:                      action.ActionID,
 					AuthorizationID:               action.AuthorizationID,
 					ExpectedAuthorizationRevision: action.AuthorizationRevision,
-					PlanDigest:                    transfer_service.Digest(action.PlanDigest),
-					TargetSetRoot:                 transfer_service.Digest(action.TargetSetRoot),
+					PlanID:                        action.PlanID,
 					TargetID:                      action.TargetID,
 					SellerID:                      action.SellerID,
 					ClientGeneration:              action.ClientGeneration,
@@ -316,7 +320,7 @@ func (dispatcher *ProductDispatcher) dispatch(
 			baseline, err := dispatcher.errorFeed.CaptureBaseline(
 				ctx,
 				tx,
-				CaptureErrorBaselineCommand{
+				cardpublication_monitoring.CaptureErrorBaselineCommand{
 					TransferID: action.TransferID,
 					ActionID:   action.ActionID,
 					SellerID:   action.SellerID,
@@ -431,13 +435,13 @@ func (dispatcher *ProductDispatcher) recordSubmission(
 			for _, memberResult := range result.MemberResults {
 				memberResults[memberResult.ActionMemberID] = memberResult
 			}
-			items := make([]transfer_service.PublicationTerminalItem, 0, len(action.Members))
+			items := make([]transfer_publication.PublicationTerminalItem, 0, len(action.Members))
 			for _, member := range action.Members {
 				memberResult, exists := memberResults[member.ID]
 				if !exists {
 					return ErrProductActionConflict
 				}
-				items = append(items, transfer_service.PublicationTerminalItem{
+				items = append(items, transfer_publication.PublicationTerminalItem{
 					GroupTargetID:        member.GroupTargetID,
 					TransferItemTargetID: member.TransferItemTargetID,
 					OutcomeClass:         memberResult.OutcomeClass,
@@ -447,7 +451,7 @@ func (dispatcher *ProductDispatcher) recordSubmission(
 			if err := dispatcher.transferResults.ApplyWithin(
 				ctx,
 				tx,
-				transfer_service.ApplyPublicationActionResultCommand{
+				transfer_publication.ApplyPublicationActionResultCommand{
 					TransferID:         action.TransferID,
 					ActionID:           action.ActionID,
 					Items:              items,
@@ -515,9 +519,6 @@ func sameImmutableProductAction(left, right ProductAction) bool {
 	if left.TransferID != right.TransferID || left.ActionID != right.ActionID ||
 		left.PlanID != right.PlanID || left.TargetID != right.TargetID ||
 		left.SellerID != right.SellerID || left.Kind != right.Kind ||
-		left.PlanDigest != right.PlanDigest || left.TargetSetRoot != right.TargetSetRoot ||
-		left.RequestDigest != right.RequestDigest ||
-		left.MemberSetDigest != right.MemberSetDigest ||
 		!bytes.Equal(left.RequestPayload, right.RequestPayload) ||
 		len(left.Members) != len(right.Members) {
 		return false
@@ -557,7 +558,6 @@ func attemptFromAction(action ProductAction) ProductAttempt {
 		ActionID:             action.ActionID,
 		AuthorizationID:      action.AuthorizationID,
 		RecheckObservationID: action.RecheckObservationID,
-		RequestDigest:        action.RequestDigest,
 		StartedAt:            action.AttemptStartedAt,
 	}
 }

@@ -8,9 +8,15 @@ import (
 	"sync"
 	"time"
 
+	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
+	cardprepare_model "github.com/ERONIS/wb-service/internal/feature/cardprepare/service/model"
+	cardprepare_preparation "github.com/ERONIS/wb-service/internal/feature/cardprepare/service/preparation"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+	transfer_preparation "github.com/ERONIS/wb-service/internal/feature/transfer/service/preparation"
+
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
@@ -22,17 +28,17 @@ const (
 )
 
 type Processor struct {
-	preparer       *Preparer
+	preparer       *cardprepare_preparation.Preparer
 	transferSource TransferSource
 	resultApplier  TransferResultApplier
 	uow            core_postgres_transaction.UnitOfWork
 	logger         *zap.Logger
 	mu             sync.Mutex
-	cursors        map[transfer_service.TransferID]transfer_service.PreparationPendingGroup
+	cursors        map[transfer_model.TransferID]transfer_preparation.PreparationPendingGroup
 }
 
 func NewProcessor(
-	preparer *Preparer,
+	preparer *cardprepare_preparation.Preparer,
 	transferSource TransferSource,
 	resultApplier TransferResultApplier,
 	uow core_postgres_transaction.UnitOfWork,
@@ -47,7 +53,7 @@ func NewProcessor(
 		resultApplier:  resultApplier,
 		uow:            uow,
 		logger:         core_logger.Fallback(loggers...),
-		cursors:        make(map[transfer_service.TransferID]transfer_service.PreparationPendingGroup),
+		cursors:        make(map[transfer_model.TransferID]transfer_preparation.PreparationPendingGroup),
 	}
 }
 
@@ -65,8 +71,8 @@ func (processor *Processor) ProcessPendingWithNotify(ctx context.Context, onProg
 	}
 	processor.mu.Lock()
 	defer processor.mu.Unlock()
-	seen := make(map[transfer_service.TransferID]bool)
-	var afterID transfer_service.TransferID
+	seen := make(map[transfer_model.TransferID]bool)
+	var afterID transfer_model.TransferID
 	var firstErr error
 	for {
 		transfers, err := processor.transferSource.ListPreparing(ctx, afterID, preparationTransferPageSize)
@@ -105,7 +111,7 @@ func (processor *Processor) ProcessPending(ctx context.Context) (err error) {
 }
 
 // processTransfer обрабатывает одну порцию, продолжая следующий обход с сохранённого курсора.
-func (processor *Processor) processTransfer(ctx context.Context, transfer transfer_service.Transfer) (int, error) {
+func (processor *Processor) processTransfer(ctx context.Context, transfer transfer_model.Transfer) (int, error) {
 	if !preparationMayContinue(transfer.Phase) || transfer.Outcome != transfer_service.OutcomeRunning {
 		return 0, nil
 	}
@@ -121,14 +127,13 @@ func (processor *Processor) processTransfer(ctx context.Context, transfer transf
 		delete(processor.cursors, transfer.ID)
 		return 0, nil
 	}
-	batchPreparer := processor.preparer.ForBatch()
 	results := make([]error, len(pending))
 	completed := make([]bool, len(pending))
 	var group errgroup.Group
 	group.SetLimit(preparationConcurrency)
 	for index, pendingGroup := range pending {
 		group.Go(func() error {
-			completed[index], results[index] = processor.preparePendingGroup(ctx, transfer.ID, pendingGroup, batchPreparer)
+			completed[index], results[index] = processor.preparePendingGroup(ctx, transfer.ID, pendingGroup, processor.preparer)
 			return nil
 		})
 	}
@@ -154,7 +159,7 @@ func (processor *Processor) processTransfer(ctx context.Context, transfer transf
 	return count, firstErr
 }
 
-func preparationMayContinue(phase transfer_service.Phase) bool {
+func preparationMayContinue(phase transfer_model.Phase) bool {
 	switch phase {
 	case transfer_service.PhasePreparing,
 		transfer_service.PhaseAwaitingAuthorization,
@@ -171,9 +176,9 @@ func preparationMayContinue(phase transfer_service.Phase) bool {
 // Возвращает true после фиксации любого терминального результата.
 func (processor *Processor) preparePendingGroup(
 	ctx context.Context,
-	transferID transfer_service.TransferID,
-	group transfer_service.PreparationPendingGroup,
-	preparer *Preparer,
+	transferID transfer_model.TransferID,
+	group transfer_preparation.PreparationPendingGroup,
+	preparer *cardprepare_preparation.Preparer,
 ) (bool, error) {
 	source, err := processor.transferSource.LoadPreparationSource(
 		ctx,
@@ -189,14 +194,14 @@ func (processor *Processor) preparePendingGroup(
 		return false, ErrPreparationMismatch
 	}
 
-	srcGroup := SourceGroup{Items: make([]SourceItem, len(source.Items))}
+	srcGroup := cardprepare_model.SourceGroup{Items: make([]cardprepare_model.SourceItem, len(source.Items))}
 	for index, item := range source.Items {
-		srcGroup.Items[index] = SourceItem{Position: item.Position, Card: item.Card}
+		srcGroup.Items[index] = cardprepare_model.SourceItem{Position: item.Position, Card: item.Card}
 
 	}
 
 	startedAt := time.Now().UTC()
-	result, err := preparer.PrepareTarget(ctx, SellerID(group.SellerID), srcGroup)
+	result, err := preparer.PrepareTarget(ctx, core_domain.SellerID(group.SellerID), srcGroup)
 	finishedAt := time.Now().UTC()
 	if err != nil {
 		return false, err
@@ -207,23 +212,18 @@ func (processor *Processor) preparePendingGroup(
 		)
 	}
 	status := transfer_service.PreparationResultRejected
-	var artifact *transfer_service.PreparationArtifact
-	var proposalRoot transfer_service.Digest
+	var artifact *transfer_preparation.PreparationArtifact
 	if result.Outcome.Code == OutcomePrepared {
-		if result.Proposal == nil || result.Proposal.ValidateIntegrity() != nil {
+		if result.Proposal == nil || result.Proposal.Validate() != nil {
 			return false, errors.New("prepared card proposal is invalid")
 		}
 		status = transfer_service.PreparationResultSucceeded
-		proposalRoot = transfer_service.Digest(result.Proposal.ProposalRoot)
 		snapshot, err := json.Marshal(result.Proposal.MetadataSnapshot)
 		if err != nil {
 			return false, fmt.Errorf("encode metadata snapshot: %w", err)
 		}
-		artifact = &transfer_service.PreparationArtifact{
+		artifact = &transfer_preparation.PreparationArtifact{
 			SubjectID:        result.Proposal.SubjectID,
-			SemanticDigest:   transfer_service.Digest(result.Proposal.SemanticDigest),
-			MetadataDigest:   transfer_service.Digest(result.Proposal.MetadataDigest),
-			ProposalRoot:     proposalRoot,
 			RequestPayload:   result.Proposal.EncodedRequest,
 			MetadataSnapshot: snapshot,
 			LimitsFree:       result.Proposal.Limits.FreeLimits,
@@ -234,7 +234,7 @@ func (processor *Processor) preparePendingGroup(
 		status = transfer_service.PreparationResultUnresolved
 	}
 
-	transferCmd := transfer_service.ApplyPreparationResultCommand{
+	transferCmd := transfer_preparation.ApplyPreparationResultCommand{
 		TransferID:    transferID,
 		GroupTargetID: group.GroupTargetID,
 		Status:        status,
@@ -243,7 +243,6 @@ func (processor *Processor) preparePendingGroup(
 		Field:         result.Outcome.Field,
 		StartedAt:     startedAt,
 		FinishedAt:    finishedAt,
-		ProposalRoot:  proposalRoot,
 		Artifact:      artifact,
 		Revision:      1,
 	}

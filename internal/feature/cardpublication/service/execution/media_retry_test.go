@@ -8,6 +8,7 @@ import (
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_wb "github.com/ERONIS/wb-service/internal/core/transport/wb"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
+	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
 )
 
 type uncertainMediaError struct{}
@@ -21,11 +22,11 @@ func (uncertainMediaError) HTTPStatus() int                 { return 0 }
 func (uncertainMediaError) RetryAfter() time.Duration       { return 0 }
 
 type uncertainMediaTransport struct {
-	CatalogTransport
+	cardpublication_catalog.CatalogTransport
 	uploads int
 }
 
-func (transport *uncertainMediaTransport) SaveMediaByLinks(context.Context, SellerID, domain.ClientGeneration, contentapi.SaveMediaByLinksRequest) (contentapi.SaveMediaByLinksResponse, error) {
+func (transport *uncertainMediaTransport) SaveMediaByLinks(context.Context, domain.SellerID, domain.ClientGeneration, contentapi.SaveMediaByLinksRequest) (contentapi.SaveMediaByLinksResponse, error) {
 	transport.uploads++
 	return contentapi.SaveMediaByLinksResponse{}, uncertainMediaError{}
 }

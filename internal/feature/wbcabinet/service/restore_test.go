@@ -48,7 +48,7 @@ func (r *restoreRepository) ListStored(context.Context) ([]StoredCabinet, error)
 	}
 	return []StoredCabinet{*r.stored}, nil
 }
-func (r *restoreRepository) GetByOwner(context.Context, int64, SellerID) (Cabinet, error) {
+func (r *restoreRepository) GetByOwner(context.Context, int64, domain.SellerID) (Cabinet, error) {
 	if r.stored == nil {
 		return Cabinet{}, core_errors.ErrNotFound
 	}
@@ -68,18 +68,18 @@ func (r *restoreRepository) UpsertVerified(_ context.Context, _ core_postgres_tr
 	r.stored.Status = StatusActive
 	return r.stored.Cabinet, nil
 }
-func (r *restoreRepository) MarkStatus(_ context.Context, _ SellerID, status Status) error {
+func (r *restoreRepository) MarkStatus(_ context.Context, _ domain.SellerID, status Status) error {
 	r.stored.Status = status
 	return nil
 }
-func (r *restoreRepository) DeleteByOwner(context.Context, int64, SellerID) error {
+func (r *restoreRepository) DeleteByOwner(context.Context, int64, domain.SellerID) error {
 	r.stored = nil
 	return nil
 }
 
 type restoreVerifier struct{ failures, calls, removed, activated int }
 
-func (v *restoreVerifier) Prepare(_ context.Context, _ SellerID, _ string, token string) (PreparedCredential, error) {
+func (v *restoreVerifier) Prepare(_ context.Context, _ domain.SellerID, _ string, token string) (PreparedCredential, error) {
 	v.calls++
 	if v.failures > 0 {
 		v.failures--
@@ -87,15 +87,15 @@ func (v *restoreVerifier) Prepare(_ context.Context, _ SellerID, _ string, token
 	}
 	return &restorePrepared{generation: domain.NewClientGeneration(token), verifier: v}, nil
 }
-func (v *restoreVerifier) Remove(SellerID) { v.removed++ }
+func (v *restoreVerifier) Remove(domain.SellerID) { v.removed++ }
 
 type restorePrepared struct {
-	generation ClientGeneration
+	generation domain.ClientGeneration
 	verifier   *restoreVerifier
 }
 
-func (p *restorePrepared) Generation() ClientGeneration { return p.generation }
-func (p *restorePrepared) Activate() error              { p.verifier.activated++; return nil }
+func (p *restorePrepared) Generation() domain.ClientGeneration { return p.generation }
+func (p *restorePrepared) Activate() error                     { p.verifier.activated++; return nil }
 
 func newRestoreTestService() (*Service, *restoreRepository, *restoreVerifier, time.Time) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)

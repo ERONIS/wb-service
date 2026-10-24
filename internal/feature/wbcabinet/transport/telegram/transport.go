@@ -34,7 +34,7 @@ var (
 type CabinetService interface {
 	Add(context.Context, wbcabinet_service.AddCommand) (wbcabinet_service.Cabinet, error)
 	ListByOwner(context.Context, int64) ([]wbcabinet_service.Cabinet, error)
-	Delete(context.Context, int64, wbcabinet_service.SellerID) error
+	Delete(context.Context, int64, domain.SellerID) error
 }
 
 type ProfileProvider interface {

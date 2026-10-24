@@ -6,15 +6,16 @@ import (
 	"fmt"
 	"sort"
 
-	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	cardpublication_execution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/execution"
+	transfer_authorization "github.com/ERONIS/wb-service/internal/feature/transfer/service/authorization"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
 
 // ListDispatchableProductActions возвращает список действий с товарами, готовых к диспетчеризации.
 func (repository *Repository) ListDispatchableProductActions(
 	ctx context.Context,
 	limit int,
-) ([]cardpublication_service.ProductActionCandidate, error) {
+) ([]cardpublication_execution.ProductActionCandidate, error) {
 	if limit <= 0 || limit > 100 {
 		return nil, errors.New("dispatchable product action limit is invalid")
 	}
@@ -29,8 +30,7 @@ func (repository *Repository) ListDispatchableProductActions(
 			target.seller_id AS seller_id,
 			live_auth.id AS authorization_id,
 			live_auth.revision AS authorization_revision,
-			plan.plan_digest,
-			plan.target_set_root,
+			plan.id AS plan_id,
 			target.position AS target_position,
 			ROW_NUMBER() OVER (
 				PARTITION BY target.seller_id
@@ -55,7 +55,6 @@ func (repository *Repository) ListDispatchableProductActions(
 		JOIN wb.transfer_live_authorizations AS live_auth
 		  ON live_auth.transfer_id = action.transfer_id
 		 AND live_auth.plan_id = action.plan_id
-		 AND live_auth.plan_digest = plan.plan_digest
 		WHERE action.kind IN ('create_group', 'add_to_group')
 			AND action.state = 'planned'
 			AND action.authorization_id IS NULL
@@ -79,8 +78,7 @@ func (repository *Repository) ListDispatchableProductActions(
 			seller_id,
 			authorization_id,
 			authorization_revision,
-			plan_digest,
-			target_set_root,
+			plan_id,
 			catalog_vendor_codes
 		FROM dispatchable
 		ORDER BY cabinet_rank, target_position, seller_id, action_id
@@ -91,7 +89,7 @@ func (repository *Repository) ListDispatchableProductActions(
 		return nil, fmt.Errorf("list dispatchable product actions: %w", err)
 	}
 	defer rows.Close()
-	result := make([]cardpublication_service.ProductActionCandidate, 0)
+	result := make([]cardpublication_execution.ProductActionCandidate, 0)
 	for rows.Next() {
 		candidate, err := scanCatalogProductActionCandidate(rows)
 		if err != nil {
@@ -109,7 +107,7 @@ func (repository *Repository) ListDispatchableProductActions(
 func (repository *Repository) ListInterruptedProductActions(
 	ctx context.Context,
 	limit int,
-) ([]cardpublication_service.ProductActionCandidate, error) {
+) ([]cardpublication_execution.ProductActionCandidate, error) {
 	if limit <= 0 || limit > 100 {
 		return nil, errors.New("interrupted product action limit is invalid")
 	}
@@ -123,8 +121,7 @@ func (repository *Repository) ListInterruptedProductActions(
 			target.seller_id,
 			live_auth.id,
 			live_auth.revision,
-			plan.plan_digest,
-			plan.target_set_root
+			plan.id
 		FROM wb.publication_actions AS action
 		JOIN wb.publication_plans AS plan
 		  ON plan.transfer_id = action.transfer_id
@@ -150,7 +147,7 @@ func (repository *Repository) ListInterruptedProductActions(
 		return nil, fmt.Errorf("list interrupted product actions: %w", err)
 	}
 	defer rows.Close()
-	result := make([]cardpublication_service.ProductActionCandidate, 0)
+	result := make([]cardpublication_execution.ProductActionCandidate, 0)
 	for rows.Next() {
 		candidate, err := scanProductActionCandidate(rows)
 		if err != nil {
@@ -166,12 +163,11 @@ func (repository *Repository) ListInterruptedProductActions(
 
 // scanProductActionCandidate сканирует строку в ProductActionCandidate.
 func scanProductActionCandidate(row interface{ Scan(...any) error }) (
-	cardpublication_service.ProductActionCandidate,
+	cardpublication_execution.ProductActionCandidate,
 	error,
 ) {
-	var candidate cardpublication_service.ProductActionCandidate
+	var candidate cardpublication_execution.ProductActionCandidate
 	var transferID, authorizationID int64
-	var planDigest, targetSetRoot []byte
 	if err := row.Scan(
 		&transferID,
 		&candidate.ActionID,
@@ -179,31 +175,22 @@ func scanProductActionCandidate(row interface{ Scan(...any) error }) (
 		&candidate.SellerID,
 		&authorizationID,
 		&candidate.AuthorizationRevision,
-		&planDigest,
-		&targetSetRoot,
+		&candidate.PlanID,
 	); err != nil {
-		return cardpublication_service.ProductActionCandidate{}, err
+		return cardpublication_execution.ProductActionCandidate{}, err
 	}
-	if len(planDigest) != len(candidate.PlanDigest) ||
-		len(targetSetRoot) != len(candidate.TargetSetRoot) {
-		return cardpublication_service.ProductActionCandidate{},
-			errors.New("publication product candidate digest is invalid")
-	}
-	candidate.TransferID = transfer_service.TransferID(transferID)
-	candidate.AuthorizationID = transfer_service.LiveAuthorizationID(authorizationID)
-	copy(candidate.PlanDigest[:], planDigest)
-	copy(candidate.TargetSetRoot[:], targetSetRoot)
+	candidate.TransferID = transfer_model.TransferID(transferID)
+	candidate.AuthorizationID = transfer_authorization.LiveAuthorizationID(authorizationID)
 	return candidate, nil
 }
 
 // scanCatalogProductActionCandidate сканирует строку в ProductActionCandidate с кодами вендоров.
 func scanCatalogProductActionCandidate(row interface{ Scan(...any) error }) (
-	cardpublication_service.ProductActionCandidate,
+	cardpublication_execution.ProductActionCandidate,
 	error,
 ) {
-	var candidate cardpublication_service.ProductActionCandidate
+	var candidate cardpublication_execution.ProductActionCandidate
 	var transferID, authorizationID int64
-	var planDigest, targetSetRoot []byte
 	if err := row.Scan(
 		&transferID,
 		&candidate.ActionID,
@@ -211,22 +198,17 @@ func scanCatalogProductActionCandidate(row interface{ Scan(...any) error }) (
 		&candidate.SellerID,
 		&authorizationID,
 		&candidate.AuthorizationRevision,
-		&planDigest,
-		&targetSetRoot,
+		&candidate.PlanID,
 		&candidate.CatalogVendorCodes,
 	); err != nil {
-		return cardpublication_service.ProductActionCandidate{}, err
+		return cardpublication_execution.ProductActionCandidate{}, err
 	}
-	if len(planDigest) != len(candidate.PlanDigest) ||
-		len(targetSetRoot) != len(candidate.TargetSetRoot) ||
-		len(candidate.CatalogVendorCodes) == 0 {
-		return cardpublication_service.ProductActionCandidate{},
+	if candidate.PlanID <= 0 || len(candidate.CatalogVendorCodes) == 0 {
+		return cardpublication_execution.ProductActionCandidate{},
 			errors.New("catalog publication product candidate is invalid")
 	}
-	candidate.TransferID = transfer_service.TransferID(transferID)
-	candidate.AuthorizationID = transfer_service.LiveAuthorizationID(authorizationID)
-	copy(candidate.PlanDigest[:], planDigest)
-	copy(candidate.TargetSetRoot[:], targetSetRoot)
+	candidate.TransferID = transfer_model.TransferID(transferID)
+	candidate.AuthorizationID = transfer_authorization.LiveAuthorizationID(authorizationID)
 	return candidate, nil
 }
 

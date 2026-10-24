@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
+	cardimport_batch "github.com/ERONIS/wb-service/internal/feature/cardimport/service/batch"
+	cardimport_intake "github.com/ERONIS/wb-service/internal/feature/cardimport/service/intake"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -16,11 +18,9 @@ import (
 const batchColumns = `
 	batch.id,
 	batch.source_session_id,
-	batch.purpose,
 	batch.items_count,
 	batch.groups_count,
-	batch.checksum,
-	batch.author_snapshot,
+	batch.author_telegram_id,
 	batch.finalized_at
 `
 
@@ -31,8 +31,8 @@ type rowScanner interface {
 // GetBatch загружает неизменяемый батч по его идентификатору.
 func (r *Repository) GetBatch(
 	ctx context.Context,
-	batchID cardimport_service.BatchID,
-) (cardimport_service.BatchHeader, error) {
+	batchID cardpipeline.BatchID,
+) (cardimport_batch.BatchHeader, error) {
 	ctx, cancel := r.pool.OperationContext(ctx)
 	defer cancel()
 
@@ -42,24 +42,21 @@ func (r *Repository) GetBatch(
 // ListFinalizedBatches возвращает список финализированных батчей с keyset-пагинацией.
 func (r *Repository) ListFinalizedBatches(
 	ctx context.Context,
-	after *cardimport_service.BatchCursor,
+	after *cardpipeline.BatchCursor,
 	limit int,
-) ([]cardimport_service.BatchHeader, error) {
+) ([]cardimport_batch.BatchHeader, error) {
 	ctx, cancel := r.pool.OperationContext(ctx)
 	defer cancel()
 
 	query := `
 		SELECT ` + batchColumns + `
 		FROM wb.card_batches AS batch
-		JOIN wb.card_import_sessions AS session
-			ON session.finalized_batch_id = batch.id
-		   AND session.id = batch.source_session_id
-		   AND session.status = 'finalized'
+		WHERE batch.sealed
 	`
 	arguments := make([]any, 0, 3)
 	if after != nil {
 		query += `
-		WHERE (batch.finalized_at, batch.id) > ($1, $2)
+		AND (batch.finalized_at, batch.id) > ($1, $2)
 		ORDER BY batch.finalized_at, batch.id
 		LIMIT $3;
 		`
@@ -83,7 +80,7 @@ func (r *Repository) ListFinalizedBatches(
 	}
 	defer rows.Close()
 
-	batches := make([]cardimport_service.BatchHeader, 0)
+	batches := make([]cardimport_batch.BatchHeader, 0)
 	for rows.Next() {
 		header, err := scanBatchHeader(rows)
 		if err != nil {
@@ -101,29 +98,25 @@ func (r *Repository) ListFinalizedBatches(
 func loadBatch(
 	ctx context.Context,
 	db core_postgres_transaction.DBTX,
-	batchID cardimport_service.BatchID,
-) (cardimport_service.BatchHeader, error) {
+	batchID cardpipeline.BatchID,
+) (cardimport_batch.BatchHeader, error) {
 	query := `
 		SELECT ` + batchColumns + `
 		FROM wb.card_batches AS batch
-		JOIN wb.card_import_sessions AS session
-			ON session.finalized_batch_id = batch.id
-		   AND session.id = batch.source_session_id
 		WHERE batch.id = $1
-		  AND batch.source_kind = 'xlsx'
-		  AND session.status = 'finalized';
+		  AND batch.sealed;
 	`
 
 	header, err := scanBatchHeader(db.QueryRow(ctx, query, batchID))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return cardimport_service.BatchHeader{}, fmt.Errorf(
+		return cardimport_batch.BatchHeader{}, fmt.Errorf(
 			"finalized cardimport batch ID='%d': %w",
 			batchID,
 			core_errors.ErrNotFound,
 		)
 	}
 	if err != nil {
-		return cardimport_service.BatchHeader{}, fmt.Errorf(
+		return cardimport_batch.BatchHeader{}, fmt.Errorf(
 			"scan finalized cardimport batch: %w",
 			err,
 		)
@@ -132,42 +125,26 @@ func loadBatch(
 	return header, nil
 }
 
-// scanBatchHeader сканирует строку в cardimport_service.BatchHeader.
-func scanBatchHeader(row rowScanner) (cardimport_service.BatchHeader, error) {
+// scanBatchHeader сканирует строку в cardimport_batch.BatchHeader.
+func scanBatchHeader(row rowScanner) (cardimport_batch.BatchHeader, error) {
 	var (
-		header       cardimport_service.BatchHeader
-		batchID      int64
-		checksum     []byte
-		snapshotJSON []byte
+		header  cardimport_batch.BatchHeader
+		batchID int64
 	)
 	err := row.Scan(
 		&batchID,
 		&header.SourceSessionID,
-		&header.Purpose,
 		&header.ItemsCount,
 		&header.GroupsCount,
-		&checksum,
-		&snapshotJSON,
+		&header.AuthorTelegramID,
 		&header.FinalizedAt,
 	)
 	if err != nil {
-		return cardimport_service.BatchHeader{}, err
+		return cardimport_batch.BatchHeader{}, err
 	}
-	if len(checksum) != len(header.Checksum) {
-		return cardimport_service.BatchHeader{}, errors.New(
-			"stored cardimport batch checksum has invalid length",
-		)
-	}
-	header.ID = cardimport_service.BatchID(batchID)
-	copy(header.Checksum[:], checksum)
-	if err := json.Unmarshal(snapshotJSON, &header.AuthorSnapshot); err != nil {
-		return cardimport_service.BatchHeader{}, fmt.Errorf(
-			"decode cardimport author snapshot: %w",
-			err,
-		)
-	}
+	header.ID = cardpipeline.BatchID(batchID)
 	if err := header.Validate(); err != nil {
-		return cardimport_service.BatchHeader{}, err
+		return cardimport_batch.BatchHeader{}, err
 	}
 
 	return header, nil
@@ -176,10 +153,10 @@ func scanBatchHeader(row rowScanner) (cardimport_service.BatchHeader, error) {
 // ListBatchItems возвращает элементы неизменяемого батча с пагинацией по позиции.
 func (r *Repository) ListBatchItems(
 	ctx context.Context,
-	batchID cardimport_service.BatchID,
+	batchID cardpipeline.BatchID,
 	afterPosition int,
 	limit int,
-) ([]cardimport_service.BatchItem, error) {
+) ([]cardimport_batch.BatchItem, error) {
 	ctx, cancel := r.pool.OperationContext(ctx)
 	defer cancel()
 
@@ -195,13 +172,9 @@ func (r *Repository) ListBatchItems(
 			item.payload
 		FROM wb.card_batch_items AS item
 		JOIN wb.card_batches AS batch ON batch.id = item.batch_id
-		JOIN wb.card_import_sessions AS session
-			ON session.finalized_batch_id = batch.id
-		   AND session.id = batch.source_session_id
 		WHERE item.batch_id = $1
 			AND item.position > $2
-			AND batch.source_kind = 'xlsx'
-			AND session.status = 'finalized'
+			AND batch.sealed
 		ORDER BY item.position
 		LIMIT $3;
 	`
@@ -211,10 +184,10 @@ func (r *Repository) ListBatchItems(
 	}
 	defer rows.Close()
 
-	items := make([]cardimport_service.BatchItem, 0)
+	items := make([]cardimport_batch.BatchItem, 0)
 	for rows.Next() {
 		var (
-			item        cardimport_service.BatchItem
+			item        cardimport_batch.BatchItem
 			itemID      int64
 			storedBatch int64
 			sourceFile  int64
@@ -237,9 +210,9 @@ func (r *Repository) ListBatchItems(
 		if len(groupKey) != len(item.SourceGroupKey) {
 			return nil, errors.New("stored source group key has invalid length")
 		}
-		item.ID = cardimport_service.BatchItemID(itemID)
-		item.BatchID = cardimport_service.BatchID(storedBatch)
-		item.SourceFileID = cardimport_service.FileID(sourceFile)
+		item.ID = cardpipeline.BatchItemID(itemID)
+		item.BatchID = cardpipeline.BatchID(storedBatch)
+		item.SourceFileID = cardimport_intake.FileID(sourceFile)
 		item.SourceRows = make([]int, len(sourceRows))
 		for index, row := range sourceRows {
 			item.SourceRows[index] = int(row)

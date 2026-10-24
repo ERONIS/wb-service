@@ -12,47 +12,51 @@ import (
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	cardpublication_postgres_repository "github.com/ERONIS/wb-service/internal/feature/cardpublication/repository/postgres"
 	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
+	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
+	cardpublication_execution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/execution"
+	cardpublication_monitoring "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/monitoring"
+	cardpublication_planning "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/planning"
+	cardpublication_resolution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/resolution"
 	cardpublication_config_transport "github.com/ERONIS/wb-service/internal/feature/cardpublication/transport/config"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_authorization "github.com/ERONIS/wb-service/internal/feature/transfer/service/authorization"
+
 	"go.uber.org/zap"
 )
 
 type Feature struct {
-	processor                *cardpublication_service.Processor
-	errorFeed                *cardpublication_service.ErrorFeed
-	livePlanSource           transfer_service.LivePlanSource
-	productDispatcher        *cardpublication_service.ProductDispatcher
-	mediaDispatcher          *cardpublication_service.MediaDispatcher
-	manualResolver           *cardpublication_service.ManualResolver
-	verifiedCardResolver     *cardpublication_service.VerifiedCardResolver
+	processor                *cardpublication_planning.Processor
+	errorFeed                *cardpublication_monitoring.ErrorFeed
+	livePlanSource           transfer_authorization.LivePlanSource
+	productDispatcher        *cardpublication_execution.ProductDispatcher
+	mediaDispatcher          *cardpublication_execution.MediaDispatcher
+	manualResolver           *cardpublication_resolution.ManualResolver
+	verifiedCardResolver     *cardpublication_resolution.VerifiedCardResolver
 	repository               *cardpublication_postgres_repository.Repository
-	transport                cardpublication_service.CatalogTransport
-	catalogReader            *cardpublication_service.CatalogReader
-	transferExecutionResults cardpublication_service.PublicationExecutionResultApplier
+	transport                cardpublication_catalog.CatalogTransport
+	catalogReader            *cardpublication_catalog.CatalogReader
+	transferExecutionResults cardpublication_execution.PublicationExecutionResultApplier
 	uow                      core_postgres_transaction.UnitOfWork
-	config                   Config
+	config                   cardpublication_config_transport.Config
 	logger                   *zap.Logger
 }
 
-type Config = cardpublication_config_transport.Config
-
-func NewConfig() (Config, error) {
+func NewConfig() (cardpublication_config_transport.Config, error) {
 	return cardpublication_config_transport.New()
 }
 
-func NewConfigMust() Config {
+func NewConfigMust() cardpublication_config_transport.Config {
 	return cardpublication_config_transport.Must()
 }
 
 func New(
 	postgresPool core_postgres_pool.Pool,
 	uow core_postgres_transaction.UnitOfWork,
-	catalogTransport cardpublication_service.CatalogTransport,
-	transferSource cardpublication_service.TransferSource,
-	resultApplier cardpublication_service.TransferResultApplier,
-	executionResultApplier cardpublication_service.PublicationExecutionResultApplier,
-	proposalReader cardpublication_service.ProposalReader,
-	config Config,
+	catalogTransport cardpublication_catalog.CatalogTransport,
+	transferSource cardpublication_planning.TransferSource,
+	resultApplier cardpublication_planning.TransferResultApplier,
+	executionResultApplier cardpublication_execution.PublicationExecutionResultApplier,
+	proposalReader cardpublication_planning.ProposalReader,
+	config cardpublication_config_transport.Config,
 	loggers ...*zap.Logger,
 ) *Feature {
 	if postgresPool == nil {
@@ -109,7 +113,7 @@ func New(
 }
 
 func (feature *Feature) ConfigureProductDispatch(
-	authorization cardpublication_service.LiveAuthorizationVerifier,
+	authorization cardpublication_execution.LiveAuthorizationVerifier,
 ) {
 	if feature.productDispatcher != nil {
 		panic("cardpublication product dispatcher is already configured")
@@ -186,36 +190,36 @@ func (feature *Feature) RunMediaPolling(
 	return nil
 }
 
-func (feature *Feature) MediaDispatcher() *cardpublication_service.MediaDispatcher {
+func (feature *Feature) MediaDispatcher() *cardpublication_execution.MediaDispatcher {
 	if feature.mediaDispatcher == nil {
 		panic("cardpublication media dispatcher is not configured")
 	}
 	return feature.mediaDispatcher
 }
 
-func (feature *Feature) ProductDispatcher() *cardpublication_service.ProductDispatcher {
+func (feature *Feature) ProductDispatcher() *cardpublication_execution.ProductDispatcher {
 	if feature.productDispatcher == nil {
 		panic("cardpublication product dispatcher is not configured")
 	}
 	return feature.productDispatcher
 }
 
-func (feature *Feature) ManualResolver() *cardpublication_service.ManualResolver {
+func (feature *Feature) ManualResolver() *cardpublication_resolution.ManualResolver {
 	return feature.manualResolver
 }
 
-func (feature *Feature) VerifiedCardResolver() *cardpublication_service.VerifiedCardResolver {
+func (feature *Feature) VerifiedCardResolver() *cardpublication_resolution.VerifiedCardResolver {
 	return feature.verifiedCardResolver
 }
 
-func (feature *Feature) ErrorFeed() *cardpublication_service.ErrorFeed {
+func (feature *Feature) ErrorFeed() *cardpublication_monitoring.ErrorFeed {
 	return feature.errorFeed
 }
 
-func (feature *Feature) LivePlanSource() transfer_service.LivePlanSource {
+func (feature *Feature) LivePlanSource() transfer_authorization.LivePlanSource {
 	return feature.livePlanSource
 }
 
-func (feature *Feature) Processor() *cardpublication_service.Processor {
+func (feature *Feature) Processor() *cardpublication_planning.Processor {
 	return feature.processor
 }

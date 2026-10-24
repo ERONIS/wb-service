@@ -7,20 +7,23 @@ import (
 	"testing"
 	"time"
 
+	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 	"github.com/ERONIS/wb-service/internal/feature/cardprepare/service/preparation"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+	transfer_preparation "github.com/ERONIS/wb-service/internal/feature/transfer/service/preparation"
 )
 
 // mockCatalogTransport эмулирует ответы API каталога Wildberries.
 type mockCatalogTransport struct {
-	unavailableCabinets map[SellerID]bool
+	unavailableCabinets map[core_domain.SellerID]bool
 	mu                  sync.Mutex
 }
 
-func (m *mockCatalogTransport) CardsLimits(ctx context.Context, cab SellerID) (contentapi.CardsLimitsResponse, error) {
+func (m *mockCatalogTransport) CardsLimits(ctx context.Context, cab core_domain.SellerID) (contentapi.CardsLimitsResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.unavailableCabinets[cab] {
@@ -36,7 +39,7 @@ func (m *mockCatalogTransport) CardsLimits(ctx context.Context, cab SellerID) (c
 	}, nil
 }
 
-func (m *mockCatalogTransport) Subjects(ctx context.Context, cab SellerID, q contentapi.SubjectsQuery) (contentapi.SubjectsResponse, error) {
+func (m *mockCatalogTransport) Subjects(ctx context.Context, cab core_domain.SellerID, q contentapi.SubjectsQuery) (contentapi.SubjectsResponse, error) {
 	return contentapi.SubjectsResponse{
 		Data: []contentapi.Subject{
 			{SubjectID: 101, SubjectName: "Брюки"},
@@ -44,13 +47,13 @@ func (m *mockCatalogTransport) Subjects(ctx context.Context, cab SellerID, q con
 	}, nil
 }
 
-func (m *mockCatalogTransport) SubjectCharacteristics(ctx context.Context, cab SellerID, subID int64, q contentapi.SubjectCharacteristicsQuery) (contentapi.SubjectCharacteristicsResponse, error) {
+func (m *mockCatalogTransport) SubjectCharacteristics(ctx context.Context, cab core_domain.SellerID, subID int64, q contentapi.SubjectCharacteristicsQuery) (contentapi.SubjectCharacteristicsResponse, error) {
 	return contentapi.SubjectCharacteristicsResponse{
 		Data: []contentapi.SubjectCharacteristic{},
 	}, nil
 }
 
-func (m *mockCatalogTransport) Brands(ctx context.Context, cab SellerID, q contentapi.BrandsQuery) (contentapi.BrandsResponse, error) {
+func (m *mockCatalogTransport) Brands(ctx context.Context, cab core_domain.SellerID, q contentapi.BrandsQuery) (contentapi.BrandsResponse, error) {
 	return contentapi.BrandsResponse{
 		Brands: []contentapi.Brand{
 			{ID: 1, Name: "TestBrand"},
@@ -58,42 +61,42 @@ func (m *mockCatalogTransport) Brands(ctx context.Context, cab SellerID, q conte
 	}, nil
 }
 
-func (m *mockCatalogTransport) Colors(ctx context.Context, cab SellerID, q contentapi.DirectoryQuery) (contentapi.DirectoryColorsResponse, error) {
+func (m *mockCatalogTransport) Colors(ctx context.Context, cab core_domain.SellerID, q contentapi.DirectoryQuery) (contentapi.DirectoryColorsResponse, error) {
 	return contentapi.DirectoryColorsResponse{}, nil
 }
 
-func (m *mockCatalogTransport) Kinds(ctx context.Context, cab SellerID, q contentapi.DirectoryQuery) (contentapi.DirectoryKindsResponse, error) {
+func (m *mockCatalogTransport) Kinds(ctx context.Context, cab core_domain.SellerID, q contentapi.DirectoryQuery) (contentapi.DirectoryKindsResponse, error) {
 	return contentapi.DirectoryKindsResponse{}, nil
 }
 
-func (m *mockCatalogTransport) Countries(ctx context.Context, cab SellerID, q contentapi.DirectoryQuery) (contentapi.DirectoryCountriesResponse, error) {
+func (m *mockCatalogTransport) Countries(ctx context.Context, cab core_domain.SellerID, q contentapi.DirectoryQuery) (contentapi.DirectoryCountriesResponse, error) {
 	return contentapi.DirectoryCountriesResponse{}, nil
 }
 
-func (m *mockCatalogTransport) Seasons(ctx context.Context, cab SellerID, q contentapi.DirectoryQuery) (contentapi.DirectorySeasonsResponse, error) {
+func (m *mockCatalogTransport) Seasons(ctx context.Context, cab core_domain.SellerID, q contentapi.DirectoryQuery) (contentapi.DirectorySeasonsResponse, error) {
 	return contentapi.DirectorySeasonsResponse{}, nil
 }
 
-func (m *mockCatalogTransport) VAT(ctx context.Context, cab SellerID, q contentapi.DirectoryQuery) (contentapi.DirectoryVATResponse, error) {
+func (m *mockCatalogTransport) VAT(ctx context.Context, cab core_domain.SellerID, q contentapi.DirectoryQuery) (contentapi.DirectoryVATResponse, error) {
 	return contentapi.DirectoryVATResponse{}, nil
 }
 
-func (m *mockCatalogTransport) TNVED(ctx context.Context, cab SellerID, q contentapi.DirectoryTNVEDQuery) (contentapi.DirectoryTNVEDResponse, error) {
+func (m *mockCatalogTransport) TNVED(ctx context.Context, cab core_domain.SellerID, q contentapi.DirectoryTNVEDQuery) (contentapi.DirectoryTNVEDResponse, error) {
 	return contentapi.DirectoryTNVEDResponse{}, nil
 }
 
 // mockTransferSource эмулирует источник данных переноса.
 type mockTransferSource struct {
-	transfers []transfer_service.Transfer
-	pending   map[transfer_service.TransferID][]transfer_service.PreparationPendingGroup
-	sources   map[int64]transfer_service.PreparationSource
+	transfers []transfer_model.Transfer
+	pending   map[transfer_model.TransferID][]transfer_preparation.PreparationPendingGroup
+	sources   map[int64]transfer_preparation.PreparationSource
 	mu        sync.Mutex
 }
 
-func (m *mockTransferSource) ListPreparing(ctx context.Context, afterID transfer_service.TransferID, limit int) ([]transfer_service.Transfer, error) {
+func (m *mockTransferSource) ListPreparing(ctx context.Context, afterID transfer_model.TransferID, limit int) ([]transfer_model.Transfer, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	res := make([]transfer_service.Transfer, 0)
+	res := make([]transfer_model.Transfer, 0)
 	for _, t := range m.transfers {
 		if t.ID > afterID {
 			res = append(res, t)
@@ -105,18 +108,18 @@ func (m *mockTransferSource) ListPreparing(ctx context.Context, afterID transfer
 	return res, nil
 }
 
-func (m *mockTransferSource) BeginPreparation(ctx context.Context, transferID transfer_service.TransferID) error {
+func (m *mockTransferSource) BeginPreparation(ctx context.Context, transferID transfer_model.TransferID) error {
 	return nil
 }
 
-func (m *mockTransferSource) ListPendingPreparationGroups(ctx context.Context, transferID transfer_service.TransferID, limit int, after transfer_service.PreparationPendingGroup) ([]transfer_service.PreparationPendingGroup, error) {
+func (m *mockTransferSource) ListPendingPreparationGroups(ctx context.Context, transferID transfer_model.TransferID, limit int, after transfer_preparation.PreparationPendingGroup) ([]transfer_preparation.PreparationPendingGroup, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	groups := m.pending[transferID]
 	if len(groups) == 0 {
 		return nil, nil
 	}
-	ordered := make([]transfer_service.PreparationPendingGroup, 0)
+	ordered := make([]transfer_preparation.PreparationPendingGroup, 0)
 	for _, g := range groups {
 		if g.SourceGroupID > after.SourceGroupID || (g.SourceGroupID == after.SourceGroupID && g.TargetID > after.TargetID) {
 			ordered = append(ordered, g)
@@ -134,21 +137,21 @@ func (m *mockTransferSource) ListPendingPreparationGroups(ctx context.Context, t
 	return ordered, nil
 }
 
-func (m *mockTransferSource) LoadPreparationSource(ctx context.Context, transferID transfer_service.TransferID, groupTargetID int64) (transfer_service.PreparationSource, error) {
+func (m *mockTransferSource) LoadPreparationSource(ctx context.Context, transferID transfer_model.TransferID, groupTargetID int64) (transfer_preparation.PreparationSource, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	src, ok := m.sources[groupTargetID]
 	if !ok {
-		return transfer_service.PreparationSource{}, ErrProposalNotFound
+		return transfer_preparation.PreparationSource{}, ErrProposalNotFound
 	}
 	return src, nil
 }
 
-func (m *mockTransferSource) removePendingGroup(transferID transfer_service.TransferID, groupTargetID int64) {
+func (m *mockTransferSource) removePendingGroup(transferID transfer_model.TransferID, groupTargetID int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	groups := m.pending[transferID]
-	filtered := make([]transfer_service.PreparationPendingGroup, 0, len(groups))
+	filtered := make([]transfer_preparation.PreparationPendingGroup, 0, len(groups))
 	for _, g := range groups {
 		if g.GroupTargetID != groupTargetID {
 			filtered = append(filtered, g)
@@ -159,12 +162,12 @@ func (m *mockTransferSource) removePendingGroup(transferID transfer_service.Tran
 
 // mockResultApplier сохраняет применённые команды.
 type mockResultApplier struct {
-	applied []transfer_service.ApplyPreparationResultCommand
-	onApply func(transfer_service.ApplyPreparationResultCommand)
+	applied []transfer_preparation.ApplyPreparationResultCommand
+	onApply func(transfer_preparation.ApplyPreparationResultCommand)
 	mu      sync.Mutex
 }
 
-func (m *mockResultApplier) ApplyTx(ctx context.Context, tx core_postgres_transaction.DBTX, cmd transfer_service.ApplyPreparationResultCommand) error {
+func (m *mockResultApplier) ApplyTx(ctx context.Context, tx core_postgres_transaction.DBTX, cmd transfer_preparation.ApplyPreparationResultCommand) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.applied = append(m.applied, cmd)
@@ -186,27 +189,27 @@ func TestProcessor_ProcessPendingWithProgress(t *testing.T) {
 	ctx := context.Background()
 
 	transport := &mockCatalogTransport{
-		unavailableCabinets: make(map[SellerID]bool),
+		unavailableCabinets: make(map[core_domain.SellerID]bool),
 	}
 	preparer := preparation.NewPreparer(transport)
 
 	tSource := &mockTransferSource{
-		transfers: []transfer_service.Transfer{
+		transfers: []transfer_model.Transfer{
 			{ID: 1, Phase: transfer_service.PhasePreparing, Outcome: transfer_service.OutcomeRunning},
 		},
-		pending: map[transfer_service.TransferID][]transfer_service.PreparationPendingGroup{
+		pending: map[transfer_model.TransferID][]transfer_preparation.PreparationPendingGroup{
 			1: {
 				{GroupTargetID: 10, SourceGroupID: 1, TargetID: 1, SellerID: "cab-1"},
 			},
 		},
-		sources: map[int64]transfer_service.PreparationSource{
+		sources: map[int64]transfer_preparation.PreparationSource{
 			10: {
 				TransferID:    1,
 				GroupTargetID: 10,
 				SourceGroupID: 1,
 				TargetID:      1,
 				SellerID:      "cab-1",
-				Items: []transfer_service.PreparationSourceItem{
+				Items: []transfer_preparation.PreparationSourceItem{
 					{
 						TransferItemID: 100,
 						Position:       1,
@@ -241,7 +244,7 @@ func TestProcessor_ProcessPendingWithProgress(t *testing.T) {
 	}
 
 	applier := &mockResultApplier{}
-	applier.onApply = func(cmd transfer_service.ApplyPreparationResultCommand) {
+	applier.onApply = func(cmd transfer_preparation.ApplyPreparationResultCommand) {
 		tSource.removePendingGroup(cmd.TransferID, cmd.GroupTargetID)
 	}
 	uow := &mockUOW{}
@@ -289,34 +292,34 @@ func TestProcessor_AdvancePastTransientErrors_LargeBatch(t *testing.T) {
 	ctx := context.Background()
 
 	transport := &mockCatalogTransport{
-		unavailableCabinets: map[SellerID]bool{
+		unavailableCabinets: map[core_domain.SellerID]bool{
 			"cab-failing": true, // Кабинет 1 временно недоступен
 		},
 	}
 	preparer := preparation.NewPreparer(transport)
 
 	const groupsPerCabinet = 600 // Всего 1200 групп (> 1000!)
-	pendingList := make([]transfer_service.PreparationPendingGroup, 0, groupsPerCabinet*2)
-	sourcesMap := make(map[int64]transfer_service.PreparationSource)
+	pendingList := make([]transfer_preparation.PreparationPendingGroup, 0, groupsPerCabinet*2)
+	sourcesMap := make(map[int64]transfer_preparation.PreparationSource)
 
 	var nextID int64 = 1
 	for i := 0; i < groupsPerCabinet; i++ {
 		// Группа для падающего кабинета
 		failID := nextID
 		nextID++
-		pendingList = append(pendingList, transfer_service.PreparationPendingGroup{
+		pendingList = append(pendingList, transfer_preparation.PreparationPendingGroup{
 			GroupTargetID: failID,
 			SourceGroupID: int64(i + 1),
 			TargetID:      1,
 			SellerID:      "cab-failing",
 		})
-		sourcesMap[failID] = transfer_service.PreparationSource{
+		sourcesMap[failID] = transfer_preparation.PreparationSource{
 			TransferID:    1,
 			GroupTargetID: failID,
 			SourceGroupID: int64(i + 1),
 			TargetID:      1,
 			SellerID:      "cab-failing",
-			Items: []transfer_service.PreparationSourceItem{
+			Items: []transfer_preparation.PreparationSourceItem{
 				{
 					TransferItemID: failID * 10,
 					Position:       1,
@@ -351,19 +354,19 @@ func TestProcessor_AdvancePastTransientErrors_LargeBatch(t *testing.T) {
 		// Группа для успешного кабинета
 		okID := nextID
 		nextID++
-		pendingList = append(pendingList, transfer_service.PreparationPendingGroup{
+		pendingList = append(pendingList, transfer_preparation.PreparationPendingGroup{
 			GroupTargetID: okID,
 			SourceGroupID: int64(i + 1),
 			TargetID:      2,
 			SellerID:      "cab-ok",
 		})
-		sourcesMap[okID] = transfer_service.PreparationSource{
+		sourcesMap[okID] = transfer_preparation.PreparationSource{
 			TransferID:    1,
 			GroupTargetID: okID,
 			SourceGroupID: int64(i + 1),
 			TargetID:      2,
 			SellerID:      "cab-ok",
-			Items: []transfer_service.PreparationSourceItem{
+			Items: []transfer_preparation.PreparationSourceItem{
 				{
 					TransferItemID: okID * 10,
 					Position:       1,
@@ -397,17 +400,17 @@ func TestProcessor_AdvancePastTransientErrors_LargeBatch(t *testing.T) {
 	}
 
 	tSource := &mockTransferSource{
-		transfers: []transfer_service.Transfer{
+		transfers: []transfer_model.Transfer{
 			{ID: 1, Phase: transfer_service.PhasePreparing, Outcome: transfer_service.OutcomeRunning},
 		},
-		pending: map[transfer_service.TransferID][]transfer_service.PreparationPendingGroup{
+		pending: map[transfer_model.TransferID][]transfer_preparation.PreparationPendingGroup{
 			1: pendingList,
 		},
 		sources: sourcesMap,
 	}
 
 	applier := &mockResultApplier{}
-	applier.onApply = func(cmd transfer_service.ApplyPreparationResultCommand) {
+	applier.onApply = func(cmd transfer_preparation.ApplyPreparationResultCommand) {
 		tSource.removePendingGroup(cmd.TransferID, cmd.GroupTargetID)
 	}
 	uow := &mockUOW{}
@@ -484,29 +487,29 @@ func TestProcessor_AdvancePastTransientErrors_LargeBatch(t *testing.T) {
 
 func TestProcessorSkipsFailingPageAndServesNextTransfer(t *testing.T) {
 	source := &mockTransferSource{
-		transfers: []transfer_service.Transfer{
+		transfers: []transfer_model.Transfer{
 			{ID: 1, Phase: transfer_service.PhasePreparing, Outcome: transfer_service.OutcomeRunning},
 			{ID: 2, Phase: transfer_service.PhasePreparing, Outcome: transfer_service.OutcomeRunning},
 		},
-		pending: make(map[transfer_service.TransferID][]transfer_service.PreparationPendingGroup),
-		sources: make(map[int64]transfer_service.PreparationSource),
+		pending: make(map[transfer_model.TransferID][]transfer_preparation.PreparationPendingGroup),
+		sources: make(map[int64]transfer_preparation.PreparationSource),
 	}
 	// Первые сто групп не загружаются; следующая и второй перенос дают терминальный отказ.
 	for id := int64(1); id <= preparationGroupBatchSize+1; id++ {
-		source.pending[1] = append(source.pending[1], transfer_service.PreparationPendingGroup{
+		source.pending[1] = append(source.pending[1], transfer_preparation.PreparationPendingGroup{
 			GroupTargetID: id, SourceGroupID: id, TargetID: 1, SellerID: "cab-1"})
 	}
-	source.pending[2] = []transfer_service.PreparationPendingGroup{{GroupTargetID: 1000, SourceGroupID: 1000, TargetID: 2, SellerID: "cab-2"}}
-	for _, transferID := range []transfer_service.TransferID{1, 2} {
+	source.pending[2] = []transfer_preparation.PreparationPendingGroup{{GroupTargetID: 1000, SourceGroupID: 1000, TargetID: 2, SellerID: "cab-2"}}
+	for _, transferID := range []transfer_model.TransferID{1, 2} {
 		groups := source.pending[transferID]
 		g := groups[len(groups)-1]
-		source.sources[g.GroupTargetID] = transfer_service.PreparationSource{
+		source.sources[g.GroupTargetID] = transfer_preparation.PreparationSource{
 			TransferID:    transferID,
 			GroupTargetID: g.GroupTargetID,
 			SourceGroupID: g.SourceGroupID,
 			TargetID:      g.TargetID,
 			SellerID:      g.SellerID,
-			Items: []transfer_service.PreparationSourceItem{
+			Items: []transfer_preparation.PreparationSourceItem{
 				{
 					Position: 1,
 					Card: cardpipeline.Card{
@@ -516,7 +519,7 @@ func TestProcessorSkipsFailingPageAndServesNextTransfer(t *testing.T) {
 			},
 		}
 	}
-	applier := &mockResultApplier{onApply: func(cmd transfer_service.ApplyPreparationResultCommand) {
+	applier := &mockResultApplier{onApply: func(cmd transfer_preparation.ApplyPreparationResultCommand) {
 		source.removePendingGroup(cmd.TransferID, cmd.GroupTargetID)
 	}}
 	proc := NewProcessor(preparation.NewPreparer(&mockCatalogTransport{}), source, applier, &mockUOW{})

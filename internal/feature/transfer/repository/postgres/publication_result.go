@@ -7,12 +7,14 @@ import (
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+	transfer_publication "github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
 )
 
 func (repository *Repository) ApplyPublicationPlanResult(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	command transfer_service.ApplyPublicationPlanResultCommand,
+	command transfer_publication.ApplyPublicationPlanResultCommand,
 ) error {
 	if tx == nil {
 		return errors.New("apply publication plan result: DBTX is nil")
@@ -68,7 +70,7 @@ func (repository *Repository) ApplyPublicationPlanResult(
 func updatePublicationPlanGroups(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	command transfer_service.ApplyPublicationPlanResultCommand,
+	command transfer_publication.ApplyPublicationPlanResultCommand,
 ) error {
 	if len(command.Groups) == 0 {
 		return nil
@@ -143,7 +145,7 @@ func updatePublicationPlanGroups(
 func updatePublicationPlanItems(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	command transfer_service.ApplyPublicationPlanResultCommand,
+	command transfer_publication.ApplyPublicationPlanResultCommand,
 ) error {
 	if len(command.Items) == 0 {
 		return nil
@@ -215,7 +217,7 @@ func updatePublicationPlanItems(
 	return nil
 }
 
-func publicationPlanningPhase(phase transfer_service.Phase) bool {
+func publicationPlanningPhase(phase transfer_model.Phase) bool {
 	switch phase {
 	case transfer_service.PhasePreparing,
 		transfer_service.PhaseAwaitingAuthorization,
@@ -228,4 +230,4 @@ func publicationPlanningPhase(phase transfer_service.Phase) bool {
 	}
 }
 
-var _ transfer_service.PublicationPlanResultRepository = (*Repository)(nil)
+var _ transfer_publication.PublicationPlanResultRepository = (*Repository)(nil)

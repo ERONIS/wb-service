@@ -6,17 +6,19 @@ import (
 	"errors"
 	"fmt"
 
+	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+	transfer_publication "github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
 )
 
 const publicationPlanningWaveGroupLimit = 30
 
 func (repository *Repository) ListAwaitingAuthorization(
 	ctx context.Context,
-	afterID transfer_service.TransferID,
+	afterID transfer_model.TransferID,
 	limit int,
-) ([]transfer_service.Transfer, error) {
+) ([]transfer_model.Transfer, error) {
 	const condition = `transfer.phase IN (
 				'preparing', 'awaiting_authorization', 'publishing',
 				'reconciling', 'media'
@@ -35,8 +37,8 @@ func (repository *Repository) ListAwaitingAuthorization(
 
 func (repository *Repository) LoadPublicationPlanningSource(
 	ctx context.Context,
-	transferID transfer_service.TransferID,
-) (transfer_service.PublicationPlanningSource, error) {
+	transferID transfer_model.TransferID,
+) (transfer_publication.PublicationPlanningSource, error) {
 	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 
@@ -50,7 +52,6 @@ func (repository *Repository) LoadPublicationPlanningSource(
 			WHERE group_target.transfer_id = $1
 			  AND group_target.preparation_status = 'succeeded'
 			  AND group_target.preparation_result_code = 'prepared'
-			  AND group_target.preparation_proposal_root IS NOT NULL
 			  AND group_target.publication_status = 'not_started'
 			  AND group_target.publication_plan_id IS NULL
 			ORDER BY target.position, group_target.id
@@ -61,7 +62,6 @@ func (repository *Repository) LoadPublicationPlanningSource(
 			group_target.source_group_id,
 			group_target.target_id,
 			target.seller_id,
-			group_target.preparation_proposal_root,
 			item.id,
 			item_target.id,
 			item.position,
@@ -90,7 +90,6 @@ func (repository *Repository) LoadPublicationPlanningSource(
 			AND transfer.outcome = 'running'
 			AND group_target.preparation_status = 'succeeded'
 			AND group_target.preparation_result_code = 'prepared'
-			AND group_target.preparation_proposal_root IS NOT NULL
 			AND group_target.publication_status = 'not_started'
 			AND group_target.publication_plan_id IS NULL
 			AND item_target.state = 'running'
@@ -104,23 +103,22 @@ func (repository *Repository) LoadPublicationPlanningSource(
 		publicationPlanningWaveGroupLimit,
 	)
 	if err != nil {
-		return transfer_service.PublicationPlanningSource{}, fmt.Errorf(
+		return transfer_publication.PublicationPlanningSource{}, fmt.Errorf(
 			"query publication planning source: %w",
 			err,
 		)
 	}
 	defer rows.Close()
 
-	source := transfer_service.PublicationPlanningSource{TransferID: transferID}
-	var current *transfer_service.PublicationPlanningGroup
+	source := transfer_publication.PublicationPlanningSource{TransferID: transferID}
+	var current *transfer_publication.PublicationPlanningGroup
 	for rows.Next() {
 		var (
 			groupTargetID int64
 			sourceGroupID int64
 			targetID      int64
 			sellerID      string
-			proposalRoot  []byte
-			member        transfer_service.PublicationPlanningMember
+			member        transfer_publication.PublicationPlanningMember
 			payload       []byte
 		)
 		if err := rows.Scan(
@@ -128,44 +126,35 @@ func (repository *Repository) LoadPublicationPlanningSource(
 			&sourceGroupID,
 			&targetID,
 			&sellerID,
-			&proposalRoot,
 			&member.TransferItemID,
 			&member.TransferItemTargetID,
 			&member.Position,
 			&member.VendorCode,
 			&payload,
 		); err != nil {
-			return transfer_service.PublicationPlanningSource{}, fmt.Errorf(
+			return transfer_publication.PublicationPlanningSource{}, fmt.Errorf(
 				"scan publication planning source: %w",
 				err,
 			)
 		}
 		if current == nil || current.GroupTargetID != groupTargetID {
-			var root transfer_service.Digest
-			if len(proposalRoot) != len(root) {
-				return transfer_service.PublicationPlanningSource{}, errors.New(
-					"publication planning proposal root has invalid length",
-				)
-			}
-			copy(root[:], proposalRoot)
-			source.Groups = append(source.Groups, transfer_service.PublicationPlanningGroup{
+			source.Groups = append(source.Groups, transfer_publication.PublicationPlanningGroup{
 				GroupTargetID: groupTargetID,
 				SourceGroupID: sourceGroupID,
 				TargetID:      targetID,
-				SellerID:      transfer_service.SellerID(sellerID),
-				ProposalRoot:  root,
+				SellerID:      core_domain.SellerID(sellerID),
 			})
 			current = &source.Groups[len(source.Groups)-1]
 		} else if current.SourceGroupID != sourceGroupID ||
 			current.TargetID != targetID ||
-			current.SellerID != transfer_service.SellerID(sellerID) {
-			return transfer_service.PublicationPlanningSource{}, errors.New(
+			current.SellerID != core_domain.SellerID(sellerID) {
+			return transfer_publication.PublicationPlanningSource{}, errors.New(
 				"publication planning group identity changed within result",
 			)
 		}
 		var card cardpipeline.Card
 		if err := json.Unmarshal(payload, &card); err != nil {
-			return transfer_service.PublicationPlanningSource{}, fmt.Errorf(
+			return transfer_publication.PublicationPlanningSource{}, fmt.Errorf(
 				"decode publication planning item payload: %w",
 				err,
 			)
@@ -174,14 +163,14 @@ func (repository *Repository) LoadPublicationPlanningSource(
 		current.Members = append(current.Members, member)
 	}
 	if err := rows.Err(); err != nil {
-		return transfer_service.PublicationPlanningSource{}, fmt.Errorf(
+		return transfer_publication.PublicationPlanningSource{}, fmt.Errorf(
 			"iterate publication planning source: %w",
 			err,
 		)
 	}
 
 	if err := source.Validate(); err != nil {
-		return transfer_service.PublicationPlanningSource{}, err
+		return transfer_publication.PublicationPlanningSource{}, err
 	}
 	return source, nil
 }

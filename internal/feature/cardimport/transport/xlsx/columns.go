@@ -5,7 +5,7 @@ import (
 	"strings"
 	"unicode"
 
-	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
+	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 )
 
 const (
@@ -167,9 +167,9 @@ func (c columns) firstColumn(name string) string {
 
 func (c columns) characteristics(
 	row []string,
-) []cardimport_service.RawCharacteristic {
+) []cardpipeline.RawCharacteristic {
 	characteristics := make(
-		[]cardimport_service.RawCharacteristic,
+		[]cardpipeline.RawCharacteristic,
 		0,
 	)
 
@@ -192,7 +192,7 @@ func (c columns) characteristics(
 
 		characteristics = append(
 			characteristics,
-			cardimport_service.RawCharacteristic{
+			cardpipeline.RawCharacteristic{
 				Name:  header,
 				Value: value,
 			},

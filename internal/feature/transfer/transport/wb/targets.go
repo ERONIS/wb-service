@@ -5,13 +5,12 @@ import (
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	"github.com/ERONIS/wb-service/internal/feature/transfer/service/registry"
-	wbcabinet_service "github.com/ERONIS/wb-service/internal/feature/wbcabinet/service"
 )
 
 type CabinetSource interface {
-	Targets(context.Context, int64) ([]wbcabinet_service.TargetCredential, error)
-	TargetsByOwnerRole(context.Context, domain.UserRole) ([]wbcabinet_service.TargetCredential, error)
-	AllTargets(context.Context) ([]wbcabinet_service.TargetCredential, error)
+	Targets(context.Context, int64) ([]domain.CabinetAccess, error)
+	TargetsByOwnerRole(context.Context, domain.UserRole) ([]domain.CabinetAccess, error)
+	AllTargets(context.Context) ([]domain.CabinetAccess, error)
 }
 
 type TargetTransport struct {
@@ -28,7 +27,7 @@ func NewTargetTransport(cabinets CabinetSource) *TargetTransport {
 func (transport *TargetTransport) Credentials(
 	ctx context.Context,
 	ownerTelegramID int64,
-) ([]registry.TargetCredential, error) {
+) ([]domain.CabinetAccess, error) {
 	credentials, err := transport.cabinets.Targets(ctx, ownerTelegramID)
 	if err != nil {
 		return nil, err
@@ -36,13 +35,13 @@ func (transport *TargetTransport) Credentials(
 	return credentials, nil
 }
 
-func (transport *TargetTransport) CredentialsByOwnerRole(ctx context.Context, role domain.UserRole) ([]registry.TargetCredential, error) {
+func (transport *TargetTransport) CredentialsByOwnerRole(ctx context.Context, role domain.UserRole) ([]domain.CabinetAccess, error) {
 	return transport.cabinets.TargetsByOwnerRole(ctx, role)
 }
 
 func (transport *TargetTransport) AllCredentials(
 	ctx context.Context,
-) ([]registry.TargetCredential, error) {
+) ([]domain.CabinetAccess, error) {
 	credentials, err := transport.cabinets.AllTargets(ctx)
 	if err != nil {
 		return nil, err

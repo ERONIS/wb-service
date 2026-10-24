@@ -10,13 +10,14 @@ import (
 	tx "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	"github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
 	transfer "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
 
 const mediaVisibilityRequestTimeout = 45 * time.Second
 const mediaVisibilityLease = 2 * time.Minute
 
 type MediaVisibilityJob struct {
-	Candidate  MediaActionCandidate
+	Candidate  ProductActionCandidate
 	AttemptID  int64
 	Revision   int64
 	DeadlineAt time.Time
@@ -27,7 +28,7 @@ type MediaVisibilityUpdate struct {
 	Observation  catalog.MediaVisibility
 	NextDelay    time.Duration
 	ErrorCode    string
-	OutcomeClass transfer.ResultClass
+	OutcomeClass transfer_model.ResultClass
 	OutcomeCode  string
 }
 
@@ -66,7 +67,7 @@ func (dispatcher *MediaDispatcher) checkMediaVisibility(ctx context.Context, job
 	if action.State != "reconciling" || action.AttemptID != job.AttemptID {
 		return ErrMediaActionConflict
 	}
-	request, _, _, err := action.FinalRequest()
+	request, _, err := action.FinalRequest()
 	if err != nil {
 		return err
 	}

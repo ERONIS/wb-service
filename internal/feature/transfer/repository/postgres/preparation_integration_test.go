@@ -1,9 +1,7 @@
 package transfer_postgres_repository_test
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,11 +10,13 @@ import (
 	"time"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
-	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	transfer_postgres_repository "github.com/ERONIS/wb-service/internal/feature/transfer/repository/postgres"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+	transfer_preparation "github.com/ERONIS/wb-service/internal/feature/transfer/service/preparation"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -60,65 +60,42 @@ func setupTestTransferData(
 	ctx context.Context,
 	pool core_postgres_pool.Pool,
 	prefix string,
-) (transferID transfer_service.TransferID, groupTargetID1 int64, groupTargetID2 int64, targetID1 int64, targetID2 int64) {
+) (transferID transfer_model.TransferID, groupTargetID1 int64, groupTargetID2 int64, targetID1 int64, targetID2 int64) {
 	t.Helper()
 
-	// Создаём сессию и пачку карточек.
+	// Создаём готовую пачку карточек.
 	var batchID int64
-	checksum := make([]byte, 32)
-	copy(checksum, []byte("test_checksum_"+prefix))
-	var sessionID int64
+	sessionID := time.Now().UnixNano()
 	err := pool.QueryRow(ctx, `
-		INSERT INTO wb.card_import_sessions (author_telegram_id, purpose)
-		VALUES ($1, 'transfer')
-		RETURNING id;
-	`, time.Now().UnixNano()).Scan(&sessionID)
-	if err != nil {
-		t.Fatalf("создание тестовой сессии импорта: %v", err)
-	}
-	err = pool.QueryRow(ctx, `
 		INSERT INTO wb.card_batches (
-			source_session_id, source_kind, source_reference_id, purpose,
-			items_count, groups_count, checksum, author_snapshot
+			source_session_id, author_telegram_id,
+			finalized_from_revision, finalize_idempotency_key,
+			items_count, groups_count, sealed
 		)
-		VALUES ($1, 'xlsx', $1, 'transfer', 1, 1, $2, '{}'::jsonb)
+		VALUES (
+			$1, $1,
+			0, 'integration-test', 1, 1, TRUE
+		)
 		RETURNING id;
-	`, sessionID, checksum).Scan(&batchID)
+	`, sessionID).Scan(&batchID)
 	if err != nil {
 		t.Fatalf("создание тестовой пачки карточек: %v", err)
 	}
-	_, err = pool.Exec(ctx, `
-		UPDATE wb.card_import_sessions
-		SET status = 'finalized', finalized_batch_id = $2,
-			finalized_from_revision = revision,
-			finalize_idempotency_key = 'integration-test',
-			finalize_command_digest = $3,
-			finalized_at = CURRENT_TIMESTAMP
-		WHERE id = $1;
-	`, sessionID, batchID, checksum)
-	if err != nil {
-		t.Fatalf("финализация тестовой сессии импорта: %v", err)
-	}
 
 	// 3. Создаем transfer в статусе initializing для соблюдения инвариантов триггеров
-	targetSetRoot := make([]byte, 32)
-	copy(targetSetRoot, []byte("test_root_"+prefix))
-	targetSnapshotRev := make([]byte, 32)
-	copy(targetSnapshotRev, []byte("test_rev_"+prefix))
 	var tid int64
 	err = pool.QueryRow(ctx, `
 		INSERT INTO wb.transfers (
-			batch_id, phase, outcome, batch_checksum, items_count, groups_count,
-			cohort_name, target_snapshot_revision,
-			target_set_root, targets_count, item_targets_count, group_targets_count
+			batch_id, phase, outcome, items_count, groups_count,
+			cohort_name, targets_count, item_targets_count, group_targets_count
 		)
-		VALUES ($1, 'initializing', 'running', $2, 1, 1, 'default', $3, $4, 2, 2, 2)
+		VALUES ($1, 'initializing', 'running', 1, 1, 'default', 2, 2, 2)
 		RETURNING id;
-	`, batchID, checksum, targetSnapshotRev, targetSetRoot).Scan(&tid)
+	`, batchID).Scan(&tid)
 	if err != nil {
 		t.Fatalf("создание тестового переноса: %v", err)
 	}
-	transferID = transfer_service.TransferID(tid)
+	transferID = transfer_model.TransferID(tid)
 
 	// 4. Создаем 2 цели (target cabinets)
 	clientGen := make([]byte, 32)
@@ -247,27 +224,16 @@ func TestPostgres_PreparationResult_DiagnosticsAndIdempotency(t *testing.T) {
 	startedAt := time.Now().UTC().Add(-100 * time.Millisecond)
 	finishedAt := time.Now().UTC()
 
-	var proposalRoot transfer_service.Digest
-	copy(proposalRoot[:], []byte("proposal_root_success_00000001"))
-	var semDigest, metaDigest transfer_service.Digest
-	copy(semDigest[:], []byte("sem_digest_00000000000000000001"))
-	metaDigest, _ = cardpipeline.DigestJSON("cardprepare-metadata:v1", json.RawMessage(`{"version": 1}`))
-	proposalRoot = cardpipeline.DigestProposal(semDigest, metaDigest, []byte(`{"cards": [{"vendorCode": "ART-1"}]}`))
-
 	// 1. Применяем успешный результат подготовки к groupTarget1
-	successCmd := transfer_service.ApplyPreparationResultCommand{
+	successCmd := transfer_preparation.ApplyPreparationResultCommand{
 		TransferID:    transferID,
 		GroupTargetID: groupTarget1,
 		Status:        transfer_service.PreparationResultSucceeded,
 		OutcomeCode:   "prepared",
 		StartedAt:     startedAt,
 		FinishedAt:    finishedAt,
-		ProposalRoot:  proposalRoot,
-		Artifact: &transfer_service.PreparationArtifact{
+		Artifact: &transfer_preparation.PreparationArtifact{
 			SubjectID:        12345,
-			SemanticDigest:   semDigest,
-			MetadataDigest:   metaDigest,
-			ProposalRoot:     proposalRoot,
 			RequestPayload:   []byte(`{"cards": [{"vendorCode": "ART-1"}]}`),
 			MetadataSnapshot: []byte(`{"version": 1}`),
 			LimitsFree:       100,
@@ -289,7 +255,6 @@ func TestPostgres_PreparationResult_DiagnosticsAndIdempotency(t *testing.T) {
 		status      string
 		revision    int64
 		code        *string
-		dbPropRoot  []byte
 		itemPos     *int
 		field       *string
 		dbStartedAt *time.Time
@@ -297,20 +262,17 @@ func TestPostgres_PreparationResult_DiagnosticsAndIdempotency(t *testing.T) {
 	)
 	err = pool.QueryRow(ctx, `
 		SELECT preparation_status, preparation_result_revision, preparation_result_code,
-		       preparation_proposal_root, preparation_item_position, preparation_field,
+		       preparation_item_position, preparation_field,
 		       preparation_started_at, preparation_finished_at
 		FROM wb.transfer_group_targets
 		WHERE id = $1;
-	`, groupTarget1).Scan(&status, &revision, &code, &dbPropRoot, &itemPos, &field, &dbStartedAt, &dbFinAt)
+	`, groupTarget1).Scan(&status, &revision, &code, &itemPos, &field, &dbStartedAt, &dbFinAt)
 	if err != nil {
 		t.Fatalf("чтение сохранённой группы: %v", err)
 	}
 
 	if status != "succeeded" || revision != 1 || code == nil || *code != "prepared" {
 		t.Errorf("неверный статус или код в БД: status=%s, rev=%d, code=%v", status, revision, code)
-	}
-	if !bytes.Equal(dbPropRoot, proposalRoot[:]) {
-		t.Errorf("не совпадает proposal_root")
 	}
 	if itemPos != nil || field != nil {
 		t.Errorf("у успешной группы item_position и field должны быть NULL, получено: pos=%v, field=%v", itemPos, field)
@@ -337,13 +299,11 @@ func TestPostgres_PreparationResult_DiagnosticsAndIdempotency(t *testing.T) {
 		t.Errorf("повторный идемпотентный вызов с теми же данными должен возвращать nil, получено: %v", err)
 	}
 
-	// 3. Конфликт: повторный вызов с конфликтующим proposal_root ДОЛЖЕН вернуть ErrPreparationResultConflict
+	// 3. Конфликт: повторный вызов с другим результатом должен вернуть ErrPreparationResultConflict.
 	conflictCmd := successCmd
-	changedArtifact := *successCmd.Artifact
-	conflictCmd.Artifact = &changedArtifact
-	changedArtifact.RequestPayload = []byte(`{"cards": []}`)
-	changedArtifact.ProposalRoot = cardpipeline.DigestProposal(changedArtifact.SemanticDigest, changedArtifact.MetadataDigest, changedArtifact.RequestPayload)
-	conflictCmd.ProposalRoot = changedArtifact.ProposalRoot
+	conflictCmd.Status = transfer_service.PreparationResultRejected
+	conflictCmd.OutcomeCode = "different_result"
+	conflictCmd.Artifact = nil
 
 	err = uow.WithinTransaction(ctx, func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
 		return repo.ApplyPreparationResult(ctx, tx, conflictCmd)
@@ -353,7 +313,7 @@ func TestPostgres_PreparationResult_DiagnosticsAndIdempotency(t *testing.T) {
 	}
 
 	// 4. Применяем отклонённый результат с детальной диагностикой к groupTarget2
-	rejectCmd := transfer_service.ApplyPreparationResultCommand{
+	rejectCmd := transfer_preparation.ApplyPreparationResultCommand{
 		TransferID:    transferID,
 		GroupTargetID: groupTarget2,
 		Status:        transfer_service.PreparationResultRejected,
@@ -410,29 +370,18 @@ func TestPostgres_PreparationArtifactAndProjectionRollbackTogether(t *testing.T)
 	transferID, groupTargetID, _, _, _ := setupTestTransferData(t, ctx, pool, fmt.Sprintf("rollback_%d", time.Now().UnixNano()))
 	repository := transfer_postgres_repository.New(pool)
 
-	var semanticDigest transfer_service.Digest
-	copy(semanticDigest[:], []byte("rollback-semantic-digest"))
 	metadata := []byte(`{}`)
-	metadataDigest, err := cardpipeline.DigestJSON("cardprepare-metadata:v1", json.RawMessage(metadata))
-	if err != nil {
-		t.Fatalf("хеш метаданных: %v", err)
-	}
 	payload := []byte(`{"cards":[]}`)
-	proposalRoot := cardpipeline.DigestProposal(semanticDigest, metadataDigest, payload)
 	startedAt := time.Now().UTC()
-	command := transfer_service.ApplyPreparationResultCommand{
+	command := transfer_preparation.ApplyPreparationResultCommand{
 		TransferID:    transferID,
 		GroupTargetID: groupTargetID,
 		Status:        transfer_service.PreparationResultSucceeded,
 		OutcomeCode:   "prepared",
 		StartedAt:     startedAt,
 		FinishedAt:    startedAt.Add(time.Millisecond),
-		ProposalRoot:  proposalRoot,
-		Artifact: &transfer_service.PreparationArtifact{
+		Artifact: &transfer_preparation.PreparationArtifact{
 			SubjectID:        12345,
-			SemanticDigest:   semanticDigest,
-			MetadataDigest:   metadataDigest,
-			ProposalRoot:     proposalRoot,
 			RequestPayload:   payload,
 			MetadataSnapshot: metadata,
 			LimitsFree:       1,
@@ -444,7 +393,7 @@ func TestPostgres_PreparationArtifactAndProjectionRollbackTogether(t *testing.T)
 		t.Fatalf("тестовая команда подготовки некорректна: %v", err)
 	}
 	rollbackReason := errors.New("rollback after preparation result")
-	err = uow.WithinTransaction(ctx, func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
+	err := uow.WithinTransaction(ctx, func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
 		if err := repository.ApplyPreparationResult(ctx, tx, command); err != nil {
 			return err
 		}
@@ -491,26 +440,15 @@ func TestPostgres_ConcurrentWorkersOnSameBatch(t *testing.T) {
 	startedAt := time.Now().UTC().Add(-50 * time.Millisecond)
 	finishedAt := time.Now().UTC()
 
-	var proposalRoot transfer_service.Digest
-	copy(proposalRoot[:], []byte("proposal_root_concurrent_0000001"))
-	var semDigest, metaDigest transfer_service.Digest
-	copy(semDigest[:], []byte("sem_digest_concurrent_0000000001"))
-	metaDigest, _ = cardpipeline.DigestJSON("cardprepare-metadata:v1", json.RawMessage(`{}`))
-	proposalRoot = cardpipeline.DigestProposal(semDigest, metaDigest, []byte(`{"cards": []}`))
-
-	cmd := transfer_service.ApplyPreparationResultCommand{
+	cmd := transfer_preparation.ApplyPreparationResultCommand{
 		TransferID:    transferID,
 		GroupTargetID: groupTarget1,
 		Status:        transfer_service.PreparationResultSucceeded,
 		OutcomeCode:   "prepared",
 		StartedAt:     startedAt,
 		FinishedAt:    finishedAt,
-		ProposalRoot:  proposalRoot,
-		Artifact: &transfer_service.PreparationArtifact{
+		Artifact: &transfer_preparation.PreparationArtifact{
 			SubjectID:        12345,
-			SemanticDigest:   semDigest,
-			MetadataDigest:   metaDigest,
-			ProposalRoot:     proposalRoot,
 			RequestPayload:   []byte(`{"cards": []}`),
 			MetadataSnapshot: []byte(`{}`),
 			LimitsFree:       10,
@@ -559,7 +497,7 @@ func TestPostgres_FairWindowPartitioning(t *testing.T) {
 	repo := transfer_postgres_repository.New(pool)
 
 	// Запрашиваем порцию групп
-	groups, err := repo.ListPendingPreparationGroups(ctx, transferID, 10, transfer_service.PreparationPendingGroup{})
+	groups, err := repo.ListPendingPreparationGroups(ctx, transferID, 10, transfer_preparation.PreparationPendingGroup{})
 	if err != nil {
 		t.Fatalf("ListPendingPreparationGroups вернул ошибку: %v", err)
 	}

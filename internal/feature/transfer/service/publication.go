@@ -2,20 +2,6 @@ package transfer_service
 
 import "github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
 
-type PublicationPlanningMember = publication.PublicationPlanningMember
-type PublicationPlanningGroup = publication.PublicationPlanningGroup
-type PublicationPlanningSource = publication.PublicationPlanningSource
-type PublicationProjectionStatus = publication.PublicationProjectionStatus
-type PublicationPlannedGroup = publication.PublicationPlannedGroup
-type PublicationPlannedItem = publication.PublicationPlannedItem
-type ApplyPublicationPlanResultCommand = publication.ApplyPublicationPlanResultCommand
-type PublicationPlanResultRepository = publication.PublicationPlanResultRepository
-type PublicationTerminalItem = publication.PublicationTerminalItem
-type ApplyPublicationActionResultCommand = publication.ApplyPublicationActionResultCommand
-type ApplyPublicationMediaResultCommand = publication.ApplyPublicationMediaResultCommand
-type CorrectPublicationItemResultCommand = publication.CorrectPublicationItemResultCommand
-type PublicationExecutionResultRepository = publication.PublicationExecutionResultRepository
-
 const (
 	MaxPublicationPlanningPageSize = publication.MaxPublicationPlanningPageSize
 

@@ -2,19 +2,20 @@ package authorization
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
 
 	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+
 	"go.uber.org/zap"
 )
 
 const automaticAuthorizationPageSize = 100
 
 type AutomaticAuthorizationPlanSource interface {
-	ListAutomaticAuthorizationPlans(context.Context, TransferID, int64, int) ([]AuthorizationPlanSummary, error)
+	ListAutomaticAuthorizationPlans(context.Context, transfer_model.TransferID, int64, int) ([]AuthorizationPlanSummary, error)
 }
 
 type AutomaticLiveAuthorization interface {
@@ -27,7 +28,7 @@ type AutomaticAuthorizationProcessor struct {
 	authorization   AutomaticLiveAuthorization
 	logger          *zap.Logger
 	processMu       sync.Mutex
-	afterTransferID TransferID
+	afterTransferID transfer_model.TransferID
 	afterPlanID     int64
 }
 
@@ -124,20 +125,19 @@ func (processor *AutomaticAuthorizationProcessor) authorize(
 		TelegramUserID: plan.AuthorTelegramID,
 		DisplayName:    fmt.Sprintf("Telegram %d", plan.AuthorTelegramID),
 	}
-	digest := hex.EncodeToString(plan.PlanDigest[:])
 	keySuffix := fmt.Sprintf(
-		"%d:%d:%d:%s",
+		"%d:%d:%d:%d",
 		plan.TransferID,
+		plan.PlanID,
 		plan.PlanRevision,
 		plan.LatestAuthorizationID,
-		digest,
 	)
 	_, err := processor.authorization.Authorize(
 		ctx,
 		actor,
 		RequestLiveCommand{
 			TransferID:     plan.TransferID,
-			PlanDigest:     plan.PlanDigest,
+			PlanID:         plan.PlanID,
 			IdempotencyKey: "auto:authorize:" + keySuffix,
 		},
 	)

@@ -1,4 +1,4 @@
-package model
+package cardimport_intake
 
 import (
 	"fmt"
@@ -21,36 +21,71 @@ const (
 	SessionStatusCancelled  SessionStatus = "cancelled"
 )
 
-func (s SessionStatus) IsValid() bool {
-	switch s {
-	case SessionStatusCollecting,
-		SessionStatusFinalized,
-		SessionStatusCancelled:
-		return true
-	default:
-		return false
-	}
-}
-
 // Session представляет сессию приёма XLSX-файлов в памяти процесса.
 type Session struct {
 	ID               SessionID
 	AuthorTelegramID int64
-	Purpose          Purpose
 	Status           SessionStatus
 	Revision         int64
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }
 
+type FileStatus string
+
+const (
+	FileStatusReserved  FileStatus = "reserved"
+	FileStatusStored    FileStatus = "stored"
+	FileStatusParsing   FileStatus = "parsing"
+	FileStatusValid     FileStatus = "valid"
+	FileStatusInvalid   FileStatus = "invalid"
+	FileStatusAbandoned FileStatus = "abandoned"
+)
+
+// File представляет состояние одного загруженного Telegram-файла.
+type File struct {
+	ID                   FileID
+	SessionID            SessionID
+	TelegramFileID       string
+	TelegramFileUniqueID string
+	TelegramMessageID    int64
+	OriginalFilename     string
+	MIMEType             string
+	DeclaredSize         int64
+	StoredSize           int64
+	Status               FileStatus
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+}
+
+type FileView struct {
+	File
+	CardsCount  int
+	ErrorsCount int
+}
+
+type SessionView struct {
+	Session
+	Files       []FileView
+	Issues      []IssueView
+	CardsCount  int
+	ErrorsCount int
+	Ready       bool
+}
+
+type IssueView struct {
+	FileID   FileID
+	Filename string
+	Issue    ParseIssue
+}
+
+// Validate проверяет поля и состояние сессии.
 func (s Session) Validate() error {
 	switch {
 	case s.ID <= 0:
 		return invalidSession("session ID must be positive")
 	case s.AuthorTelegramID <= 0:
 		return invalidSession("author Telegram ID must be positive")
-	case !s.Purpose.IsValid():
-		return invalidSession("unknown purpose")
 	case !s.Status.IsValid():
 		return invalidSession("unknown status")
 	case s.Revision < 0:
@@ -66,56 +101,7 @@ func (s Session) Validate() error {
 	}
 }
 
-func invalidSession(message string) error {
-	return fmt.Errorf(
-		"invalid cardimport session: %s: %w",
-		strings.TrimSpace(message),
-		core_errors.ErrInvalidArgument,
-	)
-}
-
-type FileStatus string
-
-const (
-	FileStatusReserved  FileStatus = "reserved"
-	FileStatusStored    FileStatus = "stored"
-	FileStatusParsing   FileStatus = "parsing"
-	FileStatusValid     FileStatus = "valid"
-	FileStatusInvalid   FileStatus = "invalid"
-	FileStatusAbandoned FileStatus = "abandoned"
-)
-
-func (s FileStatus) IsValid() bool {
-	switch s {
-	case FileStatusReserved,
-		FileStatusStored,
-		FileStatusParsing,
-		FileStatusValid,
-		FileStatusInvalid,
-		FileStatusAbandoned:
-		return true
-	default:
-		return false
-	}
-}
-
-// File представляет состояние одного загруженного Telegram-файла.
-type File struct {
-	ID                   FileID
-	SessionID            SessionID
-	TelegramFileID       string
-	TelegramFileUniqueID string
-	TelegramMessageID    int64
-	OriginalFilename     string
-	MIMEType             string
-	DeclaredSize         int64
-	StoredSize           int64
-	SHA256               string
-	Status               FileStatus
-	CreatedAt            time.Time
-	UpdatedAt            time.Time
-}
-
+// Validate проверяет метаданные и состояние файла.
 func (f File) Validate() error {
 	switch {
 	case f.ID <= 0:
@@ -144,7 +130,7 @@ func (f File) Validate() error {
 
 	switch f.Status {
 	case FileStatusReserved:
-		if f.StoredSize != 0 || f.SHA256 != "" {
+		if f.StoredSize != 0 {
 			return invalidFile("reserved file contains stored metadata")
 		}
 	case FileStatusStored,
@@ -154,35 +140,48 @@ func (f File) Validate() error {
 		if f.StoredSize <= 0 || f.StoredSize > MaxFileSize {
 			return invalidFile("stored size is outside allowed bounds")
 		}
-		if len(f.SHA256) != 64 {
-			return invalidFile("stored file SHA-256 is invalid")
-		}
 	}
 
 	return nil
 }
 
-type FileView struct {
-	File
-	CardsCount  int
-	ErrorsCount int
+// IsValid проверяет допустимый статус сессии.
+func (s SessionStatus) IsValid() bool {
+	switch s {
+	case SessionStatusCollecting,
+		SessionStatusFinalized,
+		SessionStatusCancelled:
+		return true
+	default:
+		return false
+	}
 }
 
-type SessionView struct {
-	Session
-	Files       []FileView
-	Issues      []IssueView
-	CardsCount  int
-	ErrorsCount int
-	Ready       bool
+// IsValid проверяет допустимый статус файла.
+func (s FileStatus) IsValid() bool {
+	switch s {
+	case FileStatusReserved,
+		FileStatusStored,
+		FileStatusParsing,
+		FileStatusValid,
+		FileStatusInvalid,
+		FileStatusAbandoned:
+		return true
+	default:
+		return false
+	}
 }
 
-type IssueView struct {
-	FileID   FileID
-	Filename string
-	Issue    ParseIssue
+// invalidSession оформляет ошибку некорректной сессии.
+func invalidSession(message string) error {
+	return fmt.Errorf(
+		"invalid cardimport session: %s: %w",
+		strings.TrimSpace(message),
+		core_errors.ErrInvalidArgument,
+	)
 }
 
+// invalidFile оформляет ошибку некорректного файла.
 func invalidFile(message string) error {
 	return fmt.Errorf(
 		"invalid cardimport file: %s: %w",

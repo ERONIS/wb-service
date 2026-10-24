@@ -1,187 +1,28 @@
-CREATE TABLE wb.card_import_sessions (
-    id                  BIGSERIAL PRIMARY KEY,
-
-    author_user_id      BIGINT
-                        REFERENCES wb.users(id)
-                        ON DELETE SET NULL,
-
-    author_telegram_id  BIGINT NOT NULL
-                        CHECK (author_telegram_id > 0),
-
-    purpose             TEXT NOT NULL
-                        CHECK (purpose = 'transfer'),
-
-    status              TEXT NOT NULL DEFAULT 'collecting'
-                        CHECK (status IN (
-                            'collecting',
-                            'finalized',
-                            'cancelled'
-                        )),
-
-    revision            BIGINT NOT NULL DEFAULT 0
-                        CHECK (revision >= 0),
-
-    finalized_batch_id  BIGINT,
-    finalized_from_revision BIGINT
-                        CHECK (
-                            finalized_from_revision IS NULL
-                            OR finalized_from_revision >= 0
-                        ),
-    finalize_idempotency_key VARCHAR(128),
-    finalize_command_digest BYTEA
-                        CHECK (
-                            finalize_command_digest IS NULL
-                            OR octet_length(finalize_command_digest) = 32
-                        ),
-    finalized_at        TIMESTAMPTZ,
-
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CHECK (
-        (
-            status = 'finalized'
-            AND finalized_batch_id IS NOT NULL
-            AND finalized_from_revision IS NOT NULL
-            AND finalize_idempotency_key IS NOT NULL
-            AND char_length(finalize_idempotency_key) > 0
-            AND finalize_command_digest IS NOT NULL
-            AND finalized_at IS NOT NULL
-        )
-        OR (
-            status <> 'finalized'
-            AND finalized_batch_id IS NULL
-            AND finalized_from_revision IS NULL
-            AND finalize_idempotency_key IS NULL
-            AND finalize_command_digest IS NULL
-            AND finalized_at IS NULL
-        )
-    )
-);
-
-CREATE UNIQUE INDEX card_import_sessions_one_collecting_author_idx
-    ON wb.card_import_sessions (author_telegram_id)
-    WHERE status = 'collecting';
-
-CREATE INDEX card_import_sessions_author_created_at_idx
-    ON wb.card_import_sessions (author_telegram_id, created_at DESC);
-
-
-CREATE TABLE wb.card_import_files (
-    id                        BIGSERIAL PRIMARY KEY,
-
-    session_id                BIGINT NOT NULL
-                              REFERENCES wb.card_import_sessions(id),
-
-    telegram_file_id          TEXT NOT NULL,
-    telegram_file_unique_id   TEXT NOT NULL,
-    telegram_message_id       BIGINT NOT NULL
-                              CHECK (telegram_message_id > 0),
-
-    original_filename         TEXT NOT NULL
-                              CHECK (char_length(original_filename) > 0),
-
-    mime_type                 TEXT NOT NULL DEFAULT '',
-
-    declared_size             BIGINT NOT NULL
-                              CHECK (
-                                  declared_size > 0
-                                  AND declared_size <= 20971520
-                              ),
-
-    stored_size               BIGINT NOT NULL DEFAULT 0
-                              CHECK (
-                                  stored_size >= 0
-                                  AND stored_size <= 20971520
-                              ),
-
-    sha256                    BYTEA,
-
-    status                    TEXT NOT NULL DEFAULT 'reserved'
-                              CHECK (status IN (
-                                  'reserved',
-                                  'stored',
-                                  'parsing',
-                                  'valid',
-                                  'invalid',
-                                  'abandoned'
-                              )),
-
-    created_at                TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at                TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (session_id, telegram_file_id),
-    UNIQUE (session_id, telegram_file_unique_id),
-    UNIQUE (session_id, telegram_message_id),
-
-    CONSTRAINT card_import_files_metadata_check CHECK (
-        (
-            status = 'reserved'
-            AND stored_size = 0
-            AND sha256 IS NULL
-        )
-        OR (
-            status IN ('stored', 'parsing', 'valid', 'invalid')
-            AND stored_size > 0
-            AND octet_length(sha256) = 32
-        )
-        OR status = 'abandoned'
-    )
-);
-
-CREATE INDEX card_import_files_session_status_idx
-    ON wb.card_import_files (session_id, status, id);
-
-
 CREATE TABLE wb.card_batches (
-    id                  BIGSERIAL PRIMARY KEY,
+    id                         BIGSERIAL PRIMARY KEY,
 
-    source_kind         TEXT NOT NULL DEFAULT 'xlsx'
-                        CHECK (source_kind = 'xlsx'),
-
-    source_session_id   BIGINT NOT NULL
-                        REFERENCES wb.card_import_sessions(id),
-
-    source_reference_id BIGINT NOT NULL,
-
-    purpose             TEXT NOT NULL
-                        CHECK (purpose = 'transfer'),
-
-    items_count         INTEGER NOT NULL
-                        CHECK (items_count > 0),
-
-    groups_count        INTEGER NOT NULL
-                        CHECK (
-                            groups_count > 0
-                            AND groups_count <= items_count
-                        ),
-
-    checksum            BYTEA NOT NULL
-                        CHECK (octet_length(checksum) = 32),
-
-    author_snapshot     JSONB NOT NULL
-                        CHECK (jsonb_typeof(author_snapshot) = 'object'),
-
-    finalized_at        TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (id, source_session_id),
-    CONSTRAINT card_batches_source_origin_unique
-        UNIQUE (source_kind, source_reference_id),
-    CONSTRAINT card_batches_source_shape_check
-        CHECK (
-            source_kind = 'xlsx'
-            AND source_reference_id = source_session_id
-        )
+    source_session_id          BIGINT NOT NULL UNIQUE
+                               CHECK (source_session_id > 0),
+    author_telegram_id         BIGINT NOT NULL
+                               CHECK (author_telegram_id > 0),
+    finalized_from_revision    BIGINT NOT NULL
+                               CHECK (finalized_from_revision >= 0),
+    finalize_idempotency_key   VARCHAR(128) NOT NULL
+                               CHECK (char_length(finalize_idempotency_key) > 0),
+    items_count                INTEGER NOT NULL
+                               CHECK (items_count > 0),
+    groups_count               INTEGER NOT NULL
+                               CHECK (groups_count > 0 AND groups_count <= items_count),
+    sealed                     BOOLEAN NOT NULL DEFAULT FALSE,
+    finalized_at               TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX card_batches_finalized_cursor_idx
-    ON wb.card_batches (finalized_at, id);
+    ON wb.card_batches (finalized_at, id)
+    WHERE sealed;
 
-ALTER TABLE wb.card_import_sessions
-    ADD CONSTRAINT card_import_sessions_finalized_batch_fk
-    FOREIGN KEY (finalized_batch_id, id)
-    REFERENCES wb.card_batches (id, source_session_id)
-    DEFERRABLE INITIALLY DEFERRED;
+CREATE INDEX card_batches_author_idx
+    ON wb.card_batches (author_telegram_id, id);
 
 
 CREATE TABLE wb.card_batch_items (
@@ -189,36 +30,33 @@ CREATE TABLE wb.card_batch_items (
 
     batch_id            BIGINT NOT NULL
                         REFERENCES wb.card_batches(id),
-
     position            INTEGER NOT NULL
                         CHECK (position > 0),
-
     source_file_id      BIGINT NOT NULL
-                        REFERENCES wb.card_import_files(id),
-
+                        CHECK (source_file_id > 0),
     source_rows         INTEGER[] NOT NULL
                         CHECK (cardinality(source_rows) > 0),
-
     source_group_key    BYTEA NOT NULL
                         CHECK (octet_length(source_group_key) = 32),
-
     vendor_code         TEXT NOT NULL,
-
     payload             JSONB NOT NULL
                         CHECK (jsonb_typeof(payload) = 'object'),
 
     UNIQUE (batch_id, position)
 );
 
-CREATE INDEX card_batch_items_batch_vendor_code_idx
-    ON wb.card_batch_items (batch_id, vendor_code);
-
-
 CREATE FUNCTION wb.reject_frozen_card_batch_mutation()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
 BEGIN
+    IF TG_TABLE_NAME = 'card_batches' AND TG_OP = 'UPDATE' THEN
+        IF NOT OLD.sealed AND NEW.sealed
+           AND to_jsonb(NEW) - 'sealed' = to_jsonb(OLD) - 'sealed' THEN
+            RETURN NEW;
+        END IF;
+    END IF;
+
     RAISE EXCEPTION 'immutable card batch rows cannot be changed'
         USING ERRCODE = '55000';
 END;
@@ -232,19 +70,10 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1
         FROM wb.card_batches AS batch
-        LEFT JOIN wb.card_import_sessions AS import_session
-            ON import_session.id = batch.source_session_id
-        LEFT JOIN wb.card_import_files AS file
-            ON file.id = NEW.source_file_id
-           AND file.session_id = import_session.id
         WHERE batch.id = NEW.batch_id
-          AND (
-              batch.source_kind = 'xlsx'
-              AND import_session.status = 'collecting'
-              AND file.id IS NOT NULL
-          )
+          AND NOT batch.sealed
     ) THEN
-        RAISE EXCEPTION 'card batch item source is invalid or batch is frozen'
+        RAISE EXCEPTION 'card batch is frozen or missing'
             USING ERRCODE = '55000';
     END IF;
 

@@ -33,8 +33,6 @@ CREATE TABLE wb.transfers (
     revision                BIGINT NOT NULL DEFAULT 0
                             CHECK (revision >= 0),
 
-    batch_checksum          BYTEA NOT NULL
-                            CHECK (octet_length(batch_checksum) = 32),
     items_count             INTEGER NOT NULL
                             CHECK (items_count > 0),
     groups_count            INTEGER NOT NULL
@@ -45,10 +43,6 @@ CREATE TABLE wb.transfers (
 
     cohort_name             VARCHAR(128) NOT NULL
                             CHECK (char_length(cohort_name) > 0),
-    target_snapshot_revision BYTEA NOT NULL
-                            CHECK (octet_length(target_snapshot_revision) = 32),
-    target_set_root         BYTEA NOT NULL
-                            CHECK (octet_length(target_set_root) = 32),
     targets_count           INTEGER NOT NULL
                             CHECK (targets_count > 0),
     item_targets_count      BIGINT NOT NULL
@@ -183,11 +177,6 @@ CREATE TABLE wb.transfer_group_targets (
                                 preparation_result_code IS NULL
                                 OR char_length(preparation_result_code) > 0
                             ),
-    preparation_proposal_root BYTEA
-                            CHECK (
-                                preparation_proposal_root IS NULL
-                                OR octet_length(preparation_proposal_root) = 32
-                            ),
     preparation_item_position INTEGER
                             CHECK (
                                 preparation_item_position IS NULL
@@ -241,7 +230,6 @@ CREATE TABLE wb.transfer_group_targets (
             preparation_status IN ('not_started', 'running')
             AND preparation_result_revision = 0
             AND preparation_result_code IS NULL
-            AND preparation_proposal_root IS NULL
             AND preparation_item_position IS NULL
             AND preparation_field IS NULL
             AND preparation_finished_at IS NULL
@@ -250,7 +238,6 @@ CREATE TABLE wb.transfer_group_targets (
             preparation_status = 'succeeded'
             AND preparation_result_revision = 1
             AND preparation_result_code = 'prepared'
-            AND preparation_proposal_root IS NOT NULL
             AND preparation_item_position IS NULL
             AND preparation_field IS NULL
             AND preparation_started_at IS NOT NULL
@@ -261,7 +248,6 @@ CREATE TABLE wb.transfer_group_targets (
             preparation_status IN ('rejected', 'unresolved')
             AND preparation_result_revision = 1
             AND preparation_result_code IS NOT NULL
-            AND preparation_proposal_root IS NULL
             AND preparation_started_at IS NOT NULL
             AND preparation_finished_at IS NOT NULL
             AND preparation_finished_at >= preparation_started_at
@@ -270,7 +256,6 @@ CREATE TABLE wb.transfer_group_targets (
             preparation_status = 'skipped'
             AND preparation_result_revision = 0
             AND preparation_result_code IS NULL
-            AND preparation_proposal_root IS NULL
             AND preparation_item_position IS NULL
             AND preparation_field IS NULL
             AND preparation_finished_at IS NULL
@@ -544,12 +529,9 @@ AS $$
 BEGIN
     IF ROW(
         NEW.batch_id,
-        NEW.batch_checksum,
         NEW.items_count,
         NEW.groups_count,
         NEW.cohort_name,
-        NEW.target_snapshot_revision,
-        NEW.target_set_root,
         NEW.targets_count,
         NEW.item_targets_count,
         NEW.group_targets_count,
@@ -557,12 +539,9 @@ BEGIN
         NEW.started_at
     ) IS DISTINCT FROM ROW(
         OLD.batch_id,
-        OLD.batch_checksum,
         OLD.items_count,
         OLD.groups_count,
         OLD.cohort_name,
-        OLD.target_snapshot_revision,
-        OLD.target_set_root,
         OLD.targets_count,
         OLD.item_targets_count,
         OLD.group_targets_count,

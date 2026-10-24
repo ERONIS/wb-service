@@ -8,6 +8,8 @@ import (
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_authorization "github.com/ERONIS/wb-service/internal/feature/transfer/service/authorization"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -15,8 +17,6 @@ import (
 const authorizationPlanColumns = `
 	transfer.id,
 	plan.id,
-	plan.plan_digest,
-	plan.target_set_root,
 	plan.revision,
 	COALESCE((
 		SELECT MAX(previous_auth.id)
@@ -100,15 +100,15 @@ const authorizationPlanColumns = `
 		  AND item_target.state = 'terminal'
 		  AND item_target.outcome_class = 'rejected'
 	),
-	session.author_telegram_id
+	batch.author_telegram_id
 `
 
 func (repository *Repository) ListAutomaticAuthorizationPlans(
 	ctx context.Context,
-	afterTransferID transfer_service.TransferID,
+	afterTransferID transfer_model.TransferID,
 	afterPlanID int64,
 	limit int,
-) ([]transfer_service.AuthorizationPlanSummary, error) {
+) ([]transfer_authorization.AuthorizationPlanSummary, error) {
 	if limit <= 0 || limit > 100 || afterTransferID < 0 || afterPlanID < 0 ||
 		(afterTransferID == 0) != (afterPlanID == 0) {
 		return nil, core_errors.ErrInvalidArgument
@@ -122,9 +122,8 @@ func (repository *Repository) ListAutomaticAuthorizationPlans(
 		  ON transfer.id = plan.transfer_id
 		JOIN wb.card_batches AS batch
 		  ON batch.id = transfer.batch_id
-		JOIN wb.card_import_sessions AS session
-		  ON session.id = batch.source_session_id
-		WHERE transfer.phase IN (
+		WHERE batch.sealed
+			AND transfer.phase IN (
 				'preparing', 'awaiting_authorization', 'publishing',
 				'reconciling', 'media'
 			)
@@ -142,7 +141,7 @@ func (repository *Repository) ListAutomaticAuthorizationPlans(
 				SELECT 1
 				FROM wb.transfer_live_authorizations AS live_auth
 				WHERE live_auth.transfer_id = transfer.id
-				  AND live_auth.plan_digest = plan.plan_digest
+				  AND live_auth.plan_id = plan.id
 				  AND live_auth.state = 'authorized'
 				  AND live_auth.expires_at > CURRENT_TIMESTAMP
 			)
@@ -154,7 +153,7 @@ func (repository *Repository) ListAutomaticAuthorizationPlans(
 		return nil, fmt.Errorf("list automatic authorization plans: %w", err)
 	}
 	defer rows.Close()
-	plans := make([]transfer_service.AuthorizationPlanSummary, 0)
+	plans := make([]transfer_authorization.AuthorizationPlanSummary, 0)
 	for rows.Next() {
 		plan, err := scanAuthorizationPlan(rows)
 		if err != nil {
@@ -172,7 +171,7 @@ func (repository *Repository) ListAuthorizationPlans(
 	ctx context.Context,
 	actorTelegramID int64,
 	limit int,
-) ([]transfer_service.AuthorizationPlanSummary, error) {
+) ([]transfer_authorization.AuthorizationPlanSummary, error) {
 	if actorTelegramID <= 0 || limit <= 0 || limit > 100 {
 		return nil, core_errors.ErrInvalidArgument
 	}
@@ -185,9 +184,8 @@ func (repository *Repository) ListAuthorizationPlans(
 		  ON transfer.id = plan.transfer_id
 		JOIN wb.card_batches AS batch
 		  ON batch.id = transfer.batch_id
-		JOIN wb.card_import_sessions AS session
-		  ON session.id = batch.source_session_id
-		WHERE session.author_telegram_id = $1
+		WHERE batch.author_telegram_id = $1
+			AND batch.sealed
 			AND transfer.phase IN (
 				'preparing', 'awaiting_authorization', 'publishing',
 				'reconciling', 'media'
@@ -205,7 +203,7 @@ func (repository *Repository) ListAuthorizationPlans(
 				SELECT 1
 				FROM wb.transfer_live_authorizations AS live_auth
 				WHERE live_auth.transfer_id = transfer.id
-				  AND live_auth.plan_digest = plan.plan_digest
+				  AND live_auth.plan_id = plan.id
 				  AND live_auth.state = 'authorized'
 				  AND live_auth.expires_at > CURRENT_TIMESTAMP
 			)
@@ -217,7 +215,7 @@ func (repository *Repository) ListAuthorizationPlans(
 		return nil, fmt.Errorf("list authorization plans: %w", err)
 	}
 	defer rows.Close()
-	plans := make([]transfer_service.AuthorizationPlanSummary, 0)
+	plans := make([]transfer_authorization.AuthorizationPlanSummary, 0)
 	for rows.Next() {
 		plan, err := scanAuthorizationPlan(rows)
 		if err != nil {
@@ -234,10 +232,10 @@ func (repository *Repository) ListAuthorizationPlans(
 func (repository *Repository) GetAuthorizationPlan(
 	ctx context.Context,
 	actorTelegramID int64,
-	transferID transfer_service.TransferID,
-) (transfer_service.AuthorizationPlanSummary, error) {
+	transferID transfer_model.TransferID,
+) (transfer_authorization.AuthorizationPlanSummary, error) {
 	if actorTelegramID <= 0 || transferID <= 0 {
-		return transfer_service.AuthorizationPlanSummary{}, core_errors.ErrInvalidArgument
+		return transfer_authorization.AuthorizationPlanSummary{}, core_errors.ErrInvalidArgument
 	}
 	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
@@ -246,7 +244,7 @@ func (repository *Repository) GetAuthorizationPlan(
 		repository.pool,
 		actorTelegramID,
 		transferID,
-		transfer_service.Digest{},
+		0,
 		false,
 	)
 }
@@ -255,19 +253,19 @@ func (repository *Repository) LockAuthorizationPlan(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
 	actorTelegramID int64,
-	transferID transfer_service.TransferID,
-	planDigest transfer_service.Digest,
-) (transfer_service.AuthorizationPlanSummary, error) {
+	transferID transfer_model.TransferID,
+	planID int64,
+) (transfer_authorization.AuthorizationPlanSummary, error) {
 	if tx == nil || actorTelegramID <= 0 || transferID <= 0 ||
-		planDigest == (transfer_service.Digest{}) {
-		return transfer_service.AuthorizationPlanSummary{}, core_errors.ErrInvalidArgument
+		planID <= 0 {
+		return transfer_authorization.AuthorizationPlanSummary{}, core_errors.ErrInvalidArgument
 	}
 	return loadAuthorizationPlan(
 		ctx,
 		tx,
 		actorTelegramID,
 		transferID,
-		planDigest,
+		planID,
 		true,
 	)
 }
@@ -276,10 +274,10 @@ func loadAuthorizationPlan(
 	ctx context.Context,
 	db core_postgres_transaction.DBTX,
 	actorTelegramID int64,
-	transferID transfer_service.TransferID,
-	expectedDigest transfer_service.Digest,
+	transferID transfer_model.TransferID,
+	expectedPlanID int64,
 	lock bool,
-) (transfer_service.AuthorizationPlanSummary, error) {
+) (transfer_authorization.AuthorizationPlanSummary, error) {
 	query := `
 		SELECT ` + authorizationPlanColumns + `
 		FROM wb.publication_plans AS plan
@@ -287,9 +285,8 @@ func loadAuthorizationPlan(
 		  ON transfer.id = plan.transfer_id
 		JOIN wb.card_batches AS batch
 		  ON batch.id = transfer.batch_id
-		JOIN wb.card_import_sessions AS session
-		  ON session.id = batch.source_session_id
-		WHERE session.author_telegram_id = $1
+		WHERE batch.author_telegram_id = $1
+			AND batch.sealed
 			AND transfer.id = $2
 			AND transfer.phase IN (
 				'preparing', 'awaiting_authorization', 'publishing',
@@ -306,9 +303,9 @@ func loadAuthorizationPlan(
 			)
 	`
 	arguments := []any{actorTelegramID, transferID}
-	if expectedDigest != (transfer_service.Digest{}) {
-		query += "\t\t\tAND plan.plan_digest = $3\n"
-		arguments = append(arguments, expectedDigest[:])
+	if expectedPlanID > 0 {
+		query += "\t\t\tAND plan.id = $3\n"
+		arguments = append(arguments, expectedPlanID)
 	}
 	if lock {
 		query += "\t\tFOR UPDATE OF plan;\n"
@@ -317,10 +314,10 @@ func loadAuthorizationPlan(
 	}
 	plan, err := scanAuthorizationPlan(db.QueryRow(ctx, query, arguments...))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return transfer_service.AuthorizationPlanSummary{}, transfer_service.ErrLivePlanUnavailable
+		return transfer_authorization.AuthorizationPlanSummary{}, transfer_service.ErrLivePlanUnavailable
 	}
 	if err != nil {
-		return transfer_service.AuthorizationPlanSummary{}, fmt.Errorf(
+		return transfer_authorization.AuthorizationPlanSummary{}, fmt.Errorf(
 			"load authorization plan: %w",
 			err,
 		)
@@ -329,19 +326,16 @@ func loadAuthorizationPlan(
 }
 
 func scanAuthorizationPlan(row interface{ Scan(...any) error }) (
-	transfer_service.AuthorizationPlanSummary,
+	transfer_authorization.AuthorizationPlanSummary,
 	error,
 ) {
 	var (
-		plan                      transfer_service.AuthorizationPlanSummary
-		transferID                int64
-		planDigest, targetSetRoot []byte
+		plan       transfer_authorization.AuthorizationPlanSummary
+		transferID int64
 	)
 	if err := row.Scan(
 		&transferID,
 		&plan.PlanID,
-		&planDigest,
-		&targetSetRoot,
 		&plan.PlanRevision,
 		&plan.LatestAuthorizationID,
 		&plan.TargetsCount,
@@ -354,21 +348,13 @@ func scanAuthorizationPlan(row interface{ Scan(...any) error }) (
 		&plan.ConflictItems,
 		&plan.AuthorTelegramID,
 	); err != nil {
-		return transfer_service.AuthorizationPlanSummary{}, err
+		return transfer_authorization.AuthorizationPlanSummary{}, err
 	}
-	if len(planDigest) != len(plan.PlanDigest) ||
-		len(targetSetRoot) != len(plan.TargetSetRoot) {
-		return transfer_service.AuthorizationPlanSummary{}, errors.New(
-			"authorization plan digest has invalid length",
-		)
-	}
-	plan.TransferID = transfer_service.TransferID(transferID)
-	copy(plan.PlanDigest[:], planDigest)
-	copy(plan.TargetSetRoot[:], targetSetRoot)
+	plan.TransferID = transfer_model.TransferID(transferID)
 	if err := plan.Validate(); err != nil {
-		return transfer_service.AuthorizationPlanSummary{}, err
+		return transfer_authorization.AuthorizationPlanSummary{}, err
 	}
 	return plan, nil
 }
 
-var _ transfer_service.LivePlanSource = (*Repository)(nil)
+var _ transfer_authorization.LivePlanSource = (*Repository)(nil)

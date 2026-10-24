@@ -3,16 +3,17 @@ package monitoring
 import (
 	"context"
 
+	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
 
 type ErrorTargetSource interface {
-	PublicationTargets(context.Context) ([]transfer_service.MutationTarget, error)
+	PublicationTargets(context.Context) ([]transfer_model.MutationTarget, error)
 }
 
 type ErrorFeedRepository interface {
-	LoadErrorCursor(context.Context, SellerID) (ErrorCursor, error)
+	LoadErrorCursor(context.Context, core_domain.SellerID) (ErrorCursor, error)
 
 	SaveErrorFeed(
 		context.Context,

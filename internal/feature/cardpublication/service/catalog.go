@@ -7,17 +7,12 @@ import (
 	"go.uber.org/zap"
 )
 
-type CatalogTransport = catalog.CatalogTransport
-type CatalogObservation = catalog.CatalogObservation
-type CatalogReader = catalog.CatalogReader
-type RecentCardsCache = catalog.RecentCardsCache
-
 var ErrCatalogChangedDuringScan = catalog.ErrCatalogChangedDuringScan
 
-func NewCatalogReader(transport CatalogTransport, loggers ...*zap.Logger) *CatalogReader {
+func NewCatalogReader(transport catalog.CatalogTransport, loggers ...*zap.Logger) *catalog.CatalogReader {
 	return catalog.NewCatalogReader(transport, loggers...)
 }
 
-func NewRecentCardsCache(ttl time.Duration) *RecentCardsCache {
+func NewRecentCardsCache(ttl time.Duration) *catalog.RecentCardsCache {
 	return catalog.NewRecentCardsCache(ttl)
 }

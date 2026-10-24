@@ -6,16 +6,18 @@ import (
 	"fmt"
 	"time"
 
+	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
+	cardpublication_monitoring "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/monitoring"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
 func (repository *Repository) LoadErrorCursor(
 	ctx context.Context,
-	sellerID cardpublication_service.SellerID,
-) (cardpublication_service.ErrorCursor, error) {
+	sellerID core_domain.SellerID,
+) (cardpublication_monitoring.ErrorCursor, error) {
 	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
 	const query = `
@@ -25,10 +27,10 @@ func (repository *Repository) LoadErrorCursor(
 	`
 	cursor, err := scanErrorCursor(repository.pool.QueryRow(ctx, query, sellerID))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return cardpublication_service.ErrorCursor{SellerID: sellerID}, nil
+		return cardpublication_monitoring.ErrorCursor{SellerID: sellerID}, nil
 	}
 	if err != nil {
-		return cardpublication_service.ErrorCursor{}, fmt.Errorf(
+		return cardpublication_monitoring.ErrorCursor{}, fmt.Errorf(
 			"load publication error cursor: %w",
 			err,
 		)
@@ -39,24 +41,24 @@ func (repository *Repository) LoadErrorCursor(
 func (repository *Repository) SaveErrorFeed(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	command cardpublication_service.SaveErrorFeedCommand,
-) (cardpublication_service.ErrorCursor, error) {
+	command cardpublication_monitoring.SaveErrorFeedCommand,
+) (cardpublication_monitoring.ErrorCursor, error) {
 	if tx == nil {
-		return cardpublication_service.ErrorCursor{}, errors.New(
+		return cardpublication_monitoring.ErrorCursor{}, errors.New(
 			"save publication error feed: DBTX is nil",
 		)
 	}
 	if err := ensureErrorCursor(ctx, tx, command.SellerID); err != nil {
-		return cardpublication_service.ErrorCursor{}, err
+		return cardpublication_monitoring.ErrorCursor{}, err
 	}
 	current, err := lockErrorCursor(ctx, tx, command.SellerID)
 	if err != nil {
-		return cardpublication_service.ErrorCursor{}, err
+		return cardpublication_monitoring.ErrorCursor{}, err
 	}
 	if current.Revision != command.Previous.Revision ||
 		!current.UpdatedAt.Equal(command.Previous.UpdatedAt) ||
 		current.BatchUUID != command.Previous.BatchUUID {
-		return cardpublication_service.ErrorCursor{}, errors.New(
+		return cardpublication_monitoring.ErrorCursor{}, errors.New(
 			"publication error cursor changed concurrently",
 		)
 	}
@@ -68,14 +70,13 @@ func (repository *Repository) SaveErrorFeed(
 				seller_id,
 				batch_uuid,
 				batch_updated_at,
-				source_digest,
 				vendor_codes,
 				rejected_vendor_codes,
 				error_codes,
 				observed_at
 			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-			ON CONFLICT (seller_id, batch_uuid, source_digest) DO NOTHING;
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
+			ON CONFLICT (seller_id, batch_uuid, batch_updated_at) DO NOTHING;
 		`
 		result, err := tx.Exec(
 			ctx,
@@ -83,14 +84,13 @@ func (repository *Repository) SaveErrorFeed(
 			batch.SellerID,
 			batch.BatchUUID,
 			batch.UpdatedAt,
-			batch.SourceDigest[:],
 			batch.VendorCodes,
 			batch.RejectedVendorCodes,
 			batch.ErrorCodes,
 			command.PolledAt,
 		)
 		if err != nil {
-			return cardpublication_service.ErrorCursor{}, fmt.Errorf(
+			return cardpublication_monitoring.ErrorCursor{}, fmt.Errorf(
 				"insert publication error batch: %w",
 				err,
 			)
@@ -131,7 +131,7 @@ func (repository *Repository) SaveErrorFeed(
 		command.PolledAt,
 	))
 	if err != nil {
-		return cardpublication_service.ErrorCursor{}, fmt.Errorf(
+		return cardpublication_monitoring.ErrorCursor{}, fmt.Errorf(
 			"update publication error cursor: %w",
 			err,
 		)
@@ -142,19 +142,19 @@ func (repository *Repository) SaveErrorFeed(
 func (repository *Repository) CaptureErrorBaseline(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	command cardpublication_service.CaptureErrorBaselineCommand,
-) (cardpublication_service.ErrorBaseline, error) {
+	command cardpublication_monitoring.CaptureErrorBaselineCommand,
+) (cardpublication_monitoring.ErrorBaseline, error) {
 	if tx == nil {
-		return cardpublication_service.ErrorBaseline{}, errors.New(
+		return cardpublication_monitoring.ErrorBaseline{}, errors.New(
 			"capture publication error baseline: DBTX is nil",
 		)
 	}
 	if err := ensureErrorCursor(ctx, tx, command.SellerID); err != nil {
-		return cardpublication_service.ErrorBaseline{}, err
+		return cardpublication_monitoring.ErrorBaseline{}, err
 	}
 	cursor, err := lockErrorCursor(ctx, tx, command.SellerID)
 	if err != nil {
-		return cardpublication_service.ErrorBaseline{}, err
+		return cardpublication_monitoring.ErrorBaseline{}, err
 	}
 	const validateAction = `
 		SELECT CURRENT_TIMESTAMP
@@ -175,12 +175,12 @@ func (repository *Repository) CaptureErrorBaseline(
 		command.ActionID,
 		command.SellerID,
 	).Scan(&capturedAt); err != nil {
-		return cardpublication_service.ErrorBaseline{}, fmt.Errorf(
+		return cardpublication_monitoring.ErrorBaseline{}, fmt.Errorf(
 			"validate publication error baseline action: %w",
 			err,
 		)
 	}
-	baseline := cardpublication_service.ErrorBaseline{
+	baseline := cardpublication_monitoring.ErrorBaseline{
 		TransferID:      command.TransferID,
 		ActionID:        command.ActionID,
 		SellerID:        command.SellerID,
@@ -190,7 +190,7 @@ func (repository *Repository) CaptureErrorBaseline(
 		CapturedAt:      capturedAt.UTC(),
 	}
 	if err := baseline.Validate(); err != nil {
-		return cardpublication_service.ErrorBaseline{}, err
+		return cardpublication_monitoring.ErrorBaseline{}, err
 	}
 	return baseline, nil
 }
@@ -198,7 +198,7 @@ func (repository *Repository) CaptureErrorBaseline(
 func ensureErrorCursor(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	sellerID cardpublication_service.SellerID,
+	sellerID core_domain.SellerID,
 ) error {
 	const insert = `
 		INSERT INTO wb.publication_error_cursors (seller_id)
@@ -214,8 +214,8 @@ func ensureErrorCursor(
 func lockErrorCursor(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	sellerID cardpublication_service.SellerID,
-) (cardpublication_service.ErrorCursor, error) {
+	sellerID core_domain.SellerID,
+) (cardpublication_monitoring.ErrorCursor, error) {
 	const query = `
 		SELECT seller_id, cursor_updated_at, cursor_batch_uuid, revision, polled_at
 		FROM wb.publication_error_cursors
@@ -224,7 +224,7 @@ func lockErrorCursor(
 	`
 	cursor, err := scanErrorCursor(tx.QueryRow(ctx, query, sellerID))
 	if err != nil {
-		return cardpublication_service.ErrorCursor{}, fmt.Errorf(
+		return cardpublication_monitoring.ErrorCursor{}, fmt.Errorf(
 			"lock publication error cursor: %w",
 			err,
 		)
@@ -233,10 +233,10 @@ func lockErrorCursor(
 }
 
 func scanErrorCursor(row interface{ Scan(...any) error }) (
-	cardpublication_service.ErrorCursor,
+	cardpublication_monitoring.ErrorCursor,
 	error,
 ) {
-	var cursor cardpublication_service.ErrorCursor
+	var cursor cardpublication_monitoring.ErrorCursor
 	var updatedAt, polledAt pgtype.Timestamptz
 	if err := row.Scan(
 		&cursor.SellerID,
@@ -245,7 +245,7 @@ func scanErrorCursor(row interface{ Scan(...any) error }) (
 		&cursor.Revision,
 		&polledAt,
 	); err != nil {
-		return cardpublication_service.ErrorCursor{}, err
+		return cardpublication_monitoring.ErrorCursor{}, err
 	}
 	if updatedAt.Valid {
 		cursor.UpdatedAt = updatedAt.Time.UTC()
@@ -270,4 +270,4 @@ func nullableTime(value time.Time) any {
 	return value
 }
 
-var _ cardpublication_service.ErrorFeedRepository = (*Repository)(nil)
+var _ cardpublication_monitoring.ErrorFeedRepository = (*Repository)(nil)

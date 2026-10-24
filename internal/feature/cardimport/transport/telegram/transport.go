@@ -2,6 +2,7 @@ package cardimport_telegram_transport
 
 import (
 	"context"
+	cardimport_contract "github.com/ERONIS/wb-service/internal/feature/cardimport/service/contract"
 	"io"
 	"sync"
 	"time"
@@ -9,7 +10,8 @@ import (
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
-	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
+	cardimport_batch "github.com/ERONIS/wb-service/internal/feature/cardimport/service/batch"
+	cardimport_intake "github.com/ERONIS/wb-service/internal/feature/cardimport/service/intake"
 
 	"go.uber.org/zap"
 	tele "gopkg.in/telebot.v3"
@@ -45,57 +47,57 @@ var (
 type CardImportService interface {
 	Begin(
 		ctx context.Context,
-		command cardimport_service.BeginCommand,
-	) (cardimport_service.Session, error)
+		command cardimport_contract.BeginCommand,
+	) (cardimport_intake.Session, error)
 
 	GetActiveView(
 		ctx context.Context,
 		authorTelegramID int64,
-	) (cardimport_service.SessionView, error)
+	) (cardimport_intake.SessionView, error)
 
 	GetView(
 		ctx context.Context,
-		command cardimport_service.SessionCommand,
-	) (cardimport_service.SessionView, error)
+		command cardimport_contract.SessionCommand,
+	) (cardimport_intake.SessionView, error)
 
 	Cancel(
 		ctx context.Context,
-		command cardimport_service.SessionCommand,
+		command cardimport_contract.SessionCommand,
 	) error
 
 	Continue(
 		ctx context.Context,
-		command cardimport_service.ContinueCommand,
-	) (cardimport_service.SessionView, error)
+		command cardimport_contract.ContinueCommand,
+	) (cardimport_intake.SessionView, error)
 
 	ReserveFile(
 		ctx context.Context,
-		command cardimport_service.ReserveFileCommand,
-	) (cardimport_service.File, error)
+		command cardimport_contract.ReserveFileCommand,
+	) (cardimport_intake.File, error)
 
 	StoreFile(
 		ctx context.Context,
-		command cardimport_service.StoreFileCommand,
+		command cardimport_contract.StoreFileCommand,
 		source io.Reader,
-	) (cardimport_service.File, error)
+	) (cardimport_intake.File, error)
 
 	ParseFile(
 		ctx context.Context,
-		command cardimport_service.ParseFileCommand,
-	) (cardimport_service.SessionView, error)
+		command cardimport_contract.ParseFileCommand,
+	) (cardimport_intake.SessionView, error)
 
 	ListRecoverableFiles(
 		ctx context.Context,
 		staleParsingBefore time.Time,
 		reparsePriceErrorsBefore time.Time,
 		limit int,
-	) ([]cardimport_service.RecoverableFile, error)
+	) ([]cardimport_contract.RecoverableFile, error)
 
 	Finalize(
 		ctx context.Context,
 		user domain.User,
-		command cardimport_service.FinalizeCommand,
-	) (cardimport_service.BatchHeader, error)
+		command cardimport_contract.FinalizeCommand,
+	) (cardimport_batch.BatchHeader, error)
 }
 
 type Handler struct {
@@ -110,9 +112,9 @@ type Handler struct {
 	recoveryStartedAt      time.Time
 	recoveryStart          sync.Once
 	recoveryWake           chan struct{}
-	recoveryJobs           chan cardimportRecoveryKey
+	recoveryJobs           chan cardimport_intake.FileID
 	recoveryMu             sync.Mutex
-	recoveryStates         map[cardimport_service.FileID]*cardimportRecoveryState
+	recoveryStates         map[cardimport_intake.FileID]*cardimportRecoveryState
 	refreshWake            chan struct{}
 	refreshMu              sync.Mutex
 	pendingRefreshes       map[int64]cardimportSessionRefresh
@@ -121,7 +123,7 @@ type Handler struct {
 type CompletionNavigator interface {
 	ShowFinalizedSession(
 		tele.Context,
-		cardimport_service.BatchHeader,
+		cardimport_batch.BatchHeader,
 	) error
 }
 
@@ -149,8 +151,8 @@ func New(
 		recoveryStartedAt:      time.Now(),
 		uploadScreenGeneration: make(map[int64]uint64),
 		recoveryWake:           make(chan struct{}, 1),
-		recoveryJobs:           make(chan cardimportRecoveryKey, 256),
-		recoveryStates:         make(map[cardimport_service.FileID]*cardimportRecoveryState),
+		recoveryJobs:           make(chan cardimport_intake.FileID, 256),
+		recoveryStates:         make(map[cardimport_intake.FileID]*cardimportRecoveryState),
 		refreshWake:            make(chan struct{}, 1),
 		pendingRefreshes:       make(map[int64]cardimportSessionRefresh),
 	}

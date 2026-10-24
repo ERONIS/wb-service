@@ -17,7 +17,7 @@ The central State Machine and pipeline coordinator of `wb-service`. It tracks th
 
 ## Key Types & State Machine (`service/model/models.go`)
 - **Phases (`Phase`)**:
-  - `PhaseInitializing`: Target cohort selection and canonical `TargetSetRoot` computation.
+  - `PhaseInitializing`: Target cohort selection and persistence of target rows; no target-set root or snapshot digest.
   - `PhasePreparing`: Schema validation via `cardprepare`.
   - `PhaseAwaitingAuthorization`: Acquiring live token leases on target cabinets.
   - `PhasePublishing`: Batch dispatch via `cardpublication`.
@@ -31,15 +31,11 @@ The central State Machine and pipeline coordinator of `wb-service`. It tracks th
   - Result classes: `success`, `skipped`, `rejected`, `partial`, `unresolved`, `internal_error`.
   - Invariants: Terminal states require `StartedAt`, `FinishedAt`, and valid `OutcomeCode`. `AttentionClosedAt` is only valid for `unresolved` or `internal_error`.
 
-## Critical Data Structures & Cryptography
+## Critical Data Structures & Identity
 - **Capacity Policy (`model/capacity.go`)**:
   - Prevents combinatorial explosion (`Items * Targets = ItemTargets`, `Groups * Targets = GroupTargets`).
   - Strict integer overflow checking (`checkedMultiply`) before allocating records in DB.
-- **TargetSetRoot (`model/root.go`)**:
-  - Cryptographic canonical SHA-256 (`"transfer-target-set:v4"`) over sorted raw seller IDs, revisions, credential expiration timestamps, and content capabilities.
-  - Invariant: Prevents silent target mutation or permission drift mid-transfer.
-- **Snapshot Revision (`registry/registry.go`)**:
-  - Canonical SHA-256 (`"transfer-target-snapshot:v4"`) over cohort name, target count, seller IDs, client generations, credential expiration, and capabilities.
+- **Target snapshot (`registry/registry.go`)**: Holds selected target rows with seller ID, client generation, binding/capability revisions, expiry, and permissions. Transfer persists these rows; immutability and current credential checks use database state and numeric IDs, without a root or snapshot hash.
 
 ## Transfer Variants & Ingestion
 1. **Fanout Transfer (`Start(ctx, batchID)`)**:
@@ -58,7 +54,7 @@ The central State Machine and pipeline coordinator of `wb-service`. It tracks th
 
 ## Ready Batch Boundary
 - `cardimport.Service` exposes `GetReadyBatchHeader`, `ListReadyBatches`, and `GetReadyBatch`. Transfer consumes `cardpipeline.ReadyBatchHeader` and `ReadyBatchItem`, which contain batch identity, author Telegram ID, card payload, item position, and opaque group key, without import session/file IDs or separate source rows.
-- `GetReadyBatch` loads all immutable items and verifies the semantic checksum before projecting them to ready items. Transfer compares counts and checksum with its persisted batch fingerprint during initialization; no batch schema/normalization version fields or compatibility gate remain. This preserves restart/idempotency behavior for batches created under the current baseline.
+- `GetReadyBatch` loads immutable items, checks their order and validates each item before projecting ready items. Transfer compares batch item/group counts during initialization; no batch checksum or schema/normalization version compatibility gate remains. The finalized batch tables and transfer snapshots are immutable, and transfer discovery still resumes from PostgreSQL after restart.
 - Transfer initialization stores card payload and grouping, not copied import file ID or source rows. The group key remains necessary to keep file-scoped card groups distinct.
 
 ## Live Authorization Subsystem (`service/authorization/`)
@@ -69,10 +65,10 @@ The central State Machine and pipeline coordinator of `wb-service`. It tracks th
   - Depends on the narrow `AutomaticAuthorizationPlanSource` interface; the full `LivePlanSource` remains for manual/live authorization service operations.
   - Runs after publication planning and before product dispatch in the polling loop (stage 3 when counting transfer discovery as stage 0).
   - Scans `ListAutomaticAuthorizationPlans` for plans ready for dispatch.
-  - Automatically authorizes leases on behalf of the batch author using deterministic idempotency keys (`auto:authorize:<transfer_id>:<revision>:<auth_id>:<digest>`). Implements `ProcessPendingWithNotify` and signals downstream only after successful authorization.
+  - Automatically authorizes leases on behalf of the batch author using deterministic idempotency keys (`auto:authorize:<transfer_id>:<plan_id>:<revision>:<auth_id>`). Implements `ProcessPendingWithNotify` and signals downstream only after successful authorization.
 - **Pre-Dispatch Verification (`LockValidLive`)**:
   - Called under transaction by `cardpublication.ProductDispatcher` immediately before submitting data to `/content/v2/cards/upload`.
-  - Verifies token lease is in `authorized` state, unexpired, and matches the frozen `TargetSetRoot`.
+  - Verifies token lease is in `authorized` state, unexpired, bound to the same numeric plan/action/target IDs, and matches the current seller and client generation.
 
 ## Polling Engine & Stage Execution Sequence
 - `RunPolling(ctx, onError, processors...)` runs independent stages with mutex protection (`processMu sync.Mutex`) and wake propagation:
@@ -94,7 +90,7 @@ The central State Machine and pipeline coordinator of `wb-service`. It tracks th
   - Uses keyset pagination ordered by `(source_group_id, target_id)` over running group targets. `cardprepare.Processor` stores an in-memory cursor per transfer and advances past transient failures until wraparound; this prevents a failing page from blocking later pages but does not implement cabinet-rank round-robin.
 - `PreparationResultApplier`:
   - `ApplyTx(ctx, tx, command)`: Atomically saves preparation artifacts into `wb.card_preparation_artifacts (group_target_id)` and updates `wb.transfer_group_targets` projections in a single Unit of Work transaction.
-  - Replays with identical payload are idempotent no-ops (`nil`); conflicting replays return `ErrPreparationResultConflict`.
+  - Replays matching stored status, revision, outcome, diagnostics, and diagnostics are idempotent no-ops (`nil`); the full artifact is not compared. Conflicting result identities return `ErrPreparationResultConflict`.
 - `PublicationPlanResultApplier.Apply(...)`: Binds group targets to `publication_plan_id`.
 - `PublicationExecutionResultApplier`:
   - `ApplyActionResult(...)`: Commits upload outcome, sets item targets to `terminal` with NMID.
@@ -120,7 +116,7 @@ The central State Machine and pipeline coordinator of `wb-service`. It tracks th
 - `wb.card_preparation_artifacts`: Immutable preparation artifacts keyed directly to `wb.transfer_group_targets(group_target_id)`.
 
 ## Service Package Boundary
-- `transfer/feature.go` composes `workflow`, `registry`, `preparation`, `publication`, and `authorization` directly. `transfer/service` retains domain and cross-feature contract re-exports while pass-through constructors, feature-only aliases, and other unused type aliases were removed. Authorization sentinels and limits remain on this boundary. Repository tests import concrete service subpackages for types no longer re-exported.
+- `transfer/feature.go` composes `workflow`, `registry`, `preparation`, `publication`, and `authorization` directly. Transfer service, feature, repository, and transport code use types directly from their defining model/authorization/preparation/publication/workflow/registry packages. No `type X = Y` re-exports remain. Authorization sentinels and limits remain on the service boundary; repository tests use concrete owner packages.
 
 ## Invariants & Guardrails
 - **Atomicity**: All state transitions run inside Unit of Work (`uow.WithinTransaction`).

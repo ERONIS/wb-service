@@ -7,7 +7,8 @@ import (
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	cardpublication_resolution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/resolution"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -32,36 +33,42 @@ func (repository *Repository) LoadManualResolutionReplay(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
 	idempotencyKey string,
-	actorDigest cardpublication_service.Digest,
-	commandDigest cardpublication_service.Digest,
-) (cardpublication_service.ManualResolution, bool, error) {
+	actorID int64,
+	command cardpublication_resolution.ManualResolutionCommand,
+) (cardpublication_resolution.ManualResolution, bool, error) {
 	if tx == nil || idempotencyKey == "" {
-		return cardpublication_service.ManualResolution{}, false,
+		return cardpublication_resolution.ManualResolution{}, false,
 			errors.New("manual resolution replay query is invalid")
 	}
 	const query = `
 		SELECT
-			resolution.actor_digest,
-			resolution.command_digest,
+			resolution.actor_id,
+			resolution.expected_action_revision,
+			COALESCE(resolution.evidence_observation_id, 0),
+			COALESCE(resolution.evidence_error_batch_id, 0),
 			` + manualResolutionColumns + `
 		FROM wb.publication_manual_resolutions AS resolution
 		WHERE resolution.idempotency_key = $1;
 	`
-	var storedActor, storedCommand []byte
+	var storedActor, storedRevision, storedObservation, storedErrorBatch int64
 	resolution, err := scanManualResolutionWithPrefix(
 		tx.QueryRow(ctx, query, idempotencyKey),
-		[]any{&storedActor, &storedCommand},
+		[]any{&storedActor, &storedRevision, &storedObservation, &storedErrorBatch},
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return cardpublication_service.ManualResolution{}, false, nil
+		return cardpublication_resolution.ManualResolution{}, false, nil
 	}
 	if err != nil {
-		return cardpublication_service.ManualResolution{}, false,
+		return cardpublication_resolution.ManualResolution{}, false,
 			fmt.Errorf("load manual resolution replay: %w", err)
 	}
-	if !equalBytes(storedActor, actorDigest[:]) ||
-		!equalBytes(storedCommand, commandDigest[:]) {
-		return cardpublication_service.ManualResolution{}, true,
+	if storedActor != actorID || resolution.TransferID != command.TransferID ||
+		resolution.ActionID != command.ActionID ||
+		resolution.ActionMemberID != command.ActionMemberID ||
+		resolution.Kind != command.Kind || storedRevision != command.ExpectedActionRevision ||
+		storedObservation != command.EvidenceObservationID ||
+		storedErrorBatch != command.EvidenceErrorBatchID {
+		return cardpublication_resolution.ManualResolution{}, true,
 			cardpublication_service.ErrManualResolutionConflict
 	}
 	return resolution, true, nil
@@ -70,10 +77,10 @@ func (repository *Repository) LoadManualResolutionReplay(
 func (repository *Repository) LockResolutionSubject(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	command cardpublication_service.ResolutionSubjectKey,
-) (cardpublication_service.ManualResolutionSubject, error) {
+	command cardpublication_resolution.ResolutionSubjectKey,
+) (cardpublication_resolution.ManualResolutionSubject, error) {
 	if tx == nil {
-		return cardpublication_service.ManualResolutionSubject{},
+		return cardpublication_resolution.ManualResolutionSubject{},
 			errors.New("lock manual resolution subject: DBTX is nil")
 	}
 	var lockedTransferID int64
@@ -81,10 +88,10 @@ func (repository *Repository) LockResolutionSubject(
 		SELECT id FROM wb.transfers WHERE id = $1 FOR UPDATE;
 	`, command.TransferID).Scan(&lockedTransferID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return cardpublication_service.ManualResolutionSubject{},
+			return cardpublication_resolution.ManualResolutionSubject{},
 				cardpublication_service.ErrManualResolutionConflict
 		}
-		return cardpublication_service.ManualResolutionSubject{},
+		return cardpublication_resolution.ManualResolutionSubject{},
 			fmt.Errorf("lock transfer for publication resolution: %w", err)
 	}
 	const query = `
@@ -98,7 +105,6 @@ func (repository *Repository) LockResolutionSubject(
 			target.seller_id,
 			action.kind,
 			action.request_payload,
-			plan.plan_digest,
 			member.group_target_id,
 			member.transfer_item_target_id,
 			item_target.revision,
@@ -167,10 +173,9 @@ func (repository *Repository) LockResolutionSubject(
 			AND transfer.outcome = 'unresolved'
 		FOR UPDATE OF action, plan, member, item_target, identity;
 	`
-	var subject cardpublication_service.ManualResolutionSubject
+	var subject cardpublication_resolution.ManualResolutionSubject
 	var (
 		transferID                  int64
-		planDigest                  []byte
 		memberNMID                  pgtype.Int8
 		preflightID                 pgtype.Int8
 		attentionClosed             pgtype.Timestamptz
@@ -197,7 +202,6 @@ func (repository *Repository) LockResolutionSubject(
 		&subject.SellerID,
 		&subject.ActionKind,
 		&subject.RequestPayload,
-		&planDigest,
 		&subject.GroupTargetID,
 		&subject.TransferItemTargetID,
 		&subject.ItemTargetRevision,
@@ -217,19 +221,18 @@ func (repository *Repository) LockResolutionSubject(
 		&identityActiveActionID,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return cardpublication_service.ManualResolutionSubject{},
+		return cardpublication_resolution.ManualResolutionSubject{},
 			cardpublication_service.ErrManualResolutionConflict
 	}
 	if err != nil {
-		return cardpublication_service.ManualResolutionSubject{},
+		return cardpublication_resolution.ManualResolutionSubject{},
 			fmt.Errorf("lock manual resolution subject: %w", err)
 	}
-	subject.TransferID = transfer_service.TransferID(transferID)
-	if len(planDigest) != len(subject.PlanDigest) || !preflightID.Valid {
-		return cardpublication_service.ManualResolutionSubject{},
+	subject.TransferID = transfer_model.TransferID(transferID)
+	if !preflightID.Valid {
+		return cardpublication_resolution.ManualResolutionSubject{},
 			cardpublication_service.ErrManualResolutionConflict
 	}
-	copy(subject.PlanDigest[:], planDigest)
 	subject.PreflightObservationID = preflightID.Int64
 	if memberNMID.Valid {
 		subject.MemberNMID = memberNMID.Int64
@@ -248,7 +251,7 @@ func (repository *Repository) LockResolutionSubject(
 		subject.IdentitySubjectID = identitySubjectID.Int64
 	}
 	if identityActiveTransferID.Valid {
-		subject.IdentityActiveTransferID = transfer_service.TransferID(
+		subject.IdentityActiveTransferID = transfer_model.TransferID(
 			identityActiveTransferID.Int64,
 		)
 	}
@@ -262,23 +265,23 @@ func (repository *Repository) LockResolutionSubject(
 		subject.AttemptID <= 0 ||
 		subject.PreflightObservationID <= 0 || subject.AttemptStartedAt.IsZero() ||
 		subject.VendorCode == "" {
-		return cardpublication_service.ManualResolutionSubject{},
+		return cardpublication_resolution.ManualResolutionSubject{},
 			cardpublication_service.ErrManualResolutionConflict
 	}
 	switch subject.IdentityState {
 	case "blocked_uncertain":
 		if subject.IdentityActiveTransferID != subject.TransferID ||
 			subject.IdentityActiveActionID != subject.ActionID {
-			return cardpublication_service.ManualResolutionSubject{},
+			return cardpublication_resolution.ManualResolutionSubject{},
 				cardpublication_service.ErrManualResolutionConflict
 		}
 	case "remote_present":
 		if subject.IdentityActiveTransferID != 0 || subject.IdentityActiveActionID != 0 {
-			return cardpublication_service.ManualResolutionSubject{},
+			return cardpublication_resolution.ManualResolutionSubject{},
 				cardpublication_service.ErrManualResolutionConflict
 		}
 	default:
-		return cardpublication_service.ManualResolutionSubject{},
+		return cardpublication_resolution.ManualResolutionSubject{},
 			cardpublication_service.ErrManualResolutionConflict
 	}
 	return subject, nil
@@ -287,17 +290,16 @@ func (repository *Repository) LockResolutionSubject(
 func (repository *Repository) LoadManualObservationEvidence(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	subject cardpublication_service.ManualResolutionSubject,
+	subject cardpublication_resolution.ManualResolutionSubject,
 	observationID int64,
-) (cardpublication_service.ManualObservationEvidence, error) {
+) (cardpublication_resolution.ManualObservationEvidence, error) {
 	if tx == nil || observationID <= 0 {
-		return cardpublication_service.ManualObservationEvidence{},
+		return cardpublication_resolution.ManualObservationEvidence{},
 			cardpublication_service.ErrManualEvidenceInvalid
 	}
 	const query = `
 		SELECT
 			observation.id,
-			observation.observation_digest,
 			observation.snapshot,
 			observation.observed_at
 		FROM wb.publication_observations AS observation
@@ -308,8 +310,7 @@ func (repository *Repository) LoadManualObservationEvidence(
 			AND observation.kind = 'post_submission'
 			AND observation.observed_at >= $5;
 	`
-	var evidence cardpublication_service.ManualObservationEvidence
-	var digest []byte
+	var evidence cardpublication_resolution.ManualObservationEvidence
 	err := tx.QueryRow(
 		ctx,
 		query,
@@ -318,20 +319,15 @@ func (repository *Repository) LoadManualObservationEvidence(
 		subject.TargetID,
 		subject.SellerID,
 		subject.AttemptStartedAt,
-	).Scan(&evidence.ID, &digest, &evidence.Payload, &evidence.ObservedAt)
+	).Scan(&evidence.ID, &evidence.Payload, &evidence.ObservedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return cardpublication_service.ManualObservationEvidence{},
+		return cardpublication_resolution.ManualObservationEvidence{},
 			cardpublication_service.ErrManualEvidenceInvalid
 	}
 	if err != nil {
-		return cardpublication_service.ManualObservationEvidence{},
+		return cardpublication_resolution.ManualObservationEvidence{},
 			fmt.Errorf("load manual observation evidence: %w", err)
 	}
-	if len(digest) != len(evidence.Digest) {
-		return cardpublication_service.ManualObservationEvidence{},
-			cardpublication_service.ErrManualEvidenceInvalid
-	}
-	copy(evidence.Digest[:], digest)
 	evidence.ObservedAt = evidence.ObservedAt.UTC()
 	return evidence, nil
 }
@@ -339,11 +335,11 @@ func (repository *Repository) LoadManualObservationEvidence(
 func (repository *Repository) LoadManualErrorEvidence(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	subject cardpublication_service.ManualResolutionSubject,
+	subject cardpublication_resolution.ManualResolutionSubject,
 	errorBatchID int64,
-) (cardpublication_service.ManualErrorEvidence, error) {
+) (cardpublication_resolution.ManualErrorEvidence, error) {
 	if tx == nil || errorBatchID <= 0 {
-		return cardpublication_service.ManualErrorEvidence{},
+		return cardpublication_resolution.ManualErrorEvidence{},
 			cardpublication_service.ErrManualEvidenceInvalid
 	}
 	const query = `
@@ -365,7 +361,7 @@ func (repository *Repository) LoadManualErrorEvidence(
 				)
 			);
 	`
-	var evidence cardpublication_service.ManualErrorEvidence
+	var evidence cardpublication_resolution.ManualErrorEvidence
 	err := tx.QueryRow(
 		ctx,
 		query,
@@ -376,11 +372,11 @@ func (repository *Repository) LoadManualErrorEvidence(
 		subject.VendorCode,
 	).Scan(&evidence.ID, &evidence.ErrorCodes)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return cardpublication_service.ManualErrorEvidence{},
+		return cardpublication_resolution.ManualErrorEvidence{},
 			cardpublication_service.ErrManualEvidenceInvalid
 	}
 	if err != nil {
-		return cardpublication_service.ManualErrorEvidence{},
+		return cardpublication_resolution.ManualErrorEvidence{},
 			fmt.Errorf("load manual Error List evidence: %w", err)
 	}
 	return evidence, nil
@@ -389,28 +385,28 @@ func (repository *Repository) LoadManualErrorEvidence(
 func (repository *Repository) ApplyManualResolution(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	command cardpublication_service.ApplyManualResolutionCommand,
-) (cardpublication_service.ManualResolution, error) {
+	command cardpublication_resolution.ApplyManualResolutionCommand,
+) (cardpublication_resolution.ManualResolution, error) {
 	if tx == nil || command.Subject.TransferID != command.Command.TransferID ||
 		command.Subject.ActionID != command.Command.ActionID ||
 		command.Subject.ActionMemberID != command.Command.ActionMemberID ||
 		command.Subject.ActionRevision != command.Command.ExpectedActionRevision ||
 		command.Decision.Kind != command.Command.Kind ||
 		!command.Decision.OutcomeClass.IsValid() || command.Decision.OutcomeCode == "" {
-		return cardpublication_service.ManualResolution{},
+		return cardpublication_resolution.ManualResolution{},
 			errors.New("apply manual resolution command is invalid")
 	}
 	if !command.Decision.CloseAttentionNoRetry {
 		if err := applyManualMemberResult(ctx, tx, command); err != nil {
-			return cardpublication_service.ManualResolution{}, err
+			return cardpublication_resolution.ManualResolution{}, err
 		}
 	}
 	if err := applyManualEvidence(ctx, tx, command); err != nil {
-		return cardpublication_service.ManualResolution{}, err
+		return cardpublication_resolution.ManualResolution{}, err
 	}
 	resultRevision, err := reduceManualPublicationAction(ctx, tx, command)
 	if err != nil {
-		return cardpublication_service.ManualResolution{}, err
+		return cardpublication_resolution.ManualResolution{}, err
 	}
 	if err := reduceManualPublicationPlan(
 		ctx,
@@ -418,21 +414,21 @@ func (repository *Repository) ApplyManualResolution(
 		command.Subject.TransferID,
 		command.Subject.PlanID,
 	); err != nil {
-		return cardpublication_service.ManualResolution{}, err
+		return cardpublication_resolution.ManualResolution{}, err
 	}
 
 	const insert = `
 		INSERT INTO wb.publication_manual_resolutions AS resolution (
 			transfer_id, action_id, action_member_id, kind,
-			idempotency_key, command_digest, actor_id, actor_digest,
+			idempotency_key, actor_id,
 			actor_name, expected_action_revision, result_action_revision,
 			evidence_observation_id, evidence_error_batch_id,
 			result_outcome_class, result_outcome_code,
 			nm_id, imt_id, subject_id
 		)
 		VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-			$12, $13, $14, $15, $16, $17, $18
+			$1, $2, $3, $4, $5, $6, $7, $8, $9,
+			$10, $11, $12, $13, $14, $15, $16
 		)
 		RETURNING ` + manualResolutionColumns + `;
 	`
@@ -444,9 +440,7 @@ func (repository *Repository) ApplyManualResolution(
 		command.Subject.ActionMemberID,
 		command.Decision.Kind,
 		command.Command.IdempotencyKey,
-		command.CommandDigest[:],
 		command.Actor.ID,
-		command.ActorDigest[:],
 		command.Actor.DisplayName,
 		command.Subject.ActionRevision,
 		resultRevision,
@@ -459,7 +453,7 @@ func (repository *Repository) ApplyManualResolution(
 		nullablePositive(command.Decision.SubjectID),
 	))
 	if err != nil {
-		return cardpublication_service.ManualResolution{},
+		return cardpublication_resolution.ManualResolution{},
 			fmt.Errorf("insert publication manual resolution: %w", err)
 	}
 	return resolution, nil
@@ -468,7 +462,7 @@ func (repository *Repository) ApplyManualResolution(
 func applyManualMemberResult(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	command cardpublication_service.ApplyManualResolutionCommand,
+	command cardpublication_resolution.ApplyManualResolutionCommand,
 ) error {
 	const updateMember = `
 		UPDATE wb.publication_action_members
@@ -578,20 +572,20 @@ func applyManualMemberResult(
 func applyManualEvidence(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	command cardpublication_service.ApplyManualResolutionCommand,
+	command cardpublication_resolution.ApplyManualResolutionCommand,
 ) error {
 	switch command.Decision.Kind {
 	case cardpublication_service.ManualMarkRemotePresent:
 		const insertAttribution = `
 			INSERT INTO wb.publication_attributions (
 				transfer_id, group_target_id, action_id, action_member_id,
-				seller_id, nm_id, plan_digest, attempt_id,
+				seller_id, nm_id, attempt_id,
 				preflight_observation_id, post_observation_id, level,
 				safe_reason_code
 			)
 			VALUES (
-				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-				'observed_after_attempt', $11
+				$1, $2, $3, $4, $5, $6, $7, $8, $9,
+				'observed_after_attempt', $10
 			)
 			ON CONFLICT (transfer_id, action_member_id) DO NOTHING;
 		`
@@ -604,7 +598,6 @@ func applyManualEvidence(
 			command.Subject.ActionMemberID,
 			command.Subject.SellerID,
 			command.Decision.NMID,
-			command.Subject.PlanDigest[:],
 			command.Subject.AttemptID,
 			command.Subject.PreflightObservationID,
 			command.Decision.EvidenceObservationID,
@@ -666,7 +659,7 @@ func applyManualEvidence(
 func reduceManualPublicationAction(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	command cardpublication_service.ApplyManualResolutionCommand,
+	command cardpublication_resolution.ApplyManualResolutionCommand,
 ) (int64, error) {
 	const reduce = `
 		WITH member_counts AS (
@@ -730,7 +723,7 @@ func reduceManualPublicationAction(
 func reduceManualPublicationPlan(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID transfer_service.TransferID,
+	transferID transfer_model.TransferID,
 	planID int64,
 ) error {
 	const reduce = `
@@ -782,7 +775,7 @@ func reduceManualPublicationPlan(
 }
 
 func scanManualResolution(row interface{ Scan(...any) error }) (
-	cardpublication_service.ManualResolution,
+	cardpublication_resolution.ManualResolution,
 	error,
 ) {
 	return scanManualResolutionWithPrefix(row, nil)
@@ -791,8 +784,8 @@ func scanManualResolution(row interface{ Scan(...any) error }) (
 func scanManualResolutionWithPrefix(
 	row interface{ Scan(...any) error },
 	prefix []any,
-) (cardpublication_service.ManualResolution, error) {
-	var resolution cardpublication_service.ManualResolution
+) (cardpublication_resolution.ManualResolution, error) {
+	var resolution cardpublication_resolution.ManualResolution
 	var transferID int64
 	var nmID, imtID, subjectID pgtype.Int8
 	destinations := append(prefix,
@@ -810,9 +803,9 @@ func scanManualResolutionWithPrefix(
 		&resolution.CreatedAt,
 	)
 	if err := row.Scan(destinations...); err != nil {
-		return cardpublication_service.ManualResolution{}, err
+		return cardpublication_resolution.ManualResolution{}, err
 	}
-	resolution.TransferID = transfer_service.TransferID(transferID)
+	resolution.TransferID = transfer_model.TransferID(transferID)
 	if nmID.Valid {
 		resolution.NMID = nmID.Int64
 	}
@@ -826,4 +819,4 @@ func scanManualResolutionWithPrefix(
 	return resolution, nil
 }
 
-var _ cardpublication_service.ManualResolutionRepository = (*Repository)(nil)
+var _ cardpublication_resolution.ManualResolutionRepository = (*Repository)(nil)
