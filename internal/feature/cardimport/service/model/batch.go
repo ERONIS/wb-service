@@ -11,9 +11,7 @@ import (
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 )
 
-const (
-	MaxBatchPageSize = cardpipeline.MaxBatchPageSize
-)
+const MaxBatchPageSize = 1000
 
 type BatchID = cardpipeline.BatchID
 type BatchItemID = cardpipeline.BatchItemID

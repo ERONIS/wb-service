@@ -196,13 +196,6 @@ func validateStartBatch(batch cardpipeline.ReadyBatchHeader) error {
 	if err := batch.Validate(); err != nil {
 		return fmt.Errorf("validate transfer batch: %w", err)
 	}
-	if batch.Purpose != cardpipeline.PurposeTransfer {
-		return fmt.Errorf(
-			"cardimport batch purpose '%s' cannot start transfer: %w",
-			batch.Purpose,
-			core_errors.ErrConflict,
-		)
-	}
 	if batch.Checksum == (cardpipeline.Digest{}) {
 		return fmt.Errorf(
 			"cardimport batch checksum is empty: %w",

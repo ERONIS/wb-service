@@ -4,7 +4,6 @@ import "time"
 
 type ReadyBatchHeader struct {
 	ID               BatchID
-	Purpose          Purpose
 	ItemsCount       int
 	GroupsCount      int
 	Checksum         Digest
@@ -27,7 +26,7 @@ type ReadyBatch struct {
 }
 
 func (header ReadyBatchHeader) Validate() error {
-	if header.ID <= 0 || !header.Purpose.IsValid() ||
+	if header.ID <= 0 ||
 		header.ItemsCount <= 0 || header.GroupsCount <= 0 ||
 		header.GroupsCount > header.ItemsCount ||
 		header.Checksum == (Digest{}) || header.AuthorTelegramID <= 0 ||
