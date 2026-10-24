@@ -14,7 +14,6 @@ const (
 	MaxFileSize        = 20 << 20
 )
 
-type SessionID = cardpipeline.SessionID
 type Purpose = cardpipeline.Purpose
 
 const (
@@ -40,7 +39,7 @@ func (s SessionStatus) IsValid() bool {
 	}
 }
 
-// Session представляет сохранённую сессию приёма XLSX-файлов.
+// Session представляет сессию приёма XLSX-файлов в памяти процесса.
 type Session struct {
 	ID               SessionID
 	AuthorTelegramID int64
@@ -82,8 +81,6 @@ func invalidSession(message string) error {
 	)
 }
 
-type FileID = cardpipeline.FileID
-
 type FileStatus string
 
 const (
@@ -109,7 +106,7 @@ func (s FileStatus) IsValid() bool {
 	}
 }
 
-// File представляет durable-состояние одного Telegram-файла.
+// File представляет состояние одного загруженного Telegram-файла.
 type File struct {
 	ID                   FileID
 	SessionID            SessionID

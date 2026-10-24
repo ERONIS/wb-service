@@ -11,10 +11,10 @@ import (
 
 	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
-	core_postgres_telegramview "github.com/ERONIS/wb-service/internal/core/repository/postgres/telegramview"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
 	telegram_server "github.com/ERONIS/wb-service/internal/core/transport/telegram/server"
+	core_tg_postgres_store "github.com/ERONIS/wb-service/internal/core/transport/telegram/storage/postgres"
 	core_wb "github.com/ERONIS/wb-service/internal/core/transport/wb"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 	cardimport "github.com/ERONIS/wb-service/internal/feature/cardimport"
@@ -157,13 +157,12 @@ func main() {
 		statistics_wb_transport.NewVerifier(wbClientset),
 	)
 	cardimportFeature.SetCompletionNavigator(statisticsFeature.CompletionNavigator())
-	cardimportFeature.SetProcessingNotifier(transferFeature)
 
 	telegramHandler := core_tg_menu.Register(
 		ctx,
 		bot,
 		usersFeature.Service(),
-		core_postgres_telegramview.New(postgresPool),
+		core_tg_postgres_store.New(postgresPool),
 	)
 	usersFeature.RegisterTelegram(telegramHandler)
 	wbCabinetFeature.RegisterTelegram(telegramHandler, usersFeature.Service())

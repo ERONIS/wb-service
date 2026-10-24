@@ -3,7 +3,6 @@ package workflow
 import (
 	"context"
 	"io"
-	"time"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
@@ -19,122 +18,33 @@ type RecoverableFile struct {
 	File             File
 }
 
+type FinalizedSession struct {
+	Session       Session
+	Files         []File
+	Items         []BatchItem
+	GroupsCount   int
+	Checksum      Digest
+	User          domain.User
+	Command       FinalizeCommand
+	CommandDigest Digest
+}
+
 type FileParser interface {
 	Parse(fileID FileID, reader io.Reader) (ParsedFile, error)
 }
 
 type Repository interface {
-	OperationContext(context.Context) (context.Context, context.CancelFunc)
-
-	GetOrCreateCollectingSession(
-		ctx context.Context,
-		authorTelegramID int64,
-		purpose Purpose,
-	) (Session, error)
-
-	GetSession(
-		ctx context.Context,
-		authorTelegramID int64,
-		sessionID SessionID,
-	) (Session, error)
-
-	GetCollectingSessionView(
-		ctx context.Context,
-		authorTelegramID int64,
-	) (SessionView, error)
-
-	GetSessionView(
-		ctx context.Context,
-		authorTelegramID int64,
-		sessionID SessionID,
-	) (SessionView, error)
-
-	CancelSession(
-		ctx context.Context,
-		authorTelegramID int64,
-		sessionID SessionID,
-	) (Session, error)
-
-	ContinueAfterErrors(
+	HasAuthor(ctx context.Context, authorTelegramID int64) (bool, error)
+	PersistFinalized(
 		ctx context.Context,
 		tx core_postgres_transaction.DBTX,
-		command ContinueCommand,
-	) (Session, error)
-
-	ReserveFile(
-		ctx context.Context,
-		command ReserveFileCommand,
-		maxFiles int,
-	) (File, error)
-
-	StoreFile(
-		ctx context.Context,
-		command StoreFileCommand,
-		content StoredContent,
-	) (File, error)
-
-	ListRecoverableFiles(
-		ctx context.Context,
-		staleParsingBefore time.Time,
-		reparsePriceErrorsBefore time.Time,
-		limit int,
-	) ([]RecoverableFile, error)
-
-	ClaimFileForParsing(
-		ctx context.Context,
-		command ParseFileCommand,
-	) ([]byte, error)
-
-	SaveParsedFile(
-		ctx context.Context,
-		tx core_postgres_transaction.DBTX,
-		command ParseFileCommand,
-		result AggregatedFile,
-	) (File, error)
-
-	Finalize(
-		ctx context.Context,
-		tx core_postgres_transaction.DBTX,
-		user domain.User,
-		command FinalizeCommand,
-		commandDigest Digest,
+		finalized FinalizedSession,
 	) (BatchHeader, error)
-
-	ListFinalizedBatches(
-		ctx context.Context,
-		after *BatchCursor,
-		limit int,
-	) ([]BatchHeader, error)
-
-	GetBatch(
-		ctx context.Context,
-		batchID BatchID,
-	) (BatchHeader, error)
-
-	ListBatchItems(
-		ctx context.Context,
-		batchID BatchID,
-		afterPosition int,
-		limit int,
-	) ([]BatchItem, error)
+	BatchReader
 }
 
 type BatchReader interface {
-	ListFinalizedBatches(
-		ctx context.Context,
-		after *BatchCursor,
-		limit int,
-	) ([]BatchHeader, error)
-
-	GetBatch(
-		ctx context.Context,
-		batchID BatchID,
-	) (BatchHeader, error)
-
-	ListBatchItems(
-		ctx context.Context,
-		batchID BatchID,
-		afterPosition int,
-		limit int,
-	) ([]BatchItem, error)
+	ListFinalizedBatches(ctx context.Context, after *BatchCursor, limit int) ([]BatchHeader, error)
+	GetBatch(ctx context.Context, batchID BatchID) (BatchHeader, error)
+	ListBatchItems(ctx context.Context, batchID BatchID, afterPosition int, limit int) ([]BatchItem, error)
 }

@@ -6,7 +6,10 @@ DROP FUNCTION IF EXISTS wb.reject_frozen_card_batch_mutation;
 DROP TABLE IF EXISTS wb.card_batch_items;
 ALTER TABLE wb.card_import_sessions DROP CONSTRAINT IF EXISTS card_import_sessions_finalized_batch_fk;
 DROP TABLE IF EXISTS wb.card_batches;
+<<<<<<< ours
 DROP TABLE IF EXISTS wb.card_import_items;
 DROP TABLE IF EXISTS wb.card_import_issues;
+=======
+>>>>>>> theirs
 DROP TABLE IF EXISTS wb.card_import_files;
 DROP TABLE IF EXISTS wb.card_import_sessions;

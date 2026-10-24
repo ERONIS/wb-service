@@ -96,7 +96,6 @@ CREATE TABLE wb.card_import_files (
                               ),
 
     sha256                    BYTEA,
-    content                   BYTEA,
 
     status                    TEXT NOT NULL DEFAULT 'reserved'
                               CHECK (status IN (
@@ -115,18 +114,16 @@ CREATE TABLE wb.card_import_files (
     UNIQUE (session_id, telegram_file_unique_id),
     UNIQUE (session_id, telegram_message_id),
 
-    CHECK (
+    CONSTRAINT card_import_files_metadata_check CHECK (
         (
             status = 'reserved'
             AND stored_size = 0
             AND sha256 IS NULL
-            AND content IS NULL
         )
         OR (
             status IN ('stored', 'parsing', 'valid', 'invalid')
             AND stored_size > 0
             AND octet_length(sha256) = 32
-            AND octet_length(content) = stored_size
         )
         OR status = 'abandoned'
     )
@@ -134,68 +131,6 @@ CREATE TABLE wb.card_import_files (
 
 CREATE INDEX card_import_files_session_status_idx
     ON wb.card_import_files (session_id, status, id);
-
-
-CREATE TABLE wb.card_import_issues (
-    id                  BIGSERIAL PRIMARY KEY,
-
-    session_id          BIGINT NOT NULL
-                        REFERENCES wb.card_import_sessions(id),
-
-    file_id             BIGINT
-                        REFERENCES wb.card_import_files(id),
-
-    severity            TEXT NOT NULL
-                        CHECK (severity IN ('error', 'warning')),
-
-    code                TEXT NOT NULL
-                        CHECK (char_length(code) > 0),
-    sheet_name          TEXT NOT NULL DEFAULT '',
-    row_number          INTEGER
-                        CHECK (row_number IS NULL OR row_number > 0),
-    column_name         TEXT NOT NULL DEFAULT '',
-    message             TEXT NOT NULL
-                        CHECK (char_length(message) > 0),
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX card_import_issues_session_file_idx
-    ON wb.card_import_issues (session_id, file_id, id);
-
-
-CREATE TABLE wb.card_import_items (
-    id                  BIGSERIAL PRIMARY KEY,
-
-    session_id          BIGINT NOT NULL
-                        REFERENCES wb.card_import_sessions(id),
-
-    source_file_id      BIGINT NOT NULL
-                        REFERENCES wb.card_import_files(id),
-
-    position            INTEGER NOT NULL
-                        CHECK (position > 0),
-
-    source_rows         INTEGER[] NOT NULL
-                        CHECK (cardinality(source_rows) > 0),
-
-    group_value         TEXT NOT NULL,
-    category            TEXT NOT NULL,
-    vendor_code         TEXT NOT NULL
-                        CHECK (char_length(vendor_code) > 0),
-
-    barcodes            TEXT[] NOT NULL DEFAULT '{}',
-
-    payload             JSONB NOT NULL
-                        CHECK (jsonb_typeof(payload) = 'object'),
-
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (source_file_id, position),
-    UNIQUE (source_file_id, vendor_code)
-);
-
-CREATE INDEX card_import_items_session_vendor_code_idx
-    ON wb.card_import_items (session_id, vendor_code);
 
 
 CREATE TABLE wb.card_batches (
@@ -211,12 +146,6 @@ CREATE TABLE wb.card_batches (
 
     purpose             TEXT NOT NULL
                         CHECK (purpose = 'transfer'),
-
-    schema_version      INTEGER NOT NULL
-                        CHECK (schema_version > 0),
-
-    normalization_version INTEGER NOT NULL
-                        CHECK (normalization_version > 0),
 
     items_count         INTEGER NOT NULL
                         CHECK (items_count > 0),

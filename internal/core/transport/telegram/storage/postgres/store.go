@@ -1,4 +1,4 @@
-package telegramview
+package postgres
 
 import (
 	"context"

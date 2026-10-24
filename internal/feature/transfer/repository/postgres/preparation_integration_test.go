@@ -78,10 +78,10 @@ func setupTestTransferData(
 	}
 	err = pool.QueryRow(ctx, `
 		INSERT INTO wb.card_batches (
-			source_session_id, source_kind, source_reference_id, purpose, schema_version,
-			normalization_version, items_count, groups_count, checksum, author_snapshot
+			source_session_id, source_kind, source_reference_id, purpose,
+			items_count, groups_count, checksum, author_snapshot
 		)
-		VALUES ($1, 'xlsx', $1, 'transfer', 1, 1, 1, 1, $2, '{}'::jsonb)
+		VALUES ($1, 'xlsx', $1, 'transfer', 1, 1, $2, '{}'::jsonb)
 		RETURNING id;
 	`, sessionID, checksum).Scan(&batchID)
 	if err != nil {
@@ -108,11 +108,11 @@ func setupTestTransferData(
 	var tid int64
 	err = pool.QueryRow(ctx, `
 		INSERT INTO wb.transfers (
-			batch_id, phase, outcome, batch_schema_version, batch_normalization_version,
-			batch_checksum, items_count, groups_count, cohort_name, target_snapshot_revision,
+			batch_id, phase, outcome, batch_checksum, items_count, groups_count,
+			cohort_name, target_snapshot_revision,
 			target_set_root, targets_count, item_targets_count, group_targets_count
 		)
-		VALUES ($1, 'initializing', 'running', 1, 1, $2, 1, 1, 'default', $3, $4, 2, 2, 2)
+		VALUES ($1, 'initializing', 'running', $2, 1, 1, 'default', $3, $4, 2, 2, 2)
 		RETURNING id;
 	`, batchID, checksum, targetSnapshotRev, targetSetRoot).Scan(&tid)
 	if err != nil {
@@ -157,9 +157,9 @@ func setupTestTransferData(
 	var groupID int64
 	err = pool.QueryRow(ctx, `
 		INSERT INTO wb.transfer_groups (
-			transfer_id, source_group_key, source_file_id, source_group_name
+			transfer_id, source_group_key, source_group_name
 		)
-		VALUES ($1, $2, 1, 'Группа 1')
+		VALUES ($1, $2, 'Группа 1')
 		RETURNING id;
 	`, transferID, groupKey).Scan(&groupID)
 	if err != nil {
@@ -170,10 +170,9 @@ func setupTestTransferData(
 	var itemID int64
 	err = pool.QueryRow(ctx, `
 		INSERT INTO wb.transfer_items (
-			transfer_id, batch_item_id, position, source_file_id, source_rows,
-			source_group_id, vendor_code, payload
+			transfer_id, batch_item_id, position, source_group_id, vendor_code, payload
 		)
-		VALUES ($1, 1, 1, 1, '{1}', $2, 'ART-1', '{"title": "Card 1"}'::jsonb)
+		VALUES ($1, 1, 1, $2, 'ART-1', '{"title": "Card 1"}'::jsonb)
 		RETURNING id;
 	`, transferID, groupID).Scan(&itemID)
 	if err != nil {

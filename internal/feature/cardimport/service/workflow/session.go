@@ -5,206 +5,115 @@ import (
 	"fmt"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
-	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 )
 
-// Begin создаёт collecting-сессию или возвращает уже открытую.
-func (s *Service) Begin(
-	ctx context.Context,
-	command BeginCommand,
-) (Session, error) {
+func (s *Service) Begin(ctx context.Context, command BeginCommand) (Session, error) {
 	if err := command.validate(); err != nil {
 		return Session{}, err
 	}
-
-	session, err := s.repository.GetOrCreateCollectingSession(
-		ctx,
-		command.AuthorTelegramID,
-		command.Purpose,
-	)
+	exists, err := s.repository.HasAuthor(ctx, command.AuthorTelegramID)
 	if err != nil {
-		return Session{}, fmt.Errorf(
-			"get or create collecting cardimport session: %w",
-			err,
-		)
+		return Session{}, fmt.Errorf("check cardimport author: %w", err)
 	}
-
-	if err := validateSessionOwner(session, command.AuthorTelegramID); err != nil {
-		return Session{}, err
+	if !exists {
+		return Session{}, fmt.Errorf("cardimport author Telegram ID=%d: %w", command.AuthorTelegramID, core_errors.ErrNotFound)
 	}
-	if session.Status != SessionStatusCollecting {
-		return Session{}, fmt.Errorf(
-			"cardimport session is not collecting: %w",
-			core_errors.ErrConflict,
-		)
-	}
-	if session.Purpose != command.Purpose {
-		return Session{}, fmt.Errorf(
-			"another cardimport purpose is already active: %w",
-			core_errors.ErrConflict,
-		)
-	}
-
-	return session, nil
-}
-
-func (s *Service) Get(
-	ctx context.Context,
-	command SessionCommand,
-) (Session, error) {
-	if err := command.validate(); err != nil {
-		return Session{}, err
-	}
-
-	session, err := s.repository.GetSession(
-		ctx,
-		command.AuthorTelegramID,
-		command.SessionID,
-	)
+	session, err := s.sessions.begin(ctx, command)
 	if err != nil {
-		return Session{}, fmt.Errorf("get cardimport session: %w", err)
+		return Session{}, err
 	}
 	if err := validateSessionOwner(session, command.AuthorTelegramID); err != nil {
 		return Session{}, err
 	}
-
+	if session.Status != SessionStatusCollecting || session.Purpose != command.Purpose {
+		return Session{}, fmt.Errorf("cardimport session cannot collect this purpose: %w", core_errors.ErrConflict)
+	}
 	return session, nil
 }
 
-func (s *Service) GetActiveView(
-	ctx context.Context,
-	authorTelegramID int64,
-) (SessionView, error) {
+func (s *Service) Get(ctx context.Context, command SessionCommand) (Session, error) {
+	if err := command.validate(); err != nil {
+		return Session{}, err
+	}
+	session, err := s.sessions.get(ctx, command)
+	if err != nil {
+		return Session{}, err
+	}
+	if err := validateSessionOwner(session, command.AuthorTelegramID); err != nil {
+		return Session{}, err
+	}
+	return session, nil
+}
+
+func (s *Service) GetActiveView(ctx context.Context, authorTelegramID int64) (SessionView, error) {
 	if authorTelegramID <= 0 {
 		return SessionView{}, invalidTelegramID(authorTelegramID)
 	}
-
-	view, err := s.repository.GetCollectingSessionView(
-		ctx,
-		authorTelegramID,
-	)
+	view, err := s.sessions.activeView(ctx, authorTelegramID)
 	if err != nil {
-		return SessionView{}, fmt.Errorf(
-			"get collecting cardimport session view: %w",
-			err,
-		)
+		return SessionView{}, err
 	}
 	if err := validateSessionView(view, authorTelegramID); err != nil {
 		return SessionView{}, err
 	}
-
 	return view, nil
 }
 
-func (s *Service) GetView(
-	ctx context.Context,
-	command SessionCommand,
-) (SessionView, error) {
+func (s *Service) GetView(ctx context.Context, command SessionCommand) (SessionView, error) {
 	if err := command.validate(); err != nil {
 		return SessionView{}, err
 	}
-
-	view, err := s.repository.GetSessionView(
-		ctx,
-		command.AuthorTelegramID,
-		command.SessionID,
-	)
+	view, err := s.sessions.view(ctx, command)
 	if err != nil {
-		return SessionView{}, fmt.Errorf(
-			"get cardimport session view: %w",
-			err,
-		)
+		return SessionView{}, err
 	}
 	if err := validateSessionView(view, command.AuthorTelegramID); err != nil {
 		return SessionView{}, err
 	}
-
 	return view, nil
 }
 
-// Cancel идемпотентно отменяет принадлежащую пользователю сессию.
-func (s *Service) Cancel(
-	ctx context.Context,
-	command SessionCommand,
-) error {
+func (s *Service) Cancel(ctx context.Context, command SessionCommand) error {
 	if err := command.validate(); err != nil {
 		return err
 	}
-
-	session, err := s.repository.CancelSession(
-		ctx,
-		command.AuthorTelegramID,
-		command.SessionID,
-	)
+	session, err := s.sessions.cancel(ctx, command)
 	if err != nil {
-		return fmt.Errorf("cancel cardimport session: %w", err)
+		return err
 	}
 	if err := validateSessionOwner(session, command.AuthorTelegramID); err != nil {
 		return err
 	}
 	if session.Status != SessionStatusCancelled {
-		return fmt.Errorf(
-			"cardimport session was not cancelled: %w",
-			core_errors.ErrConflict,
-		)
+		return fmt.Errorf("cardimport session was not cancelled: %w", core_errors.ErrConflict)
 	}
-
 	return nil
 }
 
-func (s *Service) Continue(
-	ctx context.Context,
-	command ContinueCommand,
-) (SessionView, error) {
+func (s *Service) Continue(ctx context.Context, command ContinueCommand) (SessionView, error) {
 	if err := command.validate(); err != nil {
 		return SessionView{}, err
 	}
-
-	txCtx, cancel := s.repository.OperationContext(ctx)
-	defer cancel()
-	var session Session
-	err := s.uow.WithinTransaction(txCtx, func(txCtx context.Context, tx core_postgres_transaction.DBTX) error {
-		var continueErr error
-		session, continueErr = s.repository.ContinueAfterErrors(txCtx, tx, command)
-		return continueErr
-	})
+	session, err := s.sessions.continueAfterErrors(ctx, command)
 	if err != nil {
-		return SessionView{}, fmt.Errorf(
-			"continue cardimport session after errors: %w",
-			err,
-		)
+		return SessionView{}, err
 	}
 	if err := validateSessionOwner(session, command.AuthorTelegramID); err != nil {
 		return SessionView{}, err
 	}
-	if session.Status != SessionStatusCollecting ||
-		session.Revision != command.ExpectedRevision+1 {
-		return SessionView{}, fmt.Errorf(
-			"cardimport session changed while continuing: %w",
-			core_errors.ErrConflict,
-		)
+	if session.Status != SessionStatusCollecting || session.Revision != command.ExpectedRevision+1 {
+		return SessionView{}, fmt.Errorf("cardimport session changed while continuing: %w", core_errors.ErrConflict)
 	}
-
-	return s.GetView(ctx, SessionCommand{
-		AuthorTelegramID: command.AuthorTelegramID,
-		SessionID:        command.SessionID,
-	})
+	return s.GetView(ctx, SessionCommand{AuthorTelegramID: command.AuthorTelegramID, SessionID: command.SessionID})
 }
 
-func validateSessionOwner(
-	session Session,
-	authorTelegramID int64,
-) error {
+func validateSessionOwner(session Session, authorTelegramID int64) error {
 	if err := session.Validate(); err != nil {
 		return fmt.Errorf("validate cardimport session: %w", err)
 	}
 	if session.AuthorTelegramID != authorTelegramID {
-		return fmt.Errorf(
-			"cardimport session author does not match command: %w",
-			core_errors.ErrConflict,
-		)
+		return fmt.Errorf("cardimport session author does not match command: %w", core_errors.ErrConflict)
 	}
-
 	return nil
 }
 
@@ -213,25 +122,15 @@ func validateSessionView(view SessionView, authorTelegramID int64) error {
 		return err
 	}
 	if view.CardsCount < 0 || view.ErrorsCount < 0 {
-		return fmt.Errorf(
-			"invalid cardimport session counters: %w",
-			core_errors.ErrConflict,
-		)
+		return fmt.Errorf("invalid cardimport session counters: %w", core_errors.ErrConflict)
 	}
-
 	for _, fileView := range view.Files {
 		if err := fileView.File.Validate(); err != nil {
 			return fmt.Errorf("validate cardimport file view: %w", err)
 		}
-		if fileView.File.SessionID != view.ID ||
-			fileView.CardsCount < 0 ||
-			fileView.ErrorsCount < 0 {
-			return fmt.Errorf(
-				"invalid cardimport file view: %w",
-				core_errors.ErrConflict,
-			)
+		if fileView.File.SessionID != view.ID || fileView.CardsCount < 0 || fileView.ErrorsCount < 0 {
+			return fmt.Errorf("invalid cardimport file view: %w", core_errors.ErrConflict)
 		}
 	}
-
 	return nil
 }

@@ -1,21 +1,13 @@
 package request
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"mime/multipart"
 	"net/url"
 	"reflect"
 
 	policy "github.com/ERONIS/wb-service/internal/core/transport/wb/policy"
 )
-
-type MultipartFile struct {
-	FieldName string
-	FileName  string
-	Data      []byte
-}
 
 // Prepare проверяет и сериализует входные данные логического WB-запроса.
 func Prepare(
@@ -93,32 +85,9 @@ func prepareBody(
 		}
 		return bodyBytes, "application/json", nil
 
-	case operation.RequestMode().IsMultipart():
-		return prepareMultipartBody(body)
-
 	default:
 		return nil, "", errRequestBodyModeUnsupported
 	}
-}
-
-func prepareMultipartBody(body any) ([]byte, string, error) {
-	form, ok := body.(MultipartFile)
-	if !ok || form.FieldName == "" || form.FileName == "" || form.Data == nil {
-		return nil, "", errRequestBodyRequired
-	}
-	var buffer bytes.Buffer
-	writer := multipart.NewWriter(&buffer)
-	part, err := writer.CreateFormFile(form.FieldName, form.FileName)
-	if err != nil {
-		return nil, "", fmt.Errorf("create WB multipart body: %w", err)
-	}
-	if _, err := part.Write(form.Data); err != nil {
-		return nil, "", fmt.Errorf("write WB multipart body: %w", err)
-	}
-	if err := writer.Close(); err != nil {
-		return nil, "", fmt.Errorf("close WB multipart body: %w", err)
-	}
-	return buffer.Bytes(), writer.FormDataContentType(), nil
 }
 
 func isNilValue(value any) bool {

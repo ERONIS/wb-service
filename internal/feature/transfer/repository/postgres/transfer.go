@@ -21,8 +21,6 @@ const transferColumns = `
 	transfer.outcome,
 	COALESCE(transfer.attention_code, ''),
 	transfer.revision,
-	transfer.batch_schema_version,
-	transfer.batch_normalization_version,
 	transfer.batch_checksum,
 	transfer.items_count,
 	transfer.groups_count,
@@ -215,8 +213,6 @@ func (repository *Repository) Create(
 	const query = `
 		INSERT INTO wb.transfers (
 			batch_id,
-			batch_schema_version,
-			batch_normalization_version,
 			batch_checksum,
 			items_count,
 			groups_count,
@@ -227,7 +223,7 @@ func (repository *Repository) Create(
 			item_targets_count,
 			group_targets_count
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (batch_id) DO NOTHING
 		RETURNING
 			id,
@@ -236,8 +232,6 @@ func (repository *Repository) Create(
 			outcome,
 			COALESCE(attention_code, ''),
 			revision,
-			batch_schema_version,
-			batch_normalization_version,
 			batch_checksum,
 			items_count,
 			groups_count,
@@ -256,8 +250,6 @@ func (repository *Repository) Create(
 		ctx,
 		query,
 		command.Batch.ID,
-		command.Batch.SchemaVersion,
-		command.Batch.NormalizationVersion,
 		command.Batch.Checksum[:],
 		command.Batch.ItemsCount,
 		command.Batch.GroupsCount,
@@ -351,8 +343,6 @@ func scanTransfer(row rowScanner) (transfer_service.Transfer, error) {
 		&transfer.Outcome,
 		&transfer.AttentionCode,
 		&transfer.Revision,
-		&transfer.BatchSchemaVersion,
-		&transfer.BatchNormalizationVersion,
 		&batchChecksum,
 		&transfer.ItemsCount,
 		&transfer.GroupsCount,

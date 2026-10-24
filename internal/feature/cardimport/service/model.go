@@ -52,9 +52,7 @@ const (
 	IssueSeverityError   = model.IssueSeverityError
 	IssueSeverityWarning = model.IssueSeverityWarning
 
-	BatchSchemaVersion        = model.BatchSchemaVersion
-	BatchNormalizationVersion = model.BatchNormalizationVersion
-	MaxBatchPageSize          = model.MaxBatchPageSize
+	MaxBatchPageSize = model.MaxBatchPageSize
 )
 
 func NewSourceGroupKey(fileID FileID, group, vendorCode string) SourceGroupKey {

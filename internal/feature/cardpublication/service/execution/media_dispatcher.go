@@ -22,23 +22,6 @@ import (
 
 const mediaClassifierVersion = 1
 
-type MediaUploadMethod string
-
-const (
-	MediaUploadByLinks MediaUploadMethod = "links"
-	MediaUploadByFile  MediaUploadMethod = "file"
-)
-
-type DirectMediaTransport interface {
-	DownloadMediaFile(context.Context, string) (contentapi.DownloadedMediaFile, error)
-	UploadMediaFile(
-		context.Context,
-		SellerID,
-		domain.ClientGeneration,
-		contentapi.UploadMediaFileRequest,
-	) (contentapi.UploadMediaFileResponse, error)
-}
-
 var ErrMediaActionConflict = core_errors.ErrConflict
 
 type MediaActionCandidate = ProductActionCandidate
@@ -307,7 +290,6 @@ type MediaDispatcher struct {
 	transferResults    PublicationExecutionResultApplier
 	uow                core_postgres_transaction.UnitOfWork
 	enabled            bool
-	mediaUploadMethod  MediaUploadMethod
 	mediaCheckInterval time.Duration
 	mediaCheckTimeout  time.Duration
 	concurrency        int
@@ -334,7 +316,6 @@ func NewMediaDispatcher(
 	transferResults PublicationExecutionResultApplier,
 	uow core_postgres_transaction.UnitOfWork,
 	enabled bool,
-	mediaUploadMethod MediaUploadMethod,
 	mediaCheckInterval time.Duration,
 	mediaCheckTimeout time.Duration,
 	concurrency int,
@@ -343,7 +324,6 @@ func NewMediaDispatcher(
 	effectiveMediaCheckInterval := max(mediaCheckInterval, time.Minute)
 	if repository == nil || transport == nil || catalogReader == nil || errorFeed == nil ||
 		authorization == nil || transferResults == nil || uow == nil ||
-		(mediaUploadMethod != MediaUploadByLinks && mediaUploadMethod != MediaUploadByFile) ||
 		mediaCheckInterval <= 0 || mediaCheckTimeout <= effectiveMediaCheckInterval || concurrency <= 0 {
 		panic("cardpublication media dispatcher dependency is nil")
 	}
@@ -356,7 +336,6 @@ func NewMediaDispatcher(
 		transferResults:    transferResults,
 		uow:                uow,
 		enabled:            enabled,
-		mediaUploadMethod:  mediaUploadMethod,
 		mediaCheckInterval: effectiveMediaCheckInterval,
 		mediaCheckTimeout:  mediaCheckTimeout,
 		concurrency:        concurrency,
@@ -649,7 +628,6 @@ func (dispatcher *MediaDispatcher) dispatch(
 		action.SellerID,
 		action.ClientGeneration,
 		request,
-		dispatcher.mediaUploadMethod,
 	)
 	cancelMutation()
 	resultCtx, cancel := publicationResultContext(ctx)
@@ -856,11 +834,7 @@ func executeMediaMutation(
 	sellerID SellerID,
 	generation domain.ClientGeneration,
 	request contentapi.SaveMediaByLinksRequest,
-	method MediaUploadMethod,
 ) MediaMutationResult {
-	if method == MediaUploadByFile {
-		return executeDirectMediaMutation(ctx, transport, sellerID, generation, request)
-	}
 	response, err := transport.SaveMediaByLinks(ctx, sellerID, generation, request)
 	if err != nil {
 		return classifyMediaError(err)
@@ -882,96 +856,6 @@ func executeMediaMutation(
 		Disposition:       SubmissionAccepted,
 		OutcomeClass:      transfer_service.ResultSuccess,
 		OutcomeCode:       "WB_MEDIA_REQUEST_ACCEPTED",
-	}
-}
-
-func executeDirectMediaMutation(
-	ctx context.Context,
-	transport CatalogTransport,
-	sellerID SellerID,
-	generation domain.ClientGeneration,
-	request contentapi.SaveMediaByLinksRequest,
-) MediaMutationResult {
-	return executeDirectMediaMutationWithWait(ctx, transport, sellerID, generation, request, waitMediaRetry)
-}
-
-func executeDirectMediaMutationWithWait(
-	ctx context.Context,
-	transport CatalogTransport,
-	sellerID SellerID,
-	generation domain.ClientGeneration,
-	request contentapi.SaveMediaByLinksRequest,
-	wait func(context.Context, time.Duration) error,
-) MediaMutationResult {
-	directTransport, ok := transport.(DirectMediaTransport)
-	if !ok {
-		return MediaMutationResult{
-			Delivery:          SubmissionNotDispatched,
-			ClassifierVersion: mediaClassifierVersion,
-			Disposition:       SubmissionRejectedProven,
-			OutcomeClass:      transfer_service.ResultInternalError,
-			OutcomeCode:       "WB_MEDIA_FILE_TRANSPORT_UNAVAILABLE",
-		}
-	}
-	accepted := 0
-	photoNumber := 0
-	for _, link := range request.Data {
-		file, err := retryMediaDownload(ctx, wait, func() (contentapi.DownloadedMediaFile, error) {
-			return directTransport.DownloadMediaFile(ctx, link)
-		})
-		if err != nil {
-			if accepted > 0 {
-				return partialMediaMutationResult()
-			}
-			return classifyMediaError(err)
-		}
-		mediaNumber := 1
-		if !strings.HasPrefix(file.MediaType, "video/") {
-			photoNumber++
-			mediaNumber = photoNumber
-		}
-		upload := contentapi.UploadMediaFileRequest{
-			NMID: request.NMID, MediaNumber: mediaNumber,
-			FileName: file.FileName, Data: file.Data,
-		}
-		response, err := directTransport.UploadMediaFile(ctx, sellerID, generation, upload)
-		if err != nil {
-			if accepted > 0 {
-				return partialMediaMutationResult()
-			}
-			return classifyMediaError(err)
-		}
-		if response.Error {
-			if accepted > 0 {
-				return partialMediaMutationResult()
-			}
-			return MediaMutationResult{
-				Delivery: SubmissionResponseReceived, HTTPStatus: 200,
-				ClassifierVersion: mediaClassifierVersion,
-				Disposition:       SubmissionRejectedProven,
-				OutcomeClass:      transfer_service.ResultRejected,
-				OutcomeCode:       "WB_MEDIA_ENVELOPE_REJECTED",
-			}
-		}
-		accepted++
-	}
-	return MediaMutationResult{
-		Delivery: SubmissionResponseReceived, HTTPStatus: 200,
-		ClassifierVersion: mediaClassifierVersion,
-		Disposition:       SubmissionAccepted,
-		OutcomeClass:      transfer_service.ResultSuccess,
-		OutcomeCode:       "WB_MEDIA_REQUEST_ACCEPTED",
-	}
-}
-
-func partialMediaMutationResult() MediaMutationResult {
-	return MediaMutationResult{
-		Delivery:          SubmissionUnknownDelivery,
-		ClassifierVersion: mediaClassifierVersion,
-		Disposition:       SubmissionUncertain,
-		OutcomeClass:      transfer_service.ResultUnresolved,
-		OutcomeCode:       "WB_MEDIA_PARTIAL_UPLOAD",
-		UnmatchedCount:    1,
 	}
 }
 

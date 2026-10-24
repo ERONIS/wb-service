@@ -47,9 +47,7 @@ const (
 
 	IssueSeverityError = model.IssueSeverityError
 
-	BatchSchemaVersion        = model.BatchSchemaVersion
-	BatchNormalizationVersion = model.BatchNormalizationVersion
-	MaxBatchPageSize          = model.MaxBatchPageSize
+	MaxBatchPageSize = model.MaxBatchPageSize
 )
 
 func AggregateParsedFile(parsed ParsedFile) AggregatedFile {

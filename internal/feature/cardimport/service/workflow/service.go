@@ -6,6 +6,7 @@ type Service struct {
 	repository Repository
 	parser     FileParser
 	uow        core_postgres_transaction.UnitOfWork
+	sessions   *sessionStore
 }
 
 func New(
@@ -26,5 +27,6 @@ func New(
 		repository: repository,
 		parser:     parser,
 		uow:        uow,
+		sessions:   newSessionStore(),
 	}
 }

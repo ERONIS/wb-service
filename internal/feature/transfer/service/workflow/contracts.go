@@ -8,27 +8,25 @@ import (
 )
 
 type BatchHeaderReader interface {
-	GetBatch(
+	GetReadyBatchHeader(
 		ctx context.Context,
 		batchID cardpipeline.BatchID,
-	) (cardpipeline.BatchHeader, error)
+	) (cardpipeline.ReadyBatchHeader, error)
 }
 
 type BatchReader interface {
 	BatchHeaderReader
 
-	ListFinalizedBatches(
+	ListReadyBatches(
 		ctx context.Context,
 		after *cardpipeline.BatchCursor,
 		limit int,
-	) ([]cardpipeline.BatchHeader, error)
+	) ([]cardpipeline.ReadyBatchHeader, error)
 
-	ListBatchItems(
+	GetReadyBatch(
 		ctx context.Context,
 		batchID cardpipeline.BatchID,
-		afterPosition int,
-		limit int,
-	) ([]cardpipeline.BatchItem, error)
+	) (cardpipeline.ReadyBatch, error)
 }
 
 type TargetRegistry interface {
@@ -43,7 +41,7 @@ type TargetRegistry interface {
 }
 
 type CreateTransfer struct {
-	Batch         cardpipeline.BatchHeader
+	Batch         cardpipeline.ReadyBatchHeader
 	Snapshot      MutationTargetSnapshot
 	TargetSetRoot Digest
 	Capacity      Capacity

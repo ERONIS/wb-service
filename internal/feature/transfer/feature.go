@@ -40,7 +40,6 @@ type Feature struct {
 	liveAuthorization           *authorization.LiveAuthorizationService
 	automaticAuthorization      *authorization.AutomaticAuthorizationProcessor
 	pollingInterval             time.Duration
-	pollingWake                 chan struct{}
 }
 
 func NewConfig() (Config, error) {
@@ -103,7 +102,6 @@ func New(
 		liveMode:         config.Mode == ModeLive,
 		authorizationTTL: config.AuthorizationTTL,
 		pollingInterval:  config.PollInterval,
-		pollingWake:      make(chan struct{}, 1),
 	}, nil
 }
 
@@ -133,13 +131,6 @@ func (feature *Feature) AutomaticAuthorizationProcessor() *authorization.Automat
 		panic("transfer automatic authorization is not configured")
 	}
 	return feature.automaticAuthorization
-}
-
-func (feature *Feature) NotifyFinalized() {
-	select {
-	case feature.pollingWake <- struct{}{}:
-	default:
-	}
 }
 
 func (feature *Feature) LiveAuthorizationVerifier() *authorization.LiveAuthorizationService {
@@ -177,9 +168,8 @@ func (feature *Feature) RunPolling(
 	)
 	processors = append(processors, feature.service)
 	processors = append(processors, afterTransfer...)
-	return transfer_server.NewPollingWithWake(
+	return transfer_server.NewPolling(
 		feature.pollingInterval,
-		feature.pollingWake,
 		processors...,
 	).Run(ctx, onError, feature.service.Logger())
 }

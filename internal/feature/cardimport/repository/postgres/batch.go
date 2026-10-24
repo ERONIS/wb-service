@@ -19,12 +19,14 @@ const batchColumns = `
 	batch.purpose,
 	batch.items_count,
 	batch.groups_count,
-	batch.schema_version,
-	batch.normalization_version,
 	batch.checksum,
 	batch.author_snapshot,
 	batch.finalized_at
 `
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
 
 // GetBatch загружает неизменяемый батч по его идентификатору.
 func (r *Repository) GetBatch(
@@ -144,8 +146,6 @@ func scanBatchHeader(row rowScanner) (cardimport_service.BatchHeader, error) {
 		&header.Purpose,
 		&header.ItemsCount,
 		&header.GroupsCount,
-		&header.SchemaVersion,
-		&header.NormalizationVersion,
 		&checksum,
 		&snapshotJSON,
 		&header.FinalizedAt,

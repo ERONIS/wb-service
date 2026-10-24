@@ -22,7 +22,7 @@ func (s *Service) ListRecoverableFiles(
 		)
 	}
 
-	files, err := s.repository.ListRecoverableFiles(
+	files, err := s.sessions.recoverable(
 		ctx,
 		staleParsingBefore,
 		reparsePriceErrorsBefore,

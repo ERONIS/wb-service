@@ -22,18 +22,28 @@ func (s *Service) Finalize(
 		return BatchHeader{}, err
 	}
 
-	commandDigest := command.digest()
+	finalized, existing, err := s.sessions.prepareFinalization(ctx, user, command)
+	if err != nil {
+		return BatchHeader{}, err
+	}
+	if existing.ID > 0 {
+		return existing, nil
+	}
+	finished := false
+	defer func() {
+		if !finished {
+			s.sessions.finishFinalization(command.SessionID, finalized.CommandDigest, BatchHeader{}, core_errors.ErrConflict)
+		}
+	}()
 	var batch BatchHeader
-	err := s.uow.WithinTransaction(
+	err = s.uow.WithinTransaction(
 		ctx,
 		func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
 			var err error
-			batch, err = s.repository.Finalize(
+			batch, err = s.repository.PersistFinalized(
 				ctx,
 				tx,
-				user,
-				command,
-				commandDigest,
+				finalized,
 			)
 			if err != nil {
 				return err
@@ -41,6 +51,8 @@ func (s *Service) Finalize(
 			return nil
 		},
 	)
+	finished = true
+	s.sessions.finishFinalization(command.SessionID, finalized.CommandDigest, batch, err)
 	if err != nil {
 		return BatchHeader{}, fmt.Errorf("finalize cardimport session: %w", err)
 	}

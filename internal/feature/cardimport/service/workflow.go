@@ -7,6 +7,7 @@ import (
 
 type StoredContent = workflow.StoredContent
 type RecoverableFile = workflow.RecoverableFile
+type FinalizedSession = workflow.FinalizedSession
 type FileParser = workflow.FileParser
 type Repository = workflow.Repository
 type BatchReader = workflow.BatchReader

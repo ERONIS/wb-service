@@ -43,15 +43,19 @@ func (repository *pollingRepository) MarkInitializationFailed(
 	return nil
 }
 
-func (*pollingBatchReader) GetBatch(context.Context, cardpipeline.BatchID) (cardpipeline.BatchHeader, error) {
-	return cardpipeline.BatchHeader{}, core_errors.ErrNotFound
+func (*pollingBatchReader) GetReadyBatchHeader(context.Context, cardpipeline.BatchID) (cardpipeline.ReadyBatchHeader, error) {
+	return cardpipeline.ReadyBatchHeader{}, core_errors.ErrNotFound
 }
 
-func (*pollingBatchReader) ListFinalizedBatches(
+func (*pollingBatchReader) GetReadyBatch(context.Context, cardpipeline.BatchID) (cardpipeline.ReadyBatch, error) {
+	return cardpipeline.ReadyBatch{}, core_errors.ErrNotFound
+}
+
+func (*pollingBatchReader) ListReadyBatches(
 	context.Context,
 	*cardpipeline.BatchCursor,
 	int,
-) ([]cardpipeline.BatchHeader, error) {
+) ([]cardpipeline.ReadyBatchHeader, error) {
 	return nil, nil
 }
 

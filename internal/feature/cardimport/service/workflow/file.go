@@ -8,7 +8,6 @@ import (
 	"io"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
-	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 )
 
 func (s *Service) ReserveFile(
@@ -20,11 +19,7 @@ func (s *Service) ReserveFile(
 		return File{}, err
 	}
 
-	file, err := s.repository.ReserveFile(
-		ctx,
-		command,
-		MaxFilesPerSession,
-	)
+	file, err := s.sessions.reserve(ctx, command)
 	if err != nil {
 		return File{}, fmt.Errorf("reserve cardimport file: %w", err)
 	}
@@ -35,8 +30,7 @@ func (s *Service) ReserveFile(
 	return file, nil
 }
 
-// StoreFile ограниченно читает файл и durable сохраняет bytes с SHA-256.
-// Разбор XLSX начинается только на следующем этапе и всегда читает stored blob.
+// StoreFile ограниченно читает файл и сохраняет его в памяти с SHA-256.
 func (s *Service) StoreFile(
 	ctx context.Context,
 	command StoreFileCommand,
@@ -54,7 +48,7 @@ func (s *Service) StoreFile(
 		return File{}, err
 	}
 
-	file, err := s.repository.StoreFile(ctx, command, content)
+	file, err := s.sessions.store(ctx, command, content)
 	if err != nil {
 		return File{}, fmt.Errorf("store cardimport file: %w", err)
 	}
@@ -132,7 +126,7 @@ func readStoredContent(source io.Reader) (StoredContent, error) {
 	}, nil
 }
 
-// ParseFile всегда разбирает durable blob из PostgreSQL, а не Telegram stream.
+// ParseFile разбирает сохранённый в памяти файл.
 func (s *Service) ParseFile(
 	ctx context.Context,
 	command ParseFileCommand,
@@ -141,7 +135,7 @@ func (s *Service) ParseFile(
 		return SessionView{}, err
 	}
 
-	content, err := s.repository.ClaimFileForParsing(ctx, command)
+	content, err := s.sessions.claim(ctx, command)
 	if err != nil {
 		return SessionView{}, fmt.Errorf(
 			"claim cardimport file for parsing: %w",
@@ -168,14 +162,7 @@ func (s *Service) ParseFile(
 	}
 
 	result := AggregateParsedFile(parsed)
-	txCtx, cancel := s.repository.OperationContext(ctx)
-	defer cancel()
-	var file File
-	err = s.uow.WithinTransaction(txCtx, func(txCtx context.Context, tx core_postgres_transaction.DBTX) error {
-		var saveErr error
-		file, saveErr = s.repository.SaveParsedFile(txCtx, tx, command, result)
-		return saveErr
-	})
+	file, err := s.sessions.saveParsed(ctx, command, result)
 	if err != nil {
 		return SessionView{}, fmt.Errorf(
 			"save parsed cardimport file: %w",
