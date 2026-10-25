@@ -10,20 +10,32 @@ import (
 
 	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
-	cardprepare_model "github.com/ERONIS/wb-service/internal/feature/cardprepare/service/model"
 	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
 	cardpublication_model "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/model"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+	transfer_preparation "github.com/ERONIS/wb-service/internal/feature/transfer/service/preparation"
 	transfer_publication "github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
 )
 
 type loadedPlanningGroup struct {
 	Source   transfer_publication.PublicationPlanningGroup
-	Proposal cardprepare_model.StoredProposal
+	Proposal transfer_preparation.StoredProposal
 }
 
 type Planner struct{}
+
+type groupDecision struct {
+	code           cardpublication_model.DecisionCode
+	productKind    cardpublication_model.ActionKind
+	productPayload []byte
+	actionMembers  []int
+	itemCodes      []cardpublication_model.DecisionCode
+	itemNMIDs      []int64
+	itemIMTIDs     []int64
+	existingCards  map[int]contentapi.Card
+	conflict       bool
+}
 
 func NewPlanner() *Planner {
 	return &Planner{}
@@ -43,7 +55,7 @@ func (planner *Planner) Build(
 		TransferID: transfer.ID,
 	}
 	for _, observation := range observations {
-		stored, err := observationDraft(observation)
+		stored, err := cardpublication_catalog.DraftObservation(observation)
 		if err != nil {
 			return cardpublication_model.PlanDraft{}, err
 		}
@@ -78,7 +90,7 @@ func (planner *Planner) Build(
 		}
 		decision := conflictDecision(
 			len(group.Source.Members),
-			DecisionRemoteIdentityConflict,
+			cardpublication_model.DecisionRemoteIdentityConflict,
 		)
 		var err error
 		if !duplicateDesired {
@@ -138,18 +150,6 @@ func planningMayContinue(phase transfer_model.Phase) bool {
 	}
 }
 
-type groupDecision struct {
-	code           cardpublication_model.DecisionCode
-	productKind    cardpublication_model.ActionKind
-	productPayload []byte
-	actionMembers  []int
-	itemCodes      []cardpublication_model.DecisionCode
-	itemNMIDs      []int64
-	itemIMTIDs     []int64
-	existingCards  map[int]contentapi.Card
-	conflict       bool
-}
-
 func decideGroup(
 	group loadedPlanningGroup,
 	observation cardpublication_catalog.CatalogObservation,
@@ -171,10 +171,10 @@ func decideGroup(
 	}
 	for _, variant := range variants {
 		if len(trashByVendor[variant.VendorCode]) > 0 {
-			return conflictDecision(len(variants), DecisionCardInTrashConflict), nil
+			return conflictDecision(len(variants), cardpublication_model.DecisionCardInTrashConflict), nil
 		}
 		if len(normalByVendor[variant.VendorCode]) > 1 {
-			return conflictDecision(len(variants), DecisionRemoteIdentityConflict), nil
+			return conflictDecision(len(variants), cardpublication_model.DecisionRemoteIdentityConflict), nil
 		}
 	}
 
@@ -191,8 +191,8 @@ func decideGroup(
 		decision.itemIMTIDs[index] = cards[0].IMTID
 	}
 	if len(existing) == 0 {
-		decision.code = DecisionCreateGroup
-		decision.productKind = ActionCreateGroup
+		decision.code = cardpublication_model.DecisionCreateGroup
+		decision.productKind = cardpublication_model.ActionCreateGroup
 		decision.actionMembers = allIndexes(len(variants))
 		decision.productPayload = append(
 			[]byte(nil),
@@ -204,10 +204,10 @@ func decideGroup(
 	var remoteIMTID int64
 	for _, card := range existing {
 		if card.SubjectID != group.Proposal.Proposal.SubjectID {
-			return conflictDecision(len(variants), DecisionSubjectConflict), nil
+			return conflictDecision(len(variants), cardpublication_model.DecisionSubjectConflict), nil
 		}
 		if card.IMTID <= 0 || (remoteIMTID != 0 && remoteIMTID != card.IMTID) {
-			return conflictDecision(len(variants), DecisionGroupConflict), nil
+			return conflictDecision(len(variants), cardpublication_model.DecisionGroupConflict), nil
 		}
 		remoteIMTID = card.IMTID
 	}
@@ -219,23 +219,23 @@ func decideGroup(
 			}
 		}
 		if len(remoteGroupMembers)+len(missing) > contentapi.MaxVariantsPerGroup {
-			return conflictDecision(len(variants), DecisionGroupCapacityConflict), nil
+			return conflictDecision(len(variants), cardpublication_model.DecisionGroupCapacityConflict), nil
 		}
 	}
 
 	for index, card := range existing {
 		if compatibleVariant(variants[index], card) {
-			decision.itemCodes[index] = DecisionAlreadyPresentCompatible
+			decision.itemCodes[index] = cardpublication_model.DecisionAlreadyPresentCompatible
 		} else {
-			decision.itemCodes[index] = DecisionAlreadyPresentDifferent
+			decision.itemCodes[index] = cardpublication_model.DecisionAlreadyPresentDifferent
 		}
 	}
 	decision.existingCards = existing
 	if len(missing) == 0 {
-		decision.code = DecisionAlreadyPresentCompatible
+		decision.code = cardpublication_model.DecisionAlreadyPresentCompatible
 		for _, code := range decision.itemCodes {
-			if code == DecisionAlreadyPresentDifferent {
-				decision.code = DecisionAlreadyPresentDifferent
+			if code == cardpublication_model.DecisionAlreadyPresentDifferent {
+				decision.code = cardpublication_model.DecisionAlreadyPresentDifferent
 				break
 			}
 		}
@@ -256,8 +256,8 @@ func decideGroup(
 	if int64(len(payload)) > contentapi.UploadCardsAddOperation().MaxRequestBytes() {
 		return groupDecision{}, errors.New("add-to-group request exceeds WB operation bound")
 	}
-	decision.code = DecisionAddToGroup
-	decision.productKind = ActionAddToGroup
+	decision.code = cardpublication_model.DecisionAddToGroup
+	decision.productKind = cardpublication_model.ActionAddToGroup
 	decision.productPayload = payload
 	decision.actionMembers = missing
 	return decision, nil
@@ -285,7 +285,7 @@ func appendDecision(
 			draft.Identities = append(draft.Identities, cardpublication_model.IdentityDraft{
 				SellerID:   core_domain.SellerID(group.Source.SellerID),
 				VendorCode: member.VendorCode,
-				State:      IdentityRemoteConflict,
+				State:      cardpublication_model.IdentityRemoteConflict,
 				NMID:       decision.itemNMIDs[index],
 				IMTID:      decision.itemIMTIDs[index],
 				SubjectID:  group.Proposal.Proposal.SubjectID,
@@ -329,7 +329,7 @@ func appendDecision(
 			draft.Identities = append(draft.Identities, cardpublication_model.IdentityDraft{
 				SellerID:   core_domain.SellerID(group.Source.SellerID),
 				VendorCode: member.VendorCode,
-				State:      IdentityRemotePresent,
+				State:      cardpublication_model.IdentityRemotePresent,
 				NMID:       decision.itemNMIDs[index],
 				IMTID:      decision.itemIMTIDs[index],
 				SubjectID:  group.Proposal.Proposal.SubjectID,
@@ -359,7 +359,7 @@ func appendDecision(
 			draft.Identities = append(draft.Identities, cardpublication_model.IdentityDraft{
 				SellerID:   core_domain.SellerID(group.Source.SellerID),
 				VendorCode: member.VendorCode,
-				State:      IdentityRemoteMissing,
+				State:      cardpublication_model.IdentityRemoteMissing,
 				SubjectID:  group.Proposal.Proposal.SubjectID,
 			})
 			links := mediaLinks(member)
@@ -384,7 +384,7 @@ func appendDecision(
 		draft.Identities = append(draft.Identities, cardpublication_model.IdentityDraft{
 			SellerID:   core_domain.SellerID(group.Source.SellerID),
 			VendorCode: member.VendorCode,
-			State:      IdentityRemotePresent,
+			State:      cardpublication_model.IdentityRemotePresent,
 			NMID:       decision.itemNMIDs[index],
 			IMTID:      decision.itemIMTIDs[index],
 			SubjectID:  group.Proposal.Proposal.SubjectID,
@@ -441,7 +441,7 @@ func batchCreateGroupActions(draft *cardpublication_model.PlanDraft) error {
 	createActions := make([]cardpublication_model.ActionDraft, 0)
 	otherActions := make([]cardpublication_model.ActionDraft, 0, len(draft.Actions))
 	for _, action := range draft.Actions {
-		if action.Kind == ActionCreateGroup {
+		if action.Kind == cardpublication_model.ActionCreateGroup {
 			createActions = append(createActions, action)
 			continue
 		}
@@ -494,11 +494,11 @@ func batchTargetCreateActions(
 	targetID := actions[0].TargetID
 	requests := make([]contentapi.UploadCardsGroup, len(actions))
 	for index, action := range actions {
-		if action.Kind != ActionCreateGroup || action.TargetID != targetID {
+		if action.Kind != cardpublication_model.ActionCreateGroup || action.TargetID != targetID {
 			return nil, nil, errors.New("batch target create-group actions: action target differs")
 		}
 		var request contentapi.UploadCardsRequest
-		if err := decodeExactJSON(action.RequestPayload, &request); err != nil ||
+		if err := cardpublication_model.DecodeExactJSON(action.RequestPayload, &request); err != nil ||
 			len(request) != 1 || len(request[0].Variants) != len(action.Members) {
 			return nil, nil, errors.New("batch target create-group actions: action payload is invalid")
 		}
@@ -541,7 +541,7 @@ func batchTargetCreateActions(
 		}
 		result = append(result, cardpublication_model.ActionDraft{
 			Position:       chunk[0].Position,
-			Kind:           ActionCreateGroup,
+			Kind:           cardpublication_model.ActionCreateGroup,
 			TargetID:       targetID,
 			RequestPayload: payload,
 			Members:        members,
@@ -572,7 +572,7 @@ func buildMediaAction(
 		VendorCode:           member.VendorCode,
 	}
 	return cardpublication_model.ActionDraft{
-		Kind:           ActionUploadMedia,
+		Kind:           cardpublication_model.ActionUploadMedia,
 		TargetID:       group.Source.TargetID,
 		RequestPayload: payload,
 		Members:        []cardpublication_model.ActionMemberDraft{actionMember},
@@ -677,11 +677,11 @@ func mediaLinks(member transfer_publication.PublicationPlanningMember) []string 
 
 func actionRank(kind cardpublication_model.ActionKind) int {
 	switch kind {
-	case ActionCreateGroup:
+	case cardpublication_model.ActionCreateGroup:
 		return 0
-	case ActionAddToGroup:
+	case cardpublication_model.ActionAddToGroup:
 		return 1
-	case ActionUploadMedia:
+	case cardpublication_model.ActionUploadMedia:
 		return 2
 	default:
 		return 3

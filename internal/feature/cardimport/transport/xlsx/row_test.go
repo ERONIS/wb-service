@@ -3,7 +3,7 @@ package cardimport_xlsx_transport
 import (
 	"testing"
 
-	cardimport_intake "github.com/ERONIS/wb-service/internal/feature/cardimport/service/intake"
+	cardimport_model "github.com/ERONIS/wb-service/internal/feature/cardimport/service/model"
 )
 
 func TestParseRowRequiresGroup(t *testing.T) {
@@ -39,7 +39,7 @@ func TestParseRowRequiresGroup(t *testing.T) {
 	row[columns.indexesByName[columnGroup][0]] = "   "
 	_, issues = parseRow("Товары", 3, row, columns)
 	if len(issues) != 1 || issues[0].Code != "group_required" ||
-		issues[0].Severity != cardimport_intake.IssueSeverityError {
+		issues[0].Severity != cardimport_model.IssueSeverityError {
 		t.Fatalf("пустая группа не отклонена: %+v", issues)
 	}
 }

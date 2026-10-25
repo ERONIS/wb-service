@@ -14,6 +14,7 @@ import (
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
+	cardpublication_model "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/model"
 	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 
 	"go.uber.org/zap"
@@ -69,15 +70,6 @@ type ErrorBaseline struct {
 	CapturedAt      time.Time
 }
 
-func (baseline ErrorBaseline) Validate() error {
-	if baseline.TransferID <= 0 || baseline.ActionID <= 0 || baseline.SellerID == "" ||
-		baseline.CursorRevision < 0 || baseline.CapturedAt.IsZero() ||
-		(baseline.CursorUpdatedAt.IsZero() && baseline.CursorBatchUUID != "") {
-		return errors.New("Cards Error List baseline is invalid")
-	}
-	return nil
-}
-
 type ErrorFeed struct {
 	transport  cardpublication_catalog.CatalogTransport
 	repository ErrorFeedRepository
@@ -87,6 +79,15 @@ type ErrorFeed struct {
 	logger     *zap.Logger
 	mu         sync.Mutex
 	nextPoll   time.Time
+}
+
+func (baseline ErrorBaseline) Validate() error {
+	if baseline.TransferID <= 0 || baseline.ActionID <= 0 || baseline.SellerID == "" ||
+		baseline.CursorRevision < 0 || baseline.CapturedAt.IsZero() ||
+		(baseline.CursorUpdatedAt.IsZero() && baseline.CursorBatchUUID != "") {
+		return errors.New("Cards Error List baseline is invalid")
+	}
+	return nil
 }
 
 func NewErrorFeed(
@@ -185,7 +186,7 @@ func (feed *ErrorFeed) Refresh(
 				next.BatchUUID = batch.BatchUUID
 			}
 		}
-		cursorTime, err := parseWBTime(response.Data.Cursor.UpdatedAt)
+		cursorTime, err := cardpublication_model.ParseWBTime(response.Data.Cursor.UpdatedAt)
 		if response.Data.Cursor.UpdatedAt != "" && err != nil {
 			return ErrorCursor{}, fmt.Errorf("parse Cards Error List cursor: %w", err)
 		}
@@ -253,11 +254,11 @@ func normalizeErrorBatch(
 	if strings.TrimSpace(raw.BatchUUID) == "" {
 		return ErrorBatchEvidence{}, errors.New("Cards Error List batch UUID is empty")
 	}
-	updatedAt, err := parseWBTime(raw.UpdatedAt)
+	updatedAt, err := cardpublication_model.ParseWBTime(raw.UpdatedAt)
 	if err != nil || updatedAt.IsZero() {
 		return ErrorBatchEvidence{}, errors.New("Cards Error List batch time is invalid")
 	}
-	vendorCodes := normalizedUniqueStrings(raw.VendorCodes)
+	vendorCodes := cardpublication_model.NormalizeUniqueStrings(raw.VendorCodes)
 	rejectedVendorCodes := make([]string, 0, len(raw.Errors))
 	messagesSeen := make(map[string]struct{})
 	for vendorCode, messages := range raw.Errors {
@@ -270,7 +271,7 @@ func normalizeErrorBatch(
 			messagesSeen[message] = struct{}{}
 		}
 	}
-	rejectedVendorCodes = normalizedUniqueStrings(rejectedVendorCodes)
+	rejectedVendorCodes = cardpublication_model.NormalizeUniqueStrings(rejectedVendorCodes)
 	messages := make([]string, 0, len(messagesSeen))
 	for message := range messagesSeen {
 		messages = append(messages, message)

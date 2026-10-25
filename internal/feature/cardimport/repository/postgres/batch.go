@@ -9,8 +9,7 @@ import (
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	cardimport_batch "github.com/ERONIS/wb-service/internal/feature/cardimport/service/batch"
-	cardimport_intake "github.com/ERONIS/wb-service/internal/feature/cardimport/service/intake"
+	cardimport_model "github.com/ERONIS/wb-service/internal/feature/cardimport/service/model"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -32,7 +31,7 @@ type rowScanner interface {
 func (r *Repository) GetBatch(
 	ctx context.Context,
 	batchID cardpipeline.BatchID,
-) (cardimport_batch.BatchHeader, error) {
+) (cardimport_model.BatchHeader, error) {
 	ctx, cancel := r.pool.OperationContext(ctx)
 	defer cancel()
 
@@ -44,7 +43,7 @@ func (r *Repository) ListFinalizedBatches(
 	ctx context.Context,
 	after *cardpipeline.BatchCursor,
 	limit int,
-) ([]cardimport_batch.BatchHeader, error) {
+) ([]cardimport_model.BatchHeader, error) {
 	ctx, cancel := r.pool.OperationContext(ctx)
 	defer cancel()
 
@@ -80,7 +79,7 @@ func (r *Repository) ListFinalizedBatches(
 	}
 	defer rows.Close()
 
-	batches := make([]cardimport_batch.BatchHeader, 0)
+	batches := make([]cardimport_model.BatchHeader, 0)
 	for rows.Next() {
 		header, err := scanBatchHeader(rows)
 		if err != nil {
@@ -99,7 +98,7 @@ func loadBatch(
 	ctx context.Context,
 	db core_postgres_transaction.DBTX,
 	batchID cardpipeline.BatchID,
-) (cardimport_batch.BatchHeader, error) {
+) (cardimport_model.BatchHeader, error) {
 	query := `
 		SELECT ` + batchColumns + `
 		FROM wb.card_batches AS batch
@@ -109,14 +108,14 @@ func loadBatch(
 
 	header, err := scanBatchHeader(db.QueryRow(ctx, query, batchID))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return cardimport_batch.BatchHeader{}, fmt.Errorf(
+		return cardimport_model.BatchHeader{}, fmt.Errorf(
 			"finalized cardimport batch ID='%d': %w",
 			batchID,
 			core_errors.ErrNotFound,
 		)
 	}
 	if err != nil {
-		return cardimport_batch.BatchHeader{}, fmt.Errorf(
+		return cardimport_model.BatchHeader{}, fmt.Errorf(
 			"scan finalized cardimport batch: %w",
 			err,
 		)
@@ -125,10 +124,10 @@ func loadBatch(
 	return header, nil
 }
 
-// scanBatchHeader сканирует строку в cardimport_batch.BatchHeader.
-func scanBatchHeader(row rowScanner) (cardimport_batch.BatchHeader, error) {
+// scanBatchHeader сканирует строку в cardimport_model.BatchHeader.
+func scanBatchHeader(row rowScanner) (cardimport_model.BatchHeader, error) {
 	var (
-		header  cardimport_batch.BatchHeader
+		header  cardimport_model.BatchHeader
 		batchID int64
 	)
 	err := row.Scan(
@@ -140,11 +139,11 @@ func scanBatchHeader(row rowScanner) (cardimport_batch.BatchHeader, error) {
 		&header.FinalizedAt,
 	)
 	if err != nil {
-		return cardimport_batch.BatchHeader{}, err
+		return cardimport_model.BatchHeader{}, err
 	}
 	header.ID = cardpipeline.BatchID(batchID)
 	if err := header.Validate(); err != nil {
-		return cardimport_batch.BatchHeader{}, err
+		return cardimport_model.BatchHeader{}, err
 	}
 
 	return header, nil
@@ -156,7 +155,7 @@ func (r *Repository) ListBatchItems(
 	batchID cardpipeline.BatchID,
 	afterPosition int,
 	limit int,
-) ([]cardimport_batch.BatchItem, error) {
+) ([]cardimport_model.BatchItem, error) {
 	ctx, cancel := r.pool.OperationContext(ctx)
 	defer cancel()
 
@@ -184,10 +183,10 @@ func (r *Repository) ListBatchItems(
 	}
 	defer rows.Close()
 
-	items := make([]cardimport_batch.BatchItem, 0)
+	items := make([]cardimport_model.BatchItem, 0)
 	for rows.Next() {
 		var (
-			item        cardimport_batch.BatchItem
+			item        cardimport_model.BatchItem
 			itemID      int64
 			storedBatch int64
 			sourceFile  int64
@@ -212,7 +211,7 @@ func (r *Repository) ListBatchItems(
 		}
 		item.ID = cardpipeline.BatchItemID(itemID)
 		item.BatchID = cardpipeline.BatchID(storedBatch)
-		item.SourceFileID = cardimport_intake.FileID(sourceFile)
+		item.SourceFileID = cardimport_model.FileID(sourceFile)
 		item.SourceRows = make([]int, len(sourceRows))
 		for index, row := range sourceRows {
 			item.SourceRows[index] = int(row)

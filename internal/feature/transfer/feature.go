@@ -8,7 +8,7 @@ import (
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	transfer_postgres_repository "github.com/ERONIS/wb-service/internal/feature/transfer/repository/postgres"
-	transfer_server "github.com/ERONIS/wb-service/internal/feature/transfer/server"
+	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 	"github.com/ERONIS/wb-service/internal/feature/transfer/service/authorization"
 	"github.com/ERONIS/wb-service/internal/feature/transfer/service/preparation"
 	"github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
@@ -50,7 +50,6 @@ func New(
 	ctx context.Context,
 	postgresPool core_postgres_pool.Pool,
 	uow core_postgres_transaction.UnitOfWork,
-	batchReader workflow.BatchReader,
 	targetTransport registry.TargetTransport,
 	config transfer_config_transport.Config,
 	loggers ...*zap.Logger,
@@ -60,9 +59,6 @@ func New(
 	}
 	if postgresPool == nil {
 		panic("transfer PostgreSQL pool is nil")
-	}
-	if batchReader == nil {
-		panic("transfer batch reader is nil")
 	}
 	if err := config.Validate(); err != nil {
 		panic(fmt.Sprintf("invalid transfer config: %v", err))
@@ -75,7 +71,7 @@ func New(
 	)
 	service := workflow.New(
 		repository,
-		batchReader,
+		repository,
 		targets,
 		uow,
 		config.CapacityPolicy(),
@@ -144,6 +140,14 @@ func (feature *Feature) PreparationResultApplier() *preparation.PreparationResul
 	return feature.preparationResultApplier
 }
 
+func (feature *Feature) PreparationProcessor(preparer preparation.CardPreparer) *preparation.Processor {
+	return preparation.NewProcessor(preparer, feature.service, feature.preparationResultApplier, feature.uow, feature.service.Logger())
+}
+
+func (feature *Feature) ProposalReader() *transfer_postgres_repository.Repository {
+	return feature.repository
+}
+
 func (feature *Feature) PublicationResultApplier() *publication.PublicationPlanResultApplier {
 	return feature.publicationResultApplier
 }
@@ -154,17 +158,17 @@ func (feature *Feature) PublicationExecutionResultApplier() *publication.Publica
 
 func (feature *Feature) RunPolling(
 	ctx context.Context,
-	onError transfer_server.ErrorHandler,
-	afterTransfer ...transfer_server.Processor,
+	onError transfer_service.ErrorHandler,
+	afterTransfer ...transfer_service.Processor,
 ) error {
 	processors := make(
-		[]transfer_server.Processor,
+		[]transfer_service.Processor,
 		0,
 		1+len(afterTransfer),
 	)
 	processors = append(processors, feature.service)
 	processors = append(processors, afterTransfer...)
-	return transfer_server.NewPolling(
+	return transfer_service.NewPolling(
 		feature.pollingInterval,
 		processors...,
 	).Run(ctx, onError, feature.service.Logger())

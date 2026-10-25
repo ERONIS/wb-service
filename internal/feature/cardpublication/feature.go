@@ -11,7 +11,6 @@ import (
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	cardpublication_postgres_repository "github.com/ERONIS/wb-service/internal/feature/cardpublication/repository/postgres"
-	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
 	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
 	cardpublication_execution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/execution"
 	cardpublication_monitoring "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/monitoring"
@@ -70,10 +69,10 @@ func New(
 	}
 	logger := core_logger.Fallback(loggers...)
 	repository := cardpublication_postgres_repository.New(postgresPool)
-	catalogReader := cardpublication_service.NewCatalogReader(catalogTransport, logger)
-	planner := cardpublication_service.NewPlanner()
-	saver := cardpublication_service.NewSaver(repository, resultApplier, uow)
-	errorFeed := cardpublication_service.NewErrorFeed(
+	catalogReader := cardpublication_catalog.NewCatalogReader(catalogTransport, logger)
+	planner := cardpublication_planning.NewPlanner()
+	saver := cardpublication_planning.NewSaver(repository, resultApplier, uow)
+	errorFeed := cardpublication_monitoring.NewErrorFeed(
 		catalogTransport,
 		repository,
 		transferSource,
@@ -81,7 +80,7 @@ func New(
 		logger,
 	)
 	return &Feature{
-		processor: cardpublication_service.NewProcessor(
+		processor: cardpublication_planning.NewProcessor(
 			repository,
 			transferSource,
 			proposalReader,
@@ -92,12 +91,12 @@ func New(
 		),
 		errorFeed:      errorFeed,
 		livePlanSource: repository,
-		manualResolver: cardpublication_service.NewManualResolver(
+		manualResolver: cardpublication_resolution.NewManualResolver(
 			repository,
 			executionResultApplier,
 			uow,
 		),
-		verifiedCardResolver: cardpublication_service.NewVerifiedCardResolver(
+		verifiedCardResolver: cardpublication_resolution.NewVerifiedCardResolver(
 			repository,
 			executionResultApplier,
 			uow,
@@ -118,7 +117,7 @@ func (feature *Feature) ConfigureProductDispatch(
 	if feature.productDispatcher != nil {
 		panic("cardpublication product dispatcher is already configured")
 	}
-	feature.productDispatcher = cardpublication_service.NewProductDispatcher(
+	feature.productDispatcher = cardpublication_execution.NewProductDispatcher(
 		feature.repository,
 		feature.transport,
 		feature.catalogReader,
@@ -131,7 +130,7 @@ func (feature *Feature) ConfigureProductDispatch(
 		feature.config.ProductConcurrency,
 		feature.logger,
 	)
-	feature.mediaDispatcher = cardpublication_service.NewMediaDispatcher(
+	feature.mediaDispatcher = cardpublication_execution.NewMediaDispatcher(
 		feature.repository,
 		feature.transport,
 		feature.catalogReader,

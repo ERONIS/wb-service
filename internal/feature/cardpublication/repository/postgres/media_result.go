@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
 	cardpublication_execution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/execution"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
@@ -38,7 +37,7 @@ func recordMediaAttemptResult(
 		attempt.AuthorizationID != action.AuthorizationID ||
 		attempt.AttributionID != action.AttributionID ||
 		!equalBytes(attempt.RequestPayload, action.AttemptRequestPayload) {
-		return cardpublication_service.ErrMediaActionConflict
+		return cardpublication_execution.ErrMediaActionConflict
 	}
 	if err := mediaResult.Validate(); err != nil {
 		return err
@@ -67,7 +66,7 @@ func recordMediaAttemptResult(
 	}
 	if !equalBytes(storedPayload, attempt.RequestPayload) ||
 		storedAttributionID != action.AttributionID {
-		return cardpublication_service.ErrMediaActionConflict
+		return cardpublication_execution.ErrMediaActionConflict
 	}
 	var httpStatus any
 	if mediaResult.HTTPStatus > 0 {
@@ -106,7 +105,7 @@ func recordMediaAttemptResult(
 		return fmt.Errorf("finish publication media attempt: %w", err)
 	}
 	if result.RowsAffected() != 1 {
-		return cardpublication_service.ErrMediaActionConflict
+		return cardpublication_execution.ErrMediaActionConflict
 	}
 	return nil
 }
@@ -147,7 +146,7 @@ func finishMediaAction(
 	}
 	if result.RowsAffected() != 1 {
 		return cardpublication_execution.MediaGroupResult{},
-			cardpublication_service.ErrMediaActionConflict
+			cardpublication_execution.ErrMediaActionConflict
 	}
 	const finishAction = `
 		UPDATE wb.publication_actions
@@ -179,7 +178,7 @@ func finishMediaAction(
 	}
 	if result.RowsAffected() != 1 {
 		return cardpublication_execution.MediaGroupResult{},
-			cardpublication_service.ErrMediaActionConflict
+			cardpublication_execution.ErrMediaActionConflict
 	}
 	const releaseIdentity = `
 		UPDATE wb.product_identities
@@ -209,7 +208,7 @@ func finishMediaAction(
 	}
 	if result.RowsAffected() != 1 {
 		return cardpublication_execution.MediaGroupResult{},
-			cardpublication_service.ErrMediaActionConflict
+			cardpublication_execution.ErrMediaActionConflict
 	}
 	if err := reducePublicationPlan(ctx, tx, action.TransferID, action.PlanID); err != nil {
 		return cardpublication_execution.MediaGroupResult{}, err
@@ -282,7 +281,7 @@ func loadMediaGroupResult(
 		result.OutcomeCode = "MEDIA_SKIPPED"
 	default:
 		return cardpublication_execution.MediaGroupResult{},
-			cardpublication_service.ErrMediaActionConflict
+			cardpublication_execution.ErrMediaActionConflict
 	}
 	if err := result.Validate(); err != nil {
 		return cardpublication_execution.MediaGroupResult{}, err

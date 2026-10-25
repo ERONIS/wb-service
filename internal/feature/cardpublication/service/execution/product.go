@@ -86,187 +86,10 @@ type ProductAction struct {
 	EmptyResponseRetry     ProductRetry
 }
 
-func (action ProductAction) Validate() error {
-	if action.TransferID <= 0 || action.ActionID <= 0 || action.TargetID <= 0 ||
-		action.SellerID.Validate() != nil || action.AuthorizationID <= 0 ||
-		action.AuthorizationRevision < 0 || action.PlanID <= 0 ||
-		action.Revision < 0 || len(action.RequestPayload) == 0 ||
-		action.ClientGeneration.IsZero() ||
-		action.CredentialExpiresAt.IsZero() || action.PreflightObservationID <= 0 ||
-		len(action.Members) == 0 {
-		return errors.New("publication product action is invalid")
-	}
-	if action.Kind != ActionCreateGroup && action.Kind != ActionAddToGroup {
-		return errors.New("publication action is not a product mutation")
-	}
-	for index, member := range action.Members {
-		if member.ID <= 0 || member.GroupTargetID <= 0 ||
-			member.TransferItemTargetID <= 0 || member.RequestMemberIndex != index ||
-			member.VendorCode == "" || strings.TrimSpace(member.VendorCode) != member.VendorCode {
-			return fmt.Errorf("publication product member at index %d is invalid", index)
-		}
-		if member.OutcomeClass == "" {
-			if member.OutcomeCode != "" || member.NMID != 0 {
-				return fmt.Errorf("pending publication product member at index %d has a result", index)
-			}
-			continue
-		}
-		if !member.OutcomeClass.IsValid() || member.OutcomeCode == "" ||
-			strings.TrimSpace(member.OutcomeCode) != member.OutcomeCode ||
-			len(member.OutcomeCode) > 128 || member.NMID < 0 ||
-			(member.OutcomeClass == transfer_service.ResultSuccess && member.NMID <= 0) {
-			return fmt.Errorf("terminal publication product member at index %d is invalid", index)
-		}
-	}
-	requestVendorCodes := make([]string, 0, len(action.Members))
-	switch action.Kind {
-	case ActionCreateGroup:
-		var request contentapi.UploadCardsRequest
-		if err := decodeExactJSON(action.RequestPayload, &request); err != nil {
-			return errors.New("publication create request is invalid")
-		}
-		for _, group := range request {
-			for _, variant := range group.Variants {
-				requestVendorCodes = append(requestVendorCodes, variant.VendorCode)
-			}
-		}
-	case ActionAddToGroup:
-		var request contentapi.UploadCardsAddRequest
-		if err := decodeExactJSON(action.RequestPayload, &request); err != nil || request.IMTID <= 0 {
-			return errors.New("publication add request is invalid")
-		}
-		for _, variant := range request.CardsToAdd {
-			requestVendorCodes = append(requestVendorCodes, variant.VendorCode)
-		}
-	}
-	if len(requestVendorCodes) != len(action.Members) {
-		return errors.New("publication product request member count differs")
-	}
-	for index, vendorCode := range requestVendorCodes {
-		if vendorCode != action.Members[index].VendorCode {
-			return errors.New("publication product request member order differs")
-		}
-	}
-	return nil
-}
-
-func (action ProductAction) GroupTargetIDs() []int64 {
-	set := make(map[int64]struct{})
-	for _, member := range action.Members {
-		set[member.GroupTargetID] = struct{}{}
-	}
-	result := make([]int64, 0, len(set))
-	for value := range set {
-		result = append(result, value)
-	}
-	sort.Slice(result, func(left, right int) bool { return result[left] < result[right] })
-	return result
-}
-
-func (action ProductAction) VendorCodes() []string {
-	result := make([]string, len(action.Members))
-	for index, member := range action.Members {
-		result[index] = member.VendorCode
-	}
-	return result
-}
-
-func (action ProductAction) PendingMembers() []ProductActionMember {
-	result := make([]ProductActionMember, 0, len(action.Members))
-	for _, member := range action.Members {
-		if member.OutcomeClass == "" {
-			result = append(result, member)
-		}
-	}
-	return result
-}
-
-func (action ProductAction) PendingVendorCodes() []string {
-	members := action.PendingMembers()
-	result := make([]string, len(members))
-	for index, member := range members {
-		result[index] = member.VendorCode
-	}
-	return result
-}
-
 type TargetedRecheck struct {
 	Observation cardpublication_model.ObservationDraft
 	Stable      bool
 	SafeCode    string
-}
-
-func BuildTargetedRecheck(
-	action ProductAction,
-	observation cardpublication_catalog.CatalogObservation,
-) (TargetedRecheck, error) {
-	if err := action.Validate(); err != nil {
-		return TargetedRecheck{}, err
-	}
-	if observation.TargetID != action.TargetID || observation.SellerID != action.SellerID {
-		return TargetedRecheck{}, ErrProductActionConflict
-	}
-	relevantNormal := make([]contentapi.Card, 0)
-	relevantTrash := make([]contentapi.TrashCard, 0)
-	vendors := make(map[string]struct{}, len(action.Members))
-	for _, member := range action.Members {
-		vendors[member.VendorCode] = struct{}{}
-	}
-	var addRequest contentapi.UploadCardsAddRequest
-	if action.Kind == ActionAddToGroup {
-		if err := decodeExactJSON(action.RequestPayload, &addRequest); err != nil || addRequest.IMTID <= 0 {
-			return TargetedRecheck{}, ErrProductActionConflict
-		}
-	}
-	for _, card := range observation.Normal {
-		_, relevantVendor := vendors[card.VendorCode]
-		if relevantVendor || (action.Kind == ActionAddToGroup && card.IMTID == addRequest.IMTID) {
-			relevantNormal = append(relevantNormal, card)
-		}
-	}
-	for _, card := range observation.Trash {
-		if _, relevant := vendors[card.VendorCode]; relevant {
-			relevantTrash = append(relevantTrash, card)
-		}
-	}
-	targeted := cardpublication_catalog.CatalogObservation{
-		TargetID:   observation.TargetID,
-		SellerID:   observation.SellerID,
-		Normal:     relevantNormal,
-		Trash:      relevantTrash,
-		ObservedAt: observation.ObservedAt,
-	}
-	draft, err := observationDraft(targeted)
-	if err != nil {
-		return TargetedRecheck{}, err
-	}
-	stable, safeCode := productDecisionStillStable(action, relevantNormal, relevantTrash, addRequest)
-	return TargetedRecheck{Observation: draft, Stable: stable, SafeCode: safeCode}, nil
-}
-
-func productDecisionStillStable(
-	action ProductAction,
-	normal []contentapi.Card,
-	trash []contentapi.TrashCard,
-	_ contentapi.UploadCardsAddRequest,
-) (bool, string) {
-	for _, member := range action.Members {
-		normalCount, trashCount := 0, 0
-		for _, card := range normal {
-			if card.VendorCode == member.VendorCode {
-				normalCount++
-			}
-		}
-		for _, card := range trash {
-			if card.VendorCode == member.VendorCode {
-				trashCount++
-			}
-		}
-		if normalCount != 0 || trashCount != 0 {
-			return false, "TARGETED_RECHECK_REMOTE_CHANGED"
-		}
-	}
-	return true, "TARGETED_RECHECK_STABLE"
 }
 
 type ProductAttempt struct {
@@ -525,4 +348,181 @@ type LiveAuthorizationVerifier interface {
 		core_postgres_transaction.DBTX,
 		transfer_authorization.ChangeLiveAuthorizationStateCommand,
 	) (transfer_authorization.LiveAuthorization, error)
+}
+
+func (action ProductAction) Validate() error {
+	if action.TransferID <= 0 || action.ActionID <= 0 || action.TargetID <= 0 ||
+		action.SellerID.Validate() != nil || action.AuthorizationID <= 0 ||
+		action.AuthorizationRevision < 0 || action.PlanID <= 0 ||
+		action.Revision < 0 || len(action.RequestPayload) == 0 ||
+		action.ClientGeneration.IsZero() ||
+		action.CredentialExpiresAt.IsZero() || action.PreflightObservationID <= 0 ||
+		len(action.Members) == 0 {
+		return errors.New("publication product action is invalid")
+	}
+	if action.Kind != cardpublication_model.ActionCreateGroup && action.Kind != cardpublication_model.ActionAddToGroup {
+		return errors.New("publication action is not a product mutation")
+	}
+	for index, member := range action.Members {
+		if member.ID <= 0 || member.GroupTargetID <= 0 ||
+			member.TransferItemTargetID <= 0 || member.RequestMemberIndex != index ||
+			member.VendorCode == "" || strings.TrimSpace(member.VendorCode) != member.VendorCode {
+			return fmt.Errorf("publication product member at index %d is invalid", index)
+		}
+		if member.OutcomeClass == "" {
+			if member.OutcomeCode != "" || member.NMID != 0 {
+				return fmt.Errorf("pending publication product member at index %d has a result", index)
+			}
+			continue
+		}
+		if !member.OutcomeClass.IsValid() || member.OutcomeCode == "" ||
+			strings.TrimSpace(member.OutcomeCode) != member.OutcomeCode ||
+			len(member.OutcomeCode) > 128 || member.NMID < 0 ||
+			(member.OutcomeClass == transfer_service.ResultSuccess && member.NMID <= 0) {
+			return fmt.Errorf("terminal publication product member at index %d is invalid", index)
+		}
+	}
+	requestVendorCodes := make([]string, 0, len(action.Members))
+	switch action.Kind {
+	case cardpublication_model.ActionCreateGroup:
+		var request contentapi.UploadCardsRequest
+		if err := cardpublication_model.DecodeExactJSON(action.RequestPayload, &request); err != nil {
+			return errors.New("publication create request is invalid")
+		}
+		for _, group := range request {
+			for _, variant := range group.Variants {
+				requestVendorCodes = append(requestVendorCodes, variant.VendorCode)
+			}
+		}
+	case cardpublication_model.ActionAddToGroup:
+		var request contentapi.UploadCardsAddRequest
+		if err := cardpublication_model.DecodeExactJSON(action.RequestPayload, &request); err != nil || request.IMTID <= 0 {
+			return errors.New("publication add request is invalid")
+		}
+		for _, variant := range request.CardsToAdd {
+			requestVendorCodes = append(requestVendorCodes, variant.VendorCode)
+		}
+	}
+	if len(requestVendorCodes) != len(action.Members) {
+		return errors.New("publication product request member count differs")
+	}
+	for index, vendorCode := range requestVendorCodes {
+		if vendorCode != action.Members[index].VendorCode {
+			return errors.New("publication product request member order differs")
+		}
+	}
+	return nil
+}
+
+func (action ProductAction) GroupTargetIDs() []int64 {
+	set := make(map[int64]struct{})
+	for _, member := range action.Members {
+		set[member.GroupTargetID] = struct{}{}
+	}
+	result := make([]int64, 0, len(set))
+	for value := range set {
+		result = append(result, value)
+	}
+	sort.Slice(result, func(left, right int) bool { return result[left] < result[right] })
+	return result
+}
+
+func (action ProductAction) VendorCodes() []string {
+	result := make([]string, len(action.Members))
+	for index, member := range action.Members {
+		result[index] = member.VendorCode
+	}
+	return result
+}
+
+func (action ProductAction) PendingMembers() []ProductActionMember {
+	result := make([]ProductActionMember, 0, len(action.Members))
+	for _, member := range action.Members {
+		if member.OutcomeClass == "" {
+			result = append(result, member)
+		}
+	}
+	return result
+}
+
+func (action ProductAction) PendingVendorCodes() []string {
+	members := action.PendingMembers()
+	result := make([]string, len(members))
+	for index, member := range members {
+		result[index] = member.VendorCode
+	}
+	return result
+}
+
+func BuildTargetedRecheck(
+	action ProductAction,
+	observation cardpublication_catalog.CatalogObservation,
+) (TargetedRecheck, error) {
+	if err := action.Validate(); err != nil {
+		return TargetedRecheck{}, err
+	}
+	if observation.TargetID != action.TargetID || observation.SellerID != action.SellerID {
+		return TargetedRecheck{}, ErrProductActionConflict
+	}
+	relevantNormal := make([]contentapi.Card, 0)
+	relevantTrash := make([]contentapi.TrashCard, 0)
+	vendors := make(map[string]struct{}, len(action.Members))
+	for _, member := range action.Members {
+		vendors[member.VendorCode] = struct{}{}
+	}
+	var addRequest contentapi.UploadCardsAddRequest
+	if action.Kind == cardpublication_model.ActionAddToGroup {
+		if err := cardpublication_model.DecodeExactJSON(action.RequestPayload, &addRequest); err != nil || addRequest.IMTID <= 0 {
+			return TargetedRecheck{}, ErrProductActionConflict
+		}
+	}
+	for _, card := range observation.Normal {
+		_, relevantVendor := vendors[card.VendorCode]
+		if relevantVendor || (action.Kind == cardpublication_model.ActionAddToGroup && card.IMTID == addRequest.IMTID) {
+			relevantNormal = append(relevantNormal, card)
+		}
+	}
+	for _, card := range observation.Trash {
+		if _, relevant := vendors[card.VendorCode]; relevant {
+			relevantTrash = append(relevantTrash, card)
+		}
+	}
+	targeted := cardpublication_catalog.CatalogObservation{
+		TargetID:   observation.TargetID,
+		SellerID:   observation.SellerID,
+		Normal:     relevantNormal,
+		Trash:      relevantTrash,
+		ObservedAt: observation.ObservedAt,
+	}
+	draft, err := cardpublication_catalog.DraftObservation(targeted)
+	if err != nil {
+		return TargetedRecheck{}, err
+	}
+	stable, safeCode := productDecisionStillStable(action, relevantNormal, relevantTrash, addRequest)
+	return TargetedRecheck{Observation: draft, Stable: stable, SafeCode: safeCode}, nil
+}
+
+func productDecisionStillStable(
+	action ProductAction,
+	normal []contentapi.Card,
+	trash []contentapi.TrashCard,
+	_ contentapi.UploadCardsAddRequest,
+) (bool, string) {
+	for _, member := range action.Members {
+		normalCount, trashCount := 0, 0
+		for _, card := range normal {
+			if card.VendorCode == member.VendorCode {
+				normalCount++
+			}
+		}
+		for _, card := range trash {
+			if card.VendorCode == member.VendorCode {
+				trashCount++
+			}
+		}
+		if normalCount != 0 || trashCount != 0 {
+			return false, "TARGETED_RECHECK_REMOTE_CHANGED"
+		}
+	}
+	return true, "TARGETED_RECHECK_STABLE"
 }

@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
 	cardpublication_resolution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/resolution"
 	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 
@@ -69,7 +68,7 @@ func (repository *Repository) LoadManualResolutionReplay(
 		storedObservation != command.EvidenceObservationID ||
 		storedErrorBatch != command.EvidenceErrorBatchID {
 		return cardpublication_resolution.ManualResolution{}, true,
-			cardpublication_service.ErrManualResolutionConflict
+			cardpublication_resolution.ErrManualResolutionConflict
 	}
 	return resolution, true, nil
 }
@@ -89,7 +88,7 @@ func (repository *Repository) LockResolutionSubject(
 	`, command.TransferID).Scan(&lockedTransferID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return cardpublication_resolution.ManualResolutionSubject{},
-				cardpublication_service.ErrManualResolutionConflict
+				cardpublication_resolution.ErrManualResolutionConflict
 		}
 		return cardpublication_resolution.ManualResolutionSubject{},
 			fmt.Errorf("lock transfer for publication resolution: %w", err)
@@ -222,7 +221,7 @@ func (repository *Repository) LockResolutionSubject(
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return cardpublication_resolution.ManualResolutionSubject{},
-			cardpublication_service.ErrManualResolutionConflict
+			cardpublication_resolution.ErrManualResolutionConflict
 	}
 	if err != nil {
 		return cardpublication_resolution.ManualResolutionSubject{},
@@ -231,7 +230,7 @@ func (repository *Repository) LockResolutionSubject(
 	subject.TransferID = transfer_model.TransferID(transferID)
 	if !preflightID.Valid {
 		return cardpublication_resolution.ManualResolutionSubject{},
-			cardpublication_service.ErrManualResolutionConflict
+			cardpublication_resolution.ErrManualResolutionConflict
 	}
 	subject.PreflightObservationID = preflightID.Int64
 	if memberNMID.Valid {
@@ -266,23 +265,23 @@ func (repository *Repository) LockResolutionSubject(
 		subject.PreflightObservationID <= 0 || subject.AttemptStartedAt.IsZero() ||
 		subject.VendorCode == "" {
 		return cardpublication_resolution.ManualResolutionSubject{},
-			cardpublication_service.ErrManualResolutionConflict
+			cardpublication_resolution.ErrManualResolutionConflict
 	}
 	switch subject.IdentityState {
 	case "blocked_uncertain":
 		if subject.IdentityActiveTransferID != subject.TransferID ||
 			subject.IdentityActiveActionID != subject.ActionID {
 			return cardpublication_resolution.ManualResolutionSubject{},
-				cardpublication_service.ErrManualResolutionConflict
+				cardpublication_resolution.ErrManualResolutionConflict
 		}
 	case "remote_present":
 		if subject.IdentityActiveTransferID != 0 || subject.IdentityActiveActionID != 0 {
 			return cardpublication_resolution.ManualResolutionSubject{},
-				cardpublication_service.ErrManualResolutionConflict
+				cardpublication_resolution.ErrManualResolutionConflict
 		}
 	default:
 		return cardpublication_resolution.ManualResolutionSubject{},
-			cardpublication_service.ErrManualResolutionConflict
+			cardpublication_resolution.ErrManualResolutionConflict
 	}
 	return subject, nil
 }
@@ -295,7 +294,7 @@ func (repository *Repository) LoadManualObservationEvidence(
 ) (cardpublication_resolution.ManualObservationEvidence, error) {
 	if tx == nil || observationID <= 0 {
 		return cardpublication_resolution.ManualObservationEvidence{},
-			cardpublication_service.ErrManualEvidenceInvalid
+			cardpublication_resolution.ErrManualEvidenceInvalid
 	}
 	const query = `
 		SELECT
@@ -322,7 +321,7 @@ func (repository *Repository) LoadManualObservationEvidence(
 	).Scan(&evidence.ID, &evidence.Payload, &evidence.ObservedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return cardpublication_resolution.ManualObservationEvidence{},
-			cardpublication_service.ErrManualEvidenceInvalid
+			cardpublication_resolution.ErrManualEvidenceInvalid
 	}
 	if err != nil {
 		return cardpublication_resolution.ManualObservationEvidence{},
@@ -340,7 +339,7 @@ func (repository *Repository) LoadManualErrorEvidence(
 ) (cardpublication_resolution.ManualErrorEvidence, error) {
 	if tx == nil || errorBatchID <= 0 {
 		return cardpublication_resolution.ManualErrorEvidence{},
-			cardpublication_service.ErrManualEvidenceInvalid
+			cardpublication_resolution.ErrManualEvidenceInvalid
 	}
 	const query = `
 		SELECT batch.id, batch.error_codes
@@ -373,7 +372,7 @@ func (repository *Repository) LoadManualErrorEvidence(
 	).Scan(&evidence.ID, &evidence.ErrorCodes)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return cardpublication_resolution.ManualErrorEvidence{},
-			cardpublication_service.ErrManualEvidenceInvalid
+			cardpublication_resolution.ErrManualEvidenceInvalid
 	}
 	if err != nil {
 		return cardpublication_resolution.ManualErrorEvidence{},
@@ -492,11 +491,11 @@ func applyManualMemberResult(
 		return fmt.Errorf("correct publication action member: %w", err)
 	}
 	if result.RowsAffected() != 1 {
-		return cardpublication_service.ErrManualResolutionConflict
+		return cardpublication_resolution.ErrManualResolutionConflict
 	}
 
 	switch command.Decision.Kind {
-	case cardpublication_service.ManualMarkRemotePresent:
+	case cardpublication_resolution.ManualMarkRemotePresent:
 		const updateIdentity = `
 			UPDATE wb.product_identities
 			SET state = 'remote_present',
@@ -526,7 +525,7 @@ func applyManualMemberResult(
 			command.Decision.IMTID,
 			command.Decision.SubjectID,
 		)
-	case cardpublication_service.ManualMarkRejected:
+	case cardpublication_resolution.ManualMarkRejected:
 		const updateIdentity = `
 			UPDATE wb.product_identities
 			SET state = CASE
@@ -558,13 +557,13 @@ func applyManualMemberResult(
 			command.Subject.ActionID,
 		)
 	default:
-		return cardpublication_service.ErrManualResolutionConflict
+		return cardpublication_resolution.ErrManualResolutionConflict
 	}
 	if err != nil {
 		return fmt.Errorf("correct publication product identity: %w", err)
 	}
 	if result.RowsAffected() != 1 {
-		return cardpublication_service.ErrManualResolutionConflict
+		return cardpublication_resolution.ErrManualResolutionConflict
 	}
 	return nil
 }
@@ -575,7 +574,7 @@ func applyManualEvidence(
 	command cardpublication_resolution.ApplyManualResolutionCommand,
 ) error {
 	switch command.Decision.Kind {
-	case cardpublication_service.ManualMarkRemotePresent:
+	case cardpublication_resolution.ManualMarkRemotePresent:
 		const insertAttribution = `
 			INSERT INTO wb.publication_attributions (
 				transfer_id, group_target_id, action_id, action_member_id,
@@ -625,9 +624,9 @@ func applyManualEvidence(
 			command.Subject.AttemptID,
 			command.Decision.NMID,
 		).Scan(&one); err != nil {
-			return cardpublication_service.ErrManualEvidenceInvalid
+			return cardpublication_resolution.ErrManualEvidenceInvalid
 		}
-	case cardpublication_service.ManualMarkRejected:
+	case cardpublication_resolution.ManualMarkRejected:
 		const insertCorrelation = `
 			INSERT INTO wb.publication_error_correlations (
 				transfer_id, action_id, action_member_id, attempt_id,
@@ -648,10 +647,10 @@ func applyManualEvidence(
 		); err != nil {
 			return fmt.Errorf("insert manual Error List correlation: %w", err)
 		}
-	case cardpublication_service.ManualCloseUnresolvedNoRetry:
+	case cardpublication_resolution.ManualCloseUnresolvedNoRetry:
 		return nil
 	default:
-		return cardpublication_service.ErrManualResolutionConflict
+		return cardpublication_resolution.ErrManualResolutionConflict
 	}
 	return nil
 }
@@ -713,7 +712,7 @@ func reduceManualPublicationAction(
 		codes[3],
 	).Scan(&revision); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return 0, cardpublication_service.ErrManualResolutionConflict
+			return 0, cardpublication_resolution.ErrManualResolutionConflict
 		}
 		return 0, fmt.Errorf("reduce manual publication action: %w", err)
 	}
@@ -769,7 +768,7 @@ func reduceManualPublicationPlan(
 		return fmt.Errorf("reduce manual publication plan: %w", err)
 	}
 	if result.RowsAffected() != 1 {
-		return cardpublication_service.ErrManualResolutionConflict
+		return cardpublication_resolution.ErrManualResolutionConflict
 	}
 	return nil
 }

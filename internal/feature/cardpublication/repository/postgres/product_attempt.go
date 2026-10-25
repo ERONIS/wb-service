@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
 	cardpublication_execution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/execution"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 )
@@ -57,7 +56,7 @@ func (repository *Repository) BeginProductAttempt(
 		)
 	}
 	if result.RowsAffected() != int64(len(action.Members)) {
-		return cardpublication_execution.ProductAttempt{}, cardpublication_service.ErrProductActionConflict
+		return cardpublication_execution.ProductAttempt{}, cardpublication_execution.ErrProductActionConflict
 	}
 	const beginAction = `
 		UPDATE wb.publication_actions AS action
@@ -87,7 +86,7 @@ func (repository *Repository) BeginProductAttempt(
 		)
 	}
 	if result.RowsAffected() != 1 {
-		return cardpublication_execution.ProductAttempt{}, cardpublication_service.ErrProductActionConflict
+		return cardpublication_execution.ProductAttempt{}, cardpublication_execution.ErrProductActionConflict
 	}
 	const beginPlan = `
 		UPDATE wb.publication_plans
@@ -107,7 +106,7 @@ func (repository *Repository) BeginProductAttempt(
 		)
 	}
 	if result.RowsAffected() != 1 {
-		return cardpublication_execution.ProductAttempt{}, cardpublication_service.ErrProductActionConflict
+		return cardpublication_execution.ProductAttempt{}, cardpublication_execution.ErrProductActionConflict
 	}
 	const insertAttempt = `
 		INSERT INTO wb.publication_attempts (
@@ -162,14 +161,14 @@ func (repository *Repository) RecordSubmission(
 	if tx == nil {
 		return errors.New("record product submission: DBTX is nil")
 	}
-	if err := cardpublication_service.ValidateSubmissionResult(command.Result); err != nil {
+	if err := cardpublication_execution.ValidateSubmissionResult(command.Result); err != nil {
 		return err
 	}
 	action, attempt, result := command.Action, command.Attempt, command.Result
 	if action.State != "dispatching" || action.AttemptID != attempt.ID ||
 		attempt.ActionID != action.ActionID || attempt.TransferID != action.TransferID ||
 		attempt.AuthorizationID != action.AuthorizationID {
-		return cardpublication_service.ErrProductActionConflict
+		return cardpublication_execution.ErrProductActionConflict
 	}
 	const lockAttempt = `
 		SELECT request_payload
@@ -193,7 +192,7 @@ func (repository *Repository) RecordSubmission(
 		return fmt.Errorf("lock publication product attempt result: %w", err)
 	}
 	if !equalBytes(storedPayload, action.RequestPayload) {
-		return cardpublication_service.ErrProductActionConflict
+		return cardpublication_execution.ErrProductActionConflict
 	}
 	var httpStatus any
 	if result.HTTPStatus > 0 {
@@ -232,11 +231,11 @@ func (repository *Repository) RecordSubmission(
 		return fmt.Errorf("finish publication product attempt: %w", err)
 	}
 	if update.RowsAffected() != 1 {
-		return cardpublication_service.ErrProductActionConflict
+		return cardpublication_execution.ErrProductActionConflict
 	}
 
-	if result.Disposition == cardpublication_service.SubmissionAccepted ||
-		result.Disposition == cardpublication_service.SubmissionUncertain {
+	if result.Disposition == cardpublication_execution.SubmissionAccepted ||
+		result.Disposition == cardpublication_execution.SubmissionUncertain {
 		const reconcileAction = `
 			UPDATE wb.publication_actions
 			SET state = 'reconciling',
@@ -258,9 +257,9 @@ func (repository *Repository) RecordSubmission(
 			return fmt.Errorf("reconcile publication product action: %w", err)
 		}
 		if update.RowsAffected() != 1 {
-			return cardpublication_service.ErrProductActionConflict
+			return cardpublication_execution.ErrProductActionConflict
 		}
-		if result.Disposition == cardpublication_service.SubmissionUncertain {
+		if result.Disposition == cardpublication_execution.SubmissionUncertain {
 			const blockIdentities = `
 				UPDATE wb.product_identities
 				SET state = 'blocked_uncertain',
@@ -291,13 +290,13 @@ func (repository *Repository) RecordSubmission(
 		memberResults[memberResult.ActionMemberID] = memberResult
 	}
 	if len(memberResults) != len(action.Members) {
-		return cardpublication_service.ErrProductActionConflict
+		return cardpublication_execution.ErrProductActionConflict
 	}
 	actionClass := transfer_service.ResultRejected
 	for _, member := range action.Members {
 		memberResult, exists := memberResults[member.ID]
 		if !exists {
-			return cardpublication_service.ErrProductActionConflict
+			return cardpublication_execution.ErrProductActionConflict
 		}
 		if memberResult.OutcomeClass == transfer_service.ResultInternalError {
 			actionClass = transfer_service.ResultInternalError
@@ -326,7 +325,7 @@ func (repository *Repository) RecordSubmission(
 			return fmt.Errorf("finish publication product member: %w", err)
 		}
 		if update.RowsAffected() != 1 {
-			return cardpublication_service.ErrProductActionConflict
+			return cardpublication_execution.ErrProductActionConflict
 		}
 		identityState := "rejected"
 		clearActive := true
@@ -360,7 +359,7 @@ func (repository *Repository) RecordSubmission(
 			return fmt.Errorf("finish publication product identity: %w", err)
 		}
 		if update.RowsAffected() != 1 {
-			return cardpublication_service.ErrProductActionConflict
+			return cardpublication_execution.ErrProductActionConflict
 		}
 	}
 	if err := finishPotentialMediaActions(
@@ -397,7 +396,7 @@ func (repository *Repository) RecordSubmission(
 		return fmt.Errorf("finish publication product action: %w", err)
 	}
 	if update.RowsAffected() != 1 {
-		return cardpublication_service.ErrProductActionConflict
+		return cardpublication_execution.ErrProductActionConflict
 	}
 	return reducePublicationPlan(ctx, tx, action.TransferID, action.PlanID)
 }

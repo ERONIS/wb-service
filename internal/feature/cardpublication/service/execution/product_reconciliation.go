@@ -11,6 +11,7 @@ import (
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
+	cardpublication_model "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/model"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 	transfer_publication "github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
@@ -558,9 +559,9 @@ func observedCardMatchesProductAction(
 		return false
 	}
 	switch action.Kind {
-	case ActionCreateGroup:
+	case cardpublication_model.ActionCreateGroup:
 		var request contentapi.UploadCardsRequest
-		if decodeExactJSON(action.RequestPayload, &request) != nil {
+		if cardpublication_model.DecodeExactJSON(action.RequestPayload, &request) != nil {
 			return false
 		}
 		requestIndex := 0
@@ -573,9 +574,9 @@ func observedCardMatchesProductAction(
 				requestIndex++
 			}
 		}
-	case ActionAddToGroup:
+	case cardpublication_model.ActionAddToGroup:
 		var request contentapi.UploadCardsAddRequest
-		if decodeExactJSON(action.RequestPayload, &request) != nil ||
+		if cardpublication_model.DecodeExactJSON(action.RequestPayload, &request) != nil ||
 			member.RequestMemberIndex < 0 ||
 			member.RequestMemberIndex >= len(request.CardsToAdd) {
 			return false

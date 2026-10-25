@@ -2,7 +2,6 @@ package cardimport_telegram_transport
 
 import (
 	"fmt"
-	cardimport_contract "github.com/ERONIS/wb-service/internal/feature/cardimport/service/contract"
 	"html"
 	"strconv"
 	"strings"
@@ -14,16 +13,17 @@ import (
 	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
 	core_tg_presenter "github.com/ERONIS/wb-service/internal/core/transport/telegram/presenter"
 	core_tg_ui "github.com/ERONIS/wb-service/internal/core/transport/telegram/ui"
-	cardimport_intake "github.com/ERONIS/wb-service/internal/feature/cardimport/service/intake"
+	cardimport_contract "github.com/ERONIS/wb-service/internal/feature/cardimport/service/contract"
+	cardimport_model "github.com/ERONIS/wb-service/internal/feature/cardimport/service/model"
 
 	tele "gopkg.in/telebot.v3"
 )
 
 const sessionViewFilesLimit = 10
 
-func parseSessionID(arguments []string) (cardimport_intake.SessionID, error) {
+func parseSessionID(arguments []string) (cardimport_model.SessionID, error) {
 	value, err := core_tg_callback.ParseInt64Argument(arguments, 0, 1, 10, 1)
-	return cardimport_intake.SessionID(value), err
+	return cardimport_model.SessionID(value), err
 }
 
 func parseFinalizeCommand(arguments []string) (cardimport_contract.FinalizeCommand, error) {
@@ -32,26 +32,15 @@ func parseFinalizeCommand(arguments []string) (cardimport_contract.FinalizeComma
 		return cardimport_contract.FinalizeCommand{}, err
 	}
 	return cardimport_contract.FinalizeCommand{
-		SessionID:        cardimport_intake.SessionID(id),
+		SessionID:        cardimport_model.SessionID(id),
 		ExpectedRevision: revision,
 		IdempotencyKey:   fmt.Sprintf("telegram:%d:%d", id, revision),
 	}, nil
 }
 
-func parseContinueCommand(arguments []string) (cardimport_contract.ContinueCommand, error) {
-	id, revision, err := core_tg_callback.ParseIDAndRevision(arguments)
-	if err != nil {
-		return cardimport_contract.ContinueCommand{}, err
-	}
-	return cardimport_contract.ContinueCommand{
-		SessionID:        cardimport_intake.SessionID(id),
-		ExpectedRevision: revision,
-	}, nil
-}
-
 func (h *Handler) sendSessionView(
 	ctx tele.Context,
-	view cardimport_intake.SessionView,
+	view cardimport_model.SessionView,
 ) error {
 	text, markup := h.sessionView(view)
 	return ctx.EditOrSend(text, markup)
@@ -63,7 +52,7 @@ const uploadedScreenDebounce = 350 * time.Millisecond
 // short debounce combines Telegram multi-file sends into one new menu message.
 func (h *Handler) sendUploadedSessionView(
 	ctx tele.Context,
-	view cardimport_intake.SessionView,
+	view cardimport_model.SessionView,
 ) error {
 	chat := ctx.Chat()
 	if chat == nil || chat.ID == 0 {
@@ -109,23 +98,14 @@ func (h *Handler) sendUploadedSessionView(
 }
 
 func (h *Handler) sessionView(
-	view cardimport_intake.SessionView,
+	view cardimport_model.SessionView,
 ) (string, *tele.ReplyMarkup) {
 	markup := h.bot.NewMarkup()
 	rows := make([]tele.Row, 0, 5)
-	unfinishedCount := unfinishedFilesCount(view)
 	if view.Ready {
 		rows = append(rows, markup.Row(markup.Data(
 			buttonFinalize.Text,
 			buttonFinalize.Unique,
-			strconv.FormatInt(int64(view.ID), 10),
-			strconv.FormatInt(view.Revision, 10),
-		)))
-	}
-	if view.ErrorsCount > 0 && unfinishedCount == 0 {
-		rows = append(rows, markup.Row(markup.Data(
-			buttonContinue.Text,
-			buttonContinue.Unique,
 			strconv.FormatInt(int64(view.ID), 10),
 			strconv.FormatInt(view.Revision, 10),
 		)))
@@ -143,17 +123,18 @@ func (h *Handler) sessionView(
 	return sessionViewText(view), markup
 }
 
-func sessionViewText(view cardimport_intake.SessionView) string {
+func sessionViewText(view cardimport_model.SessionView) string {
 	var builder strings.Builder
 	fileCountText := fmt.Sprintf("Файлы: %d", len(view.Files))
-	if cardimport_intake.MaxFilesPerSession > 0 {
-		fileCountText = fmt.Sprintf("Файлы: %d/%d", len(view.Files), cardimport_intake.MaxFilesPerSession)
+	if cardimport_model.MaxFilesPerSession > 0 {
+		fileCountText = fmt.Sprintf("Файлы: %d/%d", len(view.Files), cardimport_model.MaxFilesPerSession)
 	}
 	fmt.Fprintf(
 		&builder,
-		"📦 <b>Загрузка карточек</b>\n\n%s\nКарточки: %d\nОшибки: %d\n",
+		"📦 <b>Загрузка карточек</b>\n\n%s\nКарточки: %d\nК сохранению: %d\nОшибки: %d\n",
 		fileCountText,
 		view.CardsCount,
+		view.ReadyCardsCount,
 		view.ErrorsCount,
 	)
 
@@ -179,36 +160,6 @@ func sessionViewText(view cardimport_intake.SessionView) string {
 		)
 	}
 
-	visibleIssues := visibleFirstIssues(view.Issues)
-	if len(visibleIssues) > 0 {
-		builder.WriteString("\n\n<b>Первые ошибки:</b>")
-		for index, issue := range visibleIssues {
-			if index >= 8 {
-				builder.WriteString("\n• …показаны первые 8 ошибок")
-				break
-			}
-
-			location := ""
-			if issue.Filename != "" {
-				location = html.EscapeString(
-					core_tg_ui.TruncateRunes(issue.Filename, 64),
-				)
-			}
-			if issue.Issue.Row > 0 {
-				location += fmt.Sprintf(" — строка %d", issue.Issue.Row)
-			}
-			if location != "" {
-				location += ": "
-			}
-			fmt.Fprintf(
-				&builder,
-				"\n• %s%s",
-				location,
-				html.EscapeString(core_tg_ui.TruncateRunes(issue.Issue.Message, 220)),
-			)
-		}
-	}
-
 	unfinishedCount := unfinishedFilesCount(view)
 	if unfinishedCount > 0 {
 		fmt.Fprintf(
@@ -216,54 +167,60 @@ func sessionViewText(view cardimport_intake.SessionView) string {
 			"\n\n⏳ Обрабатываются файлы: %d. При сетевом сбое бот продолжит автоматически.",
 			unfinishedCount,
 		)
+	} else if view.Ready && view.ErrorsCount > 0 {
+		builder.WriteString("\n\n✅ По кнопке «Готово» сохранятся только корректные карточки. Ошибочные будут пропущены.")
 	} else if view.Ready {
 		builder.WriteString("\n\n✅ Все файлы разобраны без блокирующих ошибок.")
 	} else if view.ErrorsCount > 0 {
-		builder.WriteString("\n\nОшибочные строки и карточки можно пропустить кнопкой «Продолжить». Остальные корректные карточки сохранятся.")
+		builder.WriteString("\n\nНет корректных карточек для сохранения. Загрузите исправленный XLSX-файл.")
 	} else {
 		builder.WriteString("\n\nОтправьте следующий XLSX-файл документом.")
 	}
-
+	if len(view.Issues) > 0 {
+		builder.WriteString("\n\n<b>Ошибки и замечания:</b>")
+		for index, issue := range view.Issues {
+			if index >= 8 {
+				builder.WriteString("\n• …показаны первые 8 замечаний")
+				break
+			}
+			location := ""
+			if issue.Filename != "" {
+				location = html.EscapeString(core_tg_ui.TruncateRunes(issue.Filename, 64))
+			}
+			if issue.Issue.Row > 0 {
+				location += fmt.Sprintf(" — строка %d", issue.Issue.Row)
+			}
+			if location != "" {
+				location += ": "
+			}
+			fmt.Fprintf(&builder, "\n• %s%s", location, html.EscapeString(core_tg_ui.TruncateRunes(issue.Issue.Message, 220)))
+		}
+	}
 	return builder.String()
 }
 
-func visibleFirstIssues(issues []cardimport_intake.IssueView) []cardimport_intake.IssueView {
-	visible := make([]cardimport_intake.IssueView, 0, len(issues))
-	for _, issue := range issues {
-		switch issue.Issue.Code {
-		case "vendor_code_across_files",
-			"barcode_across_files",
-			"duplicate_barcode_in_file":
-			continue
-		default:
-			visible = append(visible, issue)
-		}
-	}
-	return visible
-}
-
-func unfinishedFilesCount(view cardimport_intake.SessionView) int {
+func unfinishedFilesCount(view cardimport_model.SessionView) int {
 	count := 0
 	for _, file := range view.Files {
 		switch file.Status {
-		case cardimport_intake.FileStatusReserved,
-			cardimport_intake.FileStatusStored,
-			cardimport_intake.FileStatusParsing:
+		case cardimport_model.FileStatusReserved,
+			cardimport_model.FileStatusStored,
+			cardimport_model.FileStatusParsing:
 			count++
 		}
 	}
 	return count
 }
 
-func fileStatusIcon(status cardimport_intake.FileStatus) string {
+func fileStatusIcon(status cardimport_model.FileStatus) string {
 	switch status {
-	case cardimport_intake.FileStatusValid:
+	case cardimport_model.FileStatusValid:
 		return "✅"
-	case cardimport_intake.FileStatusInvalid:
+	case cardimport_model.FileStatusInvalid:
 		return "❌"
-	case cardimport_intake.FileStatusParsing:
+	case cardimport_model.FileStatusParsing:
 		return "⏳"
-	case cardimport_intake.FileStatusStored:
+	case cardimport_model.FileStatusStored:
 		return "💾"
 	default:
 		return "📎"

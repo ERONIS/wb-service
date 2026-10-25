@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
+	cardimport_model "github.com/ERONIS/wb-service/internal/feature/cardimport/service/model"
 )
 
 type barcodeSource struct {
@@ -14,12 +15,12 @@ type barcodeSource struct {
 }
 
 // AggregateParsedFile объединяет строки одного файла в карточки и собирает ошибки.
-func AggregateParsedFile(parsed ParsedFile) AggregatedFile {
-	result := AggregatedFile{
+func AggregateParsedFile(parsed cardimport_model.ParsedFile) cardimport_model.AggregatedFile {
+	result := cardimport_model.AggregatedFile{
 		FileID:    parsed.FileID,
 		SheetName: parsed.SheetName,
 		Cards:     make([]cardpipeline.Card, 0, len(parsed.Rows)),
-		Issues:    append([]ParseIssue(nil), parsed.Issues...),
+		Issues:    append([]cardimport_model.ParseIssue(nil), parsed.Issues...),
 	}
 
 	cardIndexes := make(map[string]int, len(parsed.Rows))
@@ -41,8 +42,8 @@ func AggregateParsedFile(parsed ParsedFile) AggregatedFile {
 
 		card := &result.Cards[cardIndex]
 		if fields := conflictingCardFields(*card, row); len(fields) > 0 {
-			result.Issues = append(result.Issues, ParseIssue{
-				Severity: IssueSeverityError,
+			result.Issues = append(result.Issues, cardimport_model.ParseIssue{
+				Severity: cardimport_model.IssueSeverityError,
 				Code:     "vendor_code_fields_conflict",
 				Message: fmt.Sprintf(
 					"Строка с артикулом продавца %q конфликтует с предыдущей: различаются поля %s.",
@@ -66,10 +67,10 @@ func AggregateParsedFile(parsed ParsedFile) AggregatedFile {
 // duplicateBarcodeIssues находит повторные баркоды в строках одного файла.
 func duplicateBarcodeIssues(
 	sheetName string,
-	row ParsedRow,
+	row cardimport_model.ParsedRow,
 	seen map[string]barcodeSource,
-) []ParseIssue {
-	issues := make([]ParseIssue, 0)
+) []cardimport_model.ParseIssue {
+	issues := make([]cardimport_model.ParseIssue, 0)
 	vendorCode := strings.TrimSpace(row.Variant.VendorCode)
 
 	for _, size := range row.Variant.Sizes {
@@ -88,8 +89,8 @@ func duplicateBarcodeIssues(
 				continue
 			}
 
-			issues = append(issues, ParseIssue{
-				Severity: IssueSeverityError,
+			issues = append(issues, cardimport_model.ParseIssue{
+				Severity: cardimport_model.IssueSeverityError,
 				Code:     "duplicate_barcode_in_file",
 				Message: fmt.Sprintf(
 					"Баркод %q уже используется в строке %d у артикула продавца %q.",
@@ -108,7 +109,7 @@ func duplicateBarcodeIssues(
 }
 
 // conflictingCardFields находит различия между строками одной карточки.
-func conflictingCardFields(card cardpipeline.Card, row ParsedRow) []string {
+func conflictingCardFields(card cardpipeline.Card, row cardimport_model.ParsedRow) []string {
 	fields := make([]string, 0)
 	appendConflict := func(different bool, name string) {
 		if different {
@@ -149,7 +150,7 @@ func conflictingCardFields(card cardpipeline.Card, row ParsedRow) []string {
 }
 
 // cardFromRow создаёт карточку из первой строки товара.
-func cardFromRow(row ParsedRow) cardpipeline.Card {
+func cardFromRow(row cardimport_model.ParsedRow) cardpipeline.Card {
 	return cardpipeline.Card{
 		SourceRows:       []int{row.SourceRow},
 		Group:            row.Group,

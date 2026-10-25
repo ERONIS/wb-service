@@ -7,7 +7,6 @@ import (
 	"time"
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
 	cardpublication_execution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/execution"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
@@ -116,7 +115,7 @@ func (repository *Repository) LoadErrorBatchMatches(
 	action cardpublication_execution.ProductAction,
 ) ([]cardpublication_execution.ErrorBatchMatch, error) {
 	if action.AttemptID <= 0 {
-		return nil, cardpublication_service.ErrProductActionConflict
+		return nil, cardpublication_execution.ErrProductActionConflict
 	}
 	ctx, cancel := repository.pool.OperationContext(ctx)
 	defer cancel()
@@ -189,7 +188,7 @@ func (repository *Repository) RecordProductReconciliationPoll(
 		postObservationID <= 0 {
 		return errors.New("record product reconciliation poll command is invalid")
 	}
-	if err := cardpublication_service.ValidateMemberReconciliationResults(
+	if err := cardpublication_execution.ValidateMemberReconciliationResults(
 		action,
 		memberResults,
 	); err != nil {
@@ -241,7 +240,7 @@ func (repository *Repository) RecordProductReconciliationPoll(
 		return fmt.Errorf("record product reconciliation poll: %w", err)
 	}
 	if result.RowsAffected() != 1 {
-		return cardpublication_service.ErrProductActionConflict
+		return cardpublication_execution.ErrProductActionConflict
 	}
 	return nil
 }
@@ -261,7 +260,7 @@ func (repository *Repository) FinishProductReconciliation(
 		len(actionCode) > 128 {
 		return errors.New("finish product reconciliation command is invalid")
 	}
-	if err := cardpublication_service.ValidateMemberReconciliationResults(
+	if err := cardpublication_execution.ValidateMemberReconciliationResults(
 		action,
 		memberResults,
 	); err != nil {
@@ -317,7 +316,7 @@ func (repository *Repository) FinishProductReconciliation(
 		return fmt.Errorf("finish reconciled publication action: %w", err)
 	}
 	if updated.RowsAffected() != 1 {
-		return cardpublication_service.ErrProductActionConflict
+		return cardpublication_execution.ErrProductActionConflict
 	}
 	return reducePublicationPlan(ctx, tx, action.TransferID, action.PlanID)
 }
@@ -337,7 +336,7 @@ func recordProductReconciliationMembers(
 	for _, result := range memberResults {
 		member, exists := members[result.ActionMemberID]
 		if !exists || member.OutcomeClass != "" {
-			return cardpublication_service.ErrProductActionConflict
+			return cardpublication_execution.ErrProductActionConflict
 		}
 		var nmID any
 		if result.NMID > 0 {
@@ -369,7 +368,7 @@ func recordProductReconciliationMembers(
 			return fmt.Errorf("finish reconciled publication member: %w", err)
 		}
 		if updated.RowsAffected() != 1 {
-			return cardpublication_service.ErrProductActionConflict
+			return cardpublication_execution.ErrProductActionConflict
 		}
 
 		identityState := "blocked_uncertain"
@@ -413,7 +412,7 @@ func recordProductReconciliationMembers(
 			return fmt.Errorf("finish reconciled publication identity: %w", err)
 		}
 		if updated.RowsAffected() != 1 {
-			return cardpublication_service.ErrProductActionConflict
+			return cardpublication_execution.ErrProductActionConflict
 		}
 
 		if result.AttributionLevel == "observed_after_attempt" {
@@ -595,7 +594,7 @@ func (repository *Repository) PendingMediaGroupTargetIDs(
 	action cardpublication_execution.ProductAction,
 ) ([]int64, error) {
 	if tx == nil || action.TransferID <= 0 || action.PlanID <= 0 || len(action.Members) == 0 {
-		return nil, cardpublication_service.ErrProductActionConflict
+		return nil, cardpublication_execution.ErrProductActionConflict
 	}
 	itemTargetIDs := make([]int64, len(action.Members))
 	for index, member := range action.Members {

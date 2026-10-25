@@ -101,17 +101,14 @@ func main() {
 		postgresPool,
 	)
 	cardimportFeature := cardimport.New(
-		ctx,
 		postgresPool,
 		uow,
-		bot,
-		logger.Logger,
 	)
+	cardimportFeature.AttachTelegram(ctx, bot, logger.Logger)
 	transferFeature, err := transfer.New(
 		ctx,
 		postgresPool,
 		uow,
-		cardimportFeature.Service(),
 		transfer_wb_transport.NewTargetTransport(wbCabinetFeature.Service()),
 		transfer.NewConfigMust(),
 		logger.Logger,
@@ -120,11 +117,7 @@ func main() {
 		panic(fmt.Errorf("create transfer feature: %w", err))
 	}
 	cardprepareFeature := cardprepare.New(
-		postgresPool,
-		uow,
 		cardprepare_wb_transport.NewCatalogTransport(wbClientset),
-		transferFeature.Service(),
-		transferFeature.PreparationResultApplier(),
 		logger.Logger,
 	)
 	cardpublicationFeature := cardpublication.New(
@@ -134,7 +127,7 @@ func main() {
 		transferFeature.Service(),
 		transferFeature.PublicationResultApplier(),
 		transferFeature.PublicationExecutionResultApplier(),
-		cardprepareFeature.ProposalReader(),
+		transferFeature.ProposalReader(),
 		cardpublication.NewConfigMust(),
 		logger.Logger,
 	)
@@ -204,7 +197,7 @@ func main() {
 			func(err error) {
 				logger.Logger.Error("process pending transfers", zap.Error(err))
 			},
-			cardprepareFeature.Processor(),
+			transferFeature.PreparationProcessor(cardprepareFeature),
 			cardpublicationFeature.Processor(),
 			transferFeature.AutomaticAuthorizationProcessor(),
 			cardpublicationFeature.ProductDispatcher(),

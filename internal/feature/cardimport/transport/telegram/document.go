@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	cardimport_contract "github.com/ERONIS/wb-service/internal/feature/cardimport/service/contract"
 	"time"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	core_tg_identity "github.com/ERONIS/wb-service/internal/core/transport/telegram/identity"
 	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
-	cardimport_intake "github.com/ERONIS/wb-service/internal/feature/cardimport/service/intake"
+	cardimport_contract "github.com/ERONIS/wb-service/internal/feature/cardimport/service/contract"
+	cardimport_model "github.com/ERONIS/wb-service/internal/feature/cardimport/service/model"
 	cardimport_xlsx_transport "github.com/ERONIS/wb-service/internal/feature/cardimport/transport/xlsx"
 
 	tele "gopkg.in/telebot.v3"
@@ -113,12 +113,12 @@ func (h *Handler) resumeFiles(ctx tele.Context) error {
 
 func (h *Handler) processFile(
 	processCtx context.Context,
-	file cardimport_intake.File,
+	file cardimport_model.File,
 	telegramFile *tele.File,
 	command cardimport_contract.ParseFileCommand,
-) (cardimport_intake.SessionView, error) {
+) (cardimport_model.SessionView, error) {
 	switch file.Status {
-	case cardimport_intake.FileStatusReserved:
+	case cardimport_model.FileStatusReserved:
 		if telegramFile == nil {
 			telegramFile = &tele.File{
 				FileID:   file.TelegramFileID,
@@ -128,7 +128,7 @@ func (h *Handler) processFile(
 		}
 		reader, err := h.bot.File(telegramFile)
 		if err != nil {
-			return cardimport_intake.SessionView{}, fmt.Errorf(
+			return cardimport_model.SessionView{}, fmt.Errorf(
 				"download reserved Telegram file: %w",
 				err,
 			)
@@ -140,35 +140,35 @@ func (h *Handler) processFile(
 		)
 		closeErr := reader.Close()
 		if storeErr != nil {
-			return cardimport_intake.SessionView{}, storeErr
+			return cardimport_model.SessionView{}, storeErr
 		}
 		if closeErr != nil {
-			return cardimport_intake.SessionView{}, fmt.Errorf(
+			return cardimport_model.SessionView{}, fmt.Errorf(
 				"close Telegram file: %w",
 				closeErr,
 			)
 		}
 
-	case cardimport_intake.FileStatusStored:
+	case cardimport_model.FileStatusStored:
 		// Durable blob уже сохранён: продолжаем оборванную обработку.
 
-	case cardimport_intake.FileStatusParsing:
+	case cardimport_model.FileStatusParsing:
 		if !isRecoverableFile(file, time.Now()) {
-			return cardimport_intake.SessionView{}, fmt.Errorf(
+			return cardimport_model.SessionView{}, fmt.Errorf(
 				"cardimport file is still being processed: %w",
 				core_errors.ErrConflict,
 			)
 		}
 
-	case cardimport_intake.FileStatusValid,
-		cardimport_intake.FileStatusInvalid:
+	case cardimport_model.FileStatusValid,
+		cardimport_model.FileStatusInvalid:
 		return h.service.GetView(processCtx, cardimport_contract.SessionCommand{
 			AuthorTelegramID: command.AuthorTelegramID,
 			SessionID:        command.SessionID,
 		})
 
 	default:
-		return cardimport_intake.SessionView{}, fmt.Errorf(
+		return cardimport_model.SessionView{}, fmt.Errorf(
 			"cardimport file is not processable: %w",
 			core_errors.ErrConflict,
 		)
@@ -177,12 +177,12 @@ func (h *Handler) processFile(
 	return h.service.ParseFile(processCtx, command)
 }
 
-func isRecoverableFile(file cardimport_intake.File, now time.Time) bool {
+func isRecoverableFile(file cardimport_model.File, now time.Time) bool {
 	switch file.Status {
-	case cardimport_intake.FileStatusReserved,
-		cardimport_intake.FileStatusStored:
+	case cardimport_model.FileStatusReserved,
+		cardimport_model.FileStatusStored:
 		return true
-	case cardimport_intake.FileStatusParsing:
+	case cardimport_model.FileStatusParsing:
 		return !file.UpdatedAt.After(now.Add(-staleParsingFileAge))
 	default:
 		return false
@@ -191,7 +191,7 @@ func isRecoverableFile(file cardimport_intake.File, now time.Time) bool {
 
 func (h *Handler) getOrBeginUploadView(
 	authorTelegramID int64,
-) (cardimport_intake.SessionView, error) {
+) (cardimport_model.SessionView, error) {
 	view, err := h.service.GetActiveView(h.ctx, authorTelegramID)
 	if err == nil || !errors.Is(err, core_errors.ErrNotFound) {
 		return view, err
@@ -201,7 +201,7 @@ func (h *Handler) getOrBeginUploadView(
 		AuthorTelegramID: authorTelegramID,
 	})
 	if err != nil {
-		return cardimport_intake.SessionView{}, err
+		return cardimport_model.SessionView{}, err
 	}
 
 	return h.service.GetView(h.ctx, cardimport_contract.SessionCommand{

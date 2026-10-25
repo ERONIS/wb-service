@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
-	cardimport_intake "github.com/ERONIS/wb-service/internal/feature/cardimport/service/intake"
+	cardimport_model "github.com/ERONIS/wb-service/internal/feature/cardimport/service/model"
 )
 
 const weightComparisonTolerance = 0.01
@@ -16,8 +16,8 @@ func parseRow(
 	rowNumber int,
 	row []string,
 	columns columns,
-) (cardimport_intake.ParsedRow, []cardimport_intake.ParseIssue) {
-	issues := make([]cardimport_intake.ParseIssue, 0)
+) (cardimport_model.ParsedRow, []cardimport_model.ParseIssue) {
+	issues := make([]cardimport_model.ParseIssue, 0)
 
 	group := requiredText(
 		columns.value(row, columnGroup),
@@ -146,7 +146,7 @@ func parseRow(
 		))
 	}
 
-	parsed := cardimport_intake.ParsedRow{
+	parsed := cardimport_model.ParsedRow{
 		SourceRow:        rowNumber,
 		Group:            group,
 		Category:         category,
@@ -189,7 +189,7 @@ func requiredText(
 	sheetName string,
 	row int,
 	column string,
-	issues *[]cardimport_intake.ParseIssue,
+	issues *[]cardimport_model.ParseIssue,
 ) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -209,7 +209,7 @@ func parsePositiveIntField(
 	sheetName string,
 	row int,
 	column string,
-	issues *[]cardimport_intake.ParseIssue,
+	issues *[]cardimport_model.ParseIssue,
 ) int64 {
 	number, err := parsePositiveInt64(value)
 	if err != nil {
@@ -235,7 +235,7 @@ func parsePositiveFloatField(
 	sheetName string,
 	row int,
 	column string,
-	issues *[]cardimport_intake.ParseIssue,
+	issues *[]cardimport_model.ParseIssue,
 ) float64 {
 	number, err := parsePositiveFloat64(value)
 	if err != nil {
@@ -260,7 +260,7 @@ func validateWeightGrams(
 	sheetName string,
 	row int,
 	column string,
-	issues *[]cardimport_intake.ParseIssue,
+	issues *[]cardimport_model.ParseIssue,
 ) {
 	if strings.TrimSpace(value) == "" || column == "" {
 		return
@@ -300,9 +300,9 @@ func newIssue(
 	sheetName string,
 	row int,
 	column string,
-) cardimport_intake.ParseIssue {
-	return cardimport_intake.ParseIssue{
-		Severity:  cardimport_intake.IssueSeverityError,
+) cardimport_model.ParseIssue {
+	return cardimport_model.ParseIssue{
+		Severity:  cardimport_model.IssueSeverityError,
 		Code:      code,
 		Message:   message,
 		SheetName: sheetName,
@@ -311,9 +311,9 @@ func newIssue(
 	}
 }
 
-func hasErrors(issues []cardimport_intake.ParseIssue) bool {
+func hasErrors(issues []cardimport_model.ParseIssue) bool {
 	for _, issue := range issues {
-		if issue.Severity == cardimport_intake.IssueSeverityError {
+		if issue.Severity == cardimport_model.IssueSeverityError {
 			return true
 		}
 	}

@@ -23,25 +23,6 @@ const (
 	OutcomeCatalogContractError         OutcomeCode = "catalog_contract_error"
 )
 
-func (code OutcomeCode) IsValid() bool {
-	switch code {
-	case OutcomePrepared,
-		OutcomeSubjectNotFound,
-		OutcomeSubjectAmbiguous,
-		OutcomeCharacteristicMissing,
-		OutcomeCharacteristicInvalid,
-		OutcomeBrandNotFound,
-		OutcomeDirectoryValueInvalid,
-		OutcomeCardLimitExceeded,
-		OutcomePayloadTooLarge,
-		OutcomeTargetTemporarilyUnavailable,
-		OutcomeCatalogContractError:
-		return true
-	default:
-		return false
-	}
-}
-
 type Outcome struct {
 	Code         OutcomeCode
 	ItemPosition int
@@ -104,4 +85,23 @@ type Proposal struct {
 type Result struct {
 	Outcome  Outcome
 	Proposal *Proposal
+}
+
+func (code OutcomeCode) IsValid() bool {
+	switch code {
+	case OutcomePrepared,
+		OutcomeSubjectNotFound,
+		OutcomeSubjectAmbiguous,
+		OutcomeCharacteristicMissing,
+		OutcomeCharacteristicInvalid,
+		OutcomeBrandNotFound,
+		OutcomeDirectoryValueInvalid,
+		OutcomeCardLimitExceeded,
+		OutcomePayloadTooLarge,
+		OutcomeTargetTemporarilyUnavailable,
+		OutcomeCatalogContractError:
+		return true
+	default:
+		return false
+	}
 }

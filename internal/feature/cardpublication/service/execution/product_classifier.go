@@ -9,6 +9,7 @@ import (
 	core_wb "github.com/ERONIS/wb-service/internal/core/transport/wb"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
+	cardpublication_model "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/model"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 )
 
@@ -20,9 +21,9 @@ func executeProductMutation(
 	var meta contentapi.ResponseMeta
 	var err error
 	switch action.Kind {
-	case ActionCreateGroup:
+	case cardpublication_model.ActionCreateGroup:
 		var request contentapi.UploadCardsRequest
-		if decodeErr := decodeExactJSON(action.RequestPayload, &request); decodeErr != nil {
+		if decodeErr := cardpublication_model.DecodeExactJSON(action.RequestPayload, &request); decodeErr != nil {
 			return classifySubmissionError(action, decodeErr)
 		}
 		var response contentapi.UploadCardsResponse
@@ -33,9 +34,9 @@ func executeProductMutation(
 			request,
 		)
 		meta = response.ResponseMeta
-	case ActionAddToGroup:
+	case cardpublication_model.ActionAddToGroup:
 		var request contentapi.UploadCardsAddRequest
-		if decodeErr := decodeExactJSON(action.RequestPayload, &request); decodeErr != nil {
+		if decodeErr := cardpublication_model.DecodeExactJSON(action.RequestPayload, &request); decodeErr != nil {
 			return classifySubmissionError(action, decodeErr)
 		}
 		var response contentapi.UploadCardsAddResponse

@@ -7,7 +7,6 @@ import (
 	core_tg_callback "github.com/ERONIS/wb-service/internal/core/transport/telegram/callback"
 	core_tg_identity "github.com/ERONIS/wb-service/internal/core/transport/telegram/identity"
 	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
-	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
 	cardpublication_resolution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/resolution"
 	statistics_service "github.com/ERONIS/wb-service/internal/feature/statistics/service"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
@@ -108,15 +107,15 @@ func (handler *Handler) openAttention(ctx tele.Context) error {
 }
 
 func (handler *Handler) markPresent(ctx tele.Context) error {
-	return handler.resolve(ctx, cardpublication_service.ManualMarkRemotePresent)
+	return handler.resolve(ctx, cardpublication_resolution.ManualMarkRemotePresent)
 }
 
 func (handler *Handler) markRejected(ctx tele.Context) error {
-	return handler.resolve(ctx, cardpublication_service.ManualMarkRejected)
+	return handler.resolve(ctx, cardpublication_resolution.ManualMarkRejected)
 }
 
 func (handler *Handler) closeAttention(ctx tele.Context) error {
-	return handler.resolve(ctx, cardpublication_service.ManualCloseUnresolvedNoRetry)
+	return handler.resolve(ctx, cardpublication_resolution.ManualCloseUnresolvedNoRetry)
 }
 
 func (handler *Handler) resolve(
@@ -124,7 +123,7 @@ func (handler *Handler) resolve(
 	kind cardpublication_resolution.ManualResolutionKind,
 ) error {
 	expectedArguments := 3
-	if kind == cardpublication_service.ManualCloseUnresolvedNoRetry {
+	if kind == cardpublication_resolution.ManualCloseUnresolvedNoRetry {
 		expectedArguments = 2
 	}
 	itemTargetID, err := parsePositiveInt64(ctx.Args(), 0, expectedArguments)
@@ -171,9 +170,9 @@ func (handler *Handler) resolve(
 		),
 	}
 	switch kind {
-	case cardpublication_service.ManualMarkRemotePresent:
+	case cardpublication_resolution.ManualMarkRemotePresent:
 		command.EvidenceObservationID = evidenceID
-	case cardpublication_service.ManualMarkRejected:
+	case cardpublication_resolution.ManualMarkRejected:
 		command.EvidenceErrorBatchID = evidenceID
 	}
 	resolution, err := handler.manualResolver.Resolve(handler.ctx, actor, command)

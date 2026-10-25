@@ -7,7 +7,6 @@ import (
 
 	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
 	cardpublication_execution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/execution"
 	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 
@@ -148,7 +147,7 @@ func (repository *Repository) LockProductAction(
 		&currentAuthorizationRevision,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return cardpublication_execution.ProductAction{}, cardpublication_service.ErrProductActionConflict
+		return cardpublication_execution.ProductAction{}, cardpublication_execution.ErrProductActionConflict
 	}
 	if err != nil {
 		return cardpublication_execution.ProductAction{}, fmt.Errorf(
@@ -158,7 +157,7 @@ func (repository *Repository) LockProductAction(
 	}
 	if sellerID.Validate() != nil ||
 		len(generation) != len(action.ClientGeneration) || !preflightID.Valid {
-		return cardpublication_execution.ProductAction{}, cardpublication_service.ErrProductActionConflict
+		return cardpublication_execution.ProductAction{}, cardpublication_execution.ErrProductActionConflict
 	}
 	action.SellerID = sellerID
 	copy(action.ClientGeneration[:], generation)
@@ -187,7 +186,7 @@ func (repository *Repository) LockProductAction(
 	}
 	if retryID.Valid {
 		if len(retryPayload) == 0 || !retryStartedAt.Valid {
-			return cardpublication_execution.ProductAction{}, cardpublication_service.ErrProductActionConflict
+			return cardpublication_execution.ProductAction{}, cardpublication_execution.ErrProductActionConflict
 		}
 		retry := cardpublication_execution.ProductRetry{
 			ID:              retryID.Int64,
@@ -317,7 +316,7 @@ func lockProductIdentities(
 		return err
 	}
 	if count != len(action.Members) {
-		return cardpublication_service.ErrProductActionConflict
+		return cardpublication_execution.ErrProductActionConflict
 	}
 	return nil
 }

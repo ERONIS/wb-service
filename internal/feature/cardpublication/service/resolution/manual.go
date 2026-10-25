@@ -33,30 +33,9 @@ const (
 	ManualCloseUnresolvedNoRetry ManualResolutionKind = "close_unresolved_no_retry"
 )
 
-func (kind ManualResolutionKind) IsValid() bool {
-	switch kind {
-	case ManualMarkRemotePresent, ManualMarkRejected, ManualCloseUnresolvedNoRetry:
-		return true
-	default:
-		return false
-	}
-}
-
 type ManualTrustedActor struct {
 	ID          int64
 	DisplayName string
-}
-
-func (actor ManualTrustedActor) normalized() ManualTrustedActor {
-	actor.DisplayName = strings.TrimSpace(actor.DisplayName)
-	return actor
-}
-
-func (actor ManualTrustedActor) validate() error {
-	if actor.ID <= 0 || actor.DisplayName == "" || len([]rune(actor.DisplayName)) > 100 {
-		return errors.New("manual resolution trusted actor is invalid")
-	}
-	return nil
 }
 
 type ManualResolutionCommand struct {
@@ -76,35 +55,6 @@ type ResolutionSubjectKey struct {
 	ActionMemberID         int64
 	ExpectedActionRevision int64
 	AttemptID              int64
-}
-
-func (command ManualResolutionCommand) normalized() ManualResolutionCommand {
-	command.IdempotencyKey = strings.TrimSpace(command.IdempotencyKey)
-	return command
-}
-
-func (command ManualResolutionCommand) validate() error {
-	if command.TransferID <= 0 || command.ActionID <= 0 ||
-		command.ActionMemberID <= 0 || command.ExpectedActionRevision < 0 ||
-		!command.Kind.IsValid() || command.IdempotencyKey == "" ||
-		len(command.IdempotencyKey) > MaxManualResolutionIdempotencyKeyLength {
-		return errors.New("manual resolution command is invalid")
-	}
-	switch command.Kind {
-	case ManualMarkRemotePresent:
-		if command.EvidenceObservationID <= 0 || command.EvidenceErrorBatchID != 0 {
-			return ErrManualEvidenceInvalid
-		}
-	case ManualMarkRejected:
-		if command.EvidenceObservationID != 0 || command.EvidenceErrorBatchID <= 0 {
-			return ErrManualEvidenceInvalid
-		}
-	case ManualCloseUnresolvedNoRetry:
-		if command.EvidenceObservationID != 0 || command.EvidenceErrorBatchID != 0 {
-			return ErrManualEvidenceInvalid
-		}
-	}
-	return nil
 }
 
 type ManualResolution struct {
@@ -229,6 +179,61 @@ type ManualResolver struct {
 	repository ManualResolutionRepository
 	transfer   ManualTransferResultCorrector
 	uow        core_postgres_transaction.UnitOfWork
+}
+
+type manualCatalogPayload struct {
+	Normal []contentapi.Card      `json:"normal"`
+	Trash  []contentapi.TrashCard `json:"trash"`
+}
+
+func (kind ManualResolutionKind) IsValid() bool {
+	switch kind {
+	case ManualMarkRemotePresent, ManualMarkRejected, ManualCloseUnresolvedNoRetry:
+		return true
+	default:
+		return false
+	}
+}
+
+func (actor ManualTrustedActor) normalized() ManualTrustedActor {
+	actor.DisplayName = strings.TrimSpace(actor.DisplayName)
+	return actor
+}
+
+func (actor ManualTrustedActor) validate() error {
+	if actor.ID <= 0 || actor.DisplayName == "" || len([]rune(actor.DisplayName)) > 100 {
+		return errors.New("manual resolution trusted actor is invalid")
+	}
+	return nil
+}
+
+func (command ManualResolutionCommand) normalized() ManualResolutionCommand {
+	command.IdempotencyKey = strings.TrimSpace(command.IdempotencyKey)
+	return command
+}
+
+func (command ManualResolutionCommand) validate() error {
+	if command.TransferID <= 0 || command.ActionID <= 0 ||
+		command.ActionMemberID <= 0 || command.ExpectedActionRevision < 0 ||
+		!command.Kind.IsValid() || command.IdempotencyKey == "" ||
+		len(command.IdempotencyKey) > MaxManualResolutionIdempotencyKeyLength {
+		return errors.New("manual resolution command is invalid")
+	}
+	switch command.Kind {
+	case ManualMarkRemotePresent:
+		if command.EvidenceObservationID <= 0 || command.EvidenceErrorBatchID != 0 {
+			return ErrManualEvidenceInvalid
+		}
+	case ManualMarkRejected:
+		if command.EvidenceObservationID != 0 || command.EvidenceErrorBatchID <= 0 {
+			return ErrManualEvidenceInvalid
+		}
+	case ManualCloseUnresolvedNoRetry:
+		if command.EvidenceObservationID != 0 || command.EvidenceErrorBatchID != 0 {
+			return ErrManualEvidenceInvalid
+		}
+	}
+	return nil
 }
 
 func NewManualResolver(
@@ -408,11 +413,6 @@ func (resolver *ManualResolver) decide(
 	}
 }
 
-type manualCatalogPayload struct {
-	Normal []contentapi.Card      `json:"normal"`
-	Trash  []contentapi.TrashCard `json:"trash"`
-}
-
 func decideManualRemotePresent(
 	subject ManualResolutionSubject,
 	evidence ManualObservationEvidence,
@@ -442,15 +442,15 @@ func decideManualRemotePresent(
 	}
 	card := matching[0]
 	switch subject.ActionKind {
-	case ActionCreateGroup:
+	case cardpublication_model.ActionCreateGroup:
 		var request contentapi.UploadCardsRequest
-		if err := decodeExactJSON(subject.RequestPayload, &request); err != nil ||
+		if err := cardpublication_model.DecodeExactJSON(subject.RequestPayload, &request); err != nil ||
 			!uploadVendorMatchesSubject(request, subject.VendorCode, card.SubjectID) {
 			return ManualResolutionDecision{}, ErrManualEvidenceInvalid
 		}
-	case ActionAddToGroup:
+	case cardpublication_model.ActionAddToGroup:
 		var request contentapi.UploadCardsAddRequest
-		if err := decodeExactJSON(subject.RequestPayload, &request); err != nil ||
+		if err := cardpublication_model.DecodeExactJSON(subject.RequestPayload, &request); err != nil ||
 			request.IMTID <= 0 || request.IMTID != card.IMTID ||
 			countUploadVendor(request.CardsToAdd, subject.VendorCode) != 1 {
 			return ManualResolutionDecision{}, ErrManualEvidenceInvalid

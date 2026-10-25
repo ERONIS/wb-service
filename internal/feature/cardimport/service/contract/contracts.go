@@ -7,26 +7,25 @@ import (
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	cardimport_batch "github.com/ERONIS/wb-service/internal/feature/cardimport/service/batch"
-	cardimport_intake "github.com/ERONIS/wb-service/internal/feature/cardimport/service/intake"
+	cardimport_model "github.com/ERONIS/wb-service/internal/feature/cardimport/service/model"
 )
 
 type RecoverableFile struct {
 	AuthorTelegramID int64
-	File             cardimport_intake.File
+	File             cardimport_model.File
 }
 
 type FinalizedSession struct {
-	Session     cardimport_intake.Session
-	Files       []cardimport_intake.File
-	Items       []cardimport_batch.BatchItem
+	Session     cardimport_model.Session
+	Files       []cardimport_model.File
+	Items       []cardimport_model.BatchItem
 	GroupsCount int
 	User        domain.User
 	Command     FinalizeCommand
 }
 
 type FileParser interface {
-	Parse(fileID cardimport_intake.FileID, reader io.Reader) (cardimport_intake.ParsedFile, error)
+	Parse(fileID cardimport_model.FileID, reader io.Reader) (cardimport_model.ParsedFile, error)
 }
 
 type Repository interface {
@@ -35,12 +34,12 @@ type Repository interface {
 		ctx context.Context,
 		tx core_postgres_transaction.DBTX,
 		finalized FinalizedSession,
-	) (cardimport_batch.BatchHeader, error)
+	) (cardimport_model.BatchHeader, error)
 	BatchReader
 }
 
 type BatchReader interface {
-	ListFinalizedBatches(ctx context.Context, after *cardpipeline.BatchCursor, limit int) ([]cardimport_batch.BatchHeader, error)
-	GetBatch(ctx context.Context, batchID cardpipeline.BatchID) (cardimport_batch.BatchHeader, error)
-	ListBatchItems(ctx context.Context, batchID cardpipeline.BatchID, afterPosition int, limit int) ([]cardimport_batch.BatchItem, error)
+	ListFinalizedBatches(ctx context.Context, after *cardpipeline.BatchCursor, limit int) ([]cardimport_model.BatchHeader, error)
+	GetBatch(ctx context.Context, batchID cardpipeline.BatchID) (cardimport_model.BatchHeader, error)
+	ListBatchItems(ctx context.Context, batchID cardpipeline.BatchID, afterPosition int, limit int) ([]cardimport_model.BatchItem, error)
 }

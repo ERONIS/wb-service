@@ -7,7 +7,7 @@ import (
 	core_tg_callback "github.com/ERONIS/wb-service/internal/core/transport/telegram/callback"
 	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
 	core_tg_presenter "github.com/ERONIS/wb-service/internal/core/transport/telegram/presenter"
-	cardimport_batch "github.com/ERONIS/wb-service/internal/feature/cardimport/service/batch"
+	cardimport_model "github.com/ERONIS/wb-service/internal/feature/cardimport/service/model"
 	statistics_service "github.com/ERONIS/wb-service/internal/feature/statistics/service"
 
 	tele "gopkg.in/telebot.v3"
@@ -26,7 +26,7 @@ func (handler *Handler) showDashboard(ctx tele.Context) error {
 	if err != nil {
 		return presentError(ctx, err)
 	}
-	var pendingBatch *cardimport_batch.BatchHeader
+	var pendingBatch *cardimport_model.BatchHeader
 	arguments := callbackArguments(ctx.Args())
 	if len(arguments) > 0 {
 		batchID, parseErr := parsePositiveInt64(arguments, 0, 1)

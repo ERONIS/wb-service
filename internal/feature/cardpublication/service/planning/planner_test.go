@@ -25,7 +25,7 @@ func TestBatchCreateGroupActionsKeepsItemReferences(t *testing.T) {
 		}
 		draft.Actions = append(draft.Actions, cardpublication_model.ActionDraft{
 			Position:       position,
-			Kind:           ActionCreateGroup,
+			Kind:           cardpublication_model.ActionCreateGroup,
 			TargetID:       1,
 			RequestPayload: request,
 			Members:        []cardpublication_model.ActionMemberDraft{member},
@@ -38,7 +38,7 @@ func TestBatchCreateGroupActionsKeepsItemReferences(t *testing.T) {
 	}
 	draft.Actions = append(draft.Actions, cardpublication_model.ActionDraft{
 		Position:       2,
-		Kind:           ActionUploadMedia,
+		Kind:           cardpublication_model.ActionUploadMedia,
 		TargetID:       1,
 		RequestPayload: []byte(`{"links":["https://example.com/a.jpg"]}`),
 		Members:        []cardpublication_model.ActionMemberDraft{{GroupTargetID: 1, TransferItemTargetID: 1, VendorCode: "A"}},
@@ -56,7 +56,7 @@ func TestBatchCreateGroupActionsKeepsItemReferences(t *testing.T) {
 		}
 	}
 	for _, action := range draft.Actions {
-		if action.Kind == ActionCreateGroup && len(action.Members) != 2 {
+		if action.Kind == cardpublication_model.ActionCreateGroup && len(action.Members) != 2 {
 			t.Fatalf("после объединения ожидалось 2 карточки, получено %d", len(action.Members))
 		}
 	}

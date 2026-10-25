@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
 	cardpublication_execution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/execution"
 	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
@@ -85,7 +84,7 @@ func (repository *Repository) SupersedePlanBeforeDispatch(
 		return fmt.Errorf("supersede publication actions: %w", err)
 	}
 	if result.RowsAffected() != expectedActions {
-		return cardpublication_service.ErrProductActionConflict
+		return cardpublication_execution.ErrProductActionConflict
 	}
 	const finishPlan = `
 		UPDATE wb.publication_plans
@@ -104,7 +103,7 @@ func (repository *Repository) SupersedePlanBeforeDispatch(
 		return fmt.Errorf("supersede publication plan: %w", err)
 	}
 	if result.RowsAffected() != 1 {
-		return cardpublication_service.ErrProductActionConflict
+		return cardpublication_execution.ErrProductActionConflict
 	}
 	return nil
 }
@@ -172,7 +171,7 @@ func (repository *Repository) AbortPlanAfterDispatch(
 	}
 	rows.Close()
 	if len(order) == 0 {
-		return nil, cardpublication_service.ErrProductActionConflict
+		return nil, cardpublication_execution.ErrProductActionConflict
 	}
 
 	const blockIdentities = `

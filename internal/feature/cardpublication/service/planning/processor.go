@@ -9,9 +9,9 @@ import (
 
 	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
-	cardprepare_model "github.com/ERONIS/wb-service/internal/feature/cardprepare/service/model"
 	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
 	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+	transfer_preparation "github.com/ERONIS/wb-service/internal/feature/transfer/service/preparation"
 
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
@@ -116,9 +116,9 @@ func (processor *Processor) processTransfer(
 	if len(source.Groups) == 0 {
 		return false, nil
 	}
-	queries := make([]cardprepare_model.ProposalQuery, len(source.Groups))
+	queries := make([]transfer_preparation.ProposalQuery, len(source.Groups))
 	for index, sourceGroup := range source.Groups {
-		queries[index] = cardprepare_model.ProposalQuery{
+		queries[index] = transfer_preparation.ProposalQuery{
 			TransferID:    transfer.ID,
 			GroupTargetID: sourceGroup.GroupTargetID,
 		}

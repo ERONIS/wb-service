@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
-	cardimport_intake "github.com/ERONIS/wb-service/internal/feature/cardimport/service/intake"
+	cardimport_model "github.com/ERONIS/wb-service/internal/feature/cardimport/service/model"
 )
 
 const MaxFinalizeIdempotencyKeyLength = 128
@@ -16,18 +16,12 @@ type BeginCommand struct {
 
 type SessionCommand struct {
 	AuthorTelegramID int64
-	SessionID        cardimport_intake.SessionID
-}
-
-type ContinueCommand struct {
-	AuthorTelegramID int64
-	SessionID        cardimport_intake.SessionID
-	ExpectedRevision int64
+	SessionID        cardimport_model.SessionID
 }
 
 type ReserveFileCommand struct {
 	AuthorTelegramID     int64
-	SessionID            cardimport_intake.SessionID
+	SessionID            cardimport_model.SessionID
 	TelegramFileID       string
 	TelegramFileUniqueID string
 	TelegramMessageID    int64
@@ -38,18 +32,18 @@ type ReserveFileCommand struct {
 
 type StoreFileCommand struct {
 	AuthorTelegramID int64
-	SessionID        cardimport_intake.SessionID
-	FileID           cardimport_intake.FileID
+	SessionID        cardimport_model.SessionID
+	FileID           cardimport_model.FileID
 }
 
 type ParseFileCommand struct {
 	AuthorTelegramID int64
-	SessionID        cardimport_intake.SessionID
-	FileID           cardimport_intake.FileID
+	SessionID        cardimport_model.SessionID
+	FileID           cardimport_model.FileID
 }
 
 type FinalizeCommand struct {
-	SessionID        cardimport_intake.SessionID
+	SessionID        cardimport_model.SessionID
 	ExpectedRevision int64
 	IdempotencyKey   string
 }
@@ -92,11 +86,11 @@ func (c ReserveFileCommand) Validate() error {
 		return InvalidFileArgument("original filename is empty")
 	case c.DeclaredSize <= 0:
 		return InvalidFileArgument("declared size must be positive")
-	case c.DeclaredSize > cardimport_intake.MaxFileSize:
+	case c.DeclaredSize > cardimport_model.MaxFileSize:
 		return fmt.Errorf(
 			"declared file size '%d' exceeds limit '%d': %w",
 			c.DeclaredSize,
-			cardimport_intake.MaxFileSize,
+			cardimport_model.MaxFileSize,
 			core_errors.ErrInvalidArgument,
 		)
 	default:
@@ -130,24 +124,6 @@ func (c ParseFileCommand) Validate() error {
 		SessionID:        c.SessionID,
 		FileID:           c.FileID,
 	}).Validate()
-}
-
-// Validate проверяет сессию и ожидаемую ревизию.
-func (c ContinueCommand) Validate() error {
-	if err := (SessionCommand{
-		AuthorTelegramID: c.AuthorTelegramID,
-		SessionID:        c.SessionID,
-	}).Validate(); err != nil {
-		return err
-	}
-	if c.ExpectedRevision < 0 {
-		return fmt.Errorf(
-			"invalid expected cardimport revision '%d': %w",
-			c.ExpectedRevision,
-			core_errors.ErrInvalidArgument,
-		)
-	}
-	return nil
 }
 
 // Normalized нормализует ключ повторной финализации.

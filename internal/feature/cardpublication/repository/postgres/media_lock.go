@@ -7,7 +7,6 @@ import (
 
 	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
 	cardpublication_execution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/execution"
 
 	"github.com/jackc/pgx/v5"
@@ -194,7 +193,7 @@ func (repository *Repository) LockMediaAction(
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return cardpublication_execution.MediaAction{},
-			cardpublication_service.ErrMediaActionConflict
+			cardpublication_execution.ErrMediaActionConflict
 	}
 	if err != nil {
 		return cardpublication_execution.MediaAction{},
@@ -204,7 +203,7 @@ func (repository *Repository) LockMediaAction(
 		len(generation) != len(action.ClientGeneration) || !preflightID.Valid ||
 		memberCount != 1 || (hasProductAction && attributionCount != 1) || (!hasProductAction && attributionCount != 0) {
 		return cardpublication_execution.MediaAction{},
-			cardpublication_service.ErrMediaActionConflict
+			cardpublication_execution.ErrMediaActionConflict
 	}
 	if attributionID.Valid {
 		action.AttributionID = attributionID.Int64

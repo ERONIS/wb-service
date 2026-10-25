@@ -100,6 +100,16 @@ type PlanDraft struct {
 	Identities   []IdentityDraft
 }
 
+type PersistedAction struct {
+	ID       int64
+	Position int
+}
+
+type PersistedPlan struct {
+	ID      int64
+	Actions []PersistedAction
+}
+
 func (draft PlanDraft) Validate() error {
 	if draft.TransferID <= 0 {
 		return errors.New("publication plan draft identity is invalid")
@@ -151,14 +161,4 @@ func (draft PlanDraft) Validate() error {
 		}
 	}
 	return nil
-}
-
-type PersistedAction struct {
-	ID       int64
-	Position int
-}
-
-type PersistedPlan struct {
-	ID      int64
-	Actions []PersistedAction
 }

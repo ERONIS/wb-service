@@ -4,9 +4,9 @@ import (
 	"context"
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	cardprepare_model "github.com/ERONIS/wb-service/internal/feature/cardprepare/service/model"
 	cardpublication_model "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/model"
 	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+	transfer_preparation "github.com/ERONIS/wb-service/internal/feature/transfer/service/preparation"
 	transfer_publication "github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
 )
 
@@ -40,8 +40,8 @@ type TransferResultApplier interface {
 type ProposalReader interface {
 	LoadProposals(
 		context.Context,
-		[]cardprepare_model.ProposalQuery,
-	) ([]cardprepare_model.StoredProposal, error)
+		[]transfer_preparation.ProposalQuery,
+	) ([]transfer_preparation.StoredProposal, error)
 }
 
 type Repository interface {

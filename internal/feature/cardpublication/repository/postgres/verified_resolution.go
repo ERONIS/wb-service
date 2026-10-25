@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
 	cardpublication_resolution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/resolution"
 )
 
@@ -16,7 +15,7 @@ func (repository *Repository) ApplyVerifiedCardResult(
 	subject cardpublication_resolution.ManualResolutionSubject,
 	decision cardpublication_resolution.ManualResolutionDecision,
 ) error {
-	if tx == nil || decision.Kind != cardpublication_service.ManualMarkRemotePresent ||
+	if tx == nil || decision.Kind != cardpublication_resolution.ManualMarkRemotePresent ||
 		decision.OutcomeClass != "success" || decision.OutcomeCode != "VERIFIED_IN_WB" ||
 		decision.NMID <= 0 || decision.IMTID <= 0 || decision.SubjectID <= 0 ||
 		decision.EvidenceObservationID <= 0 {

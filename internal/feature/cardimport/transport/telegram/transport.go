@@ -2,7 +2,6 @@ package cardimport_telegram_transport
 
 import (
 	"context"
-	cardimport_contract "github.com/ERONIS/wb-service/internal/feature/cardimport/service/contract"
 	"io"
 	"sync"
 	"time"
@@ -10,8 +9,8 @@ import (
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
-	cardimport_batch "github.com/ERONIS/wb-service/internal/feature/cardimport/service/batch"
-	cardimport_intake "github.com/ERONIS/wb-service/internal/feature/cardimport/service/intake"
+	cardimport_contract "github.com/ERONIS/wb-service/internal/feature/cardimport/service/contract"
+	cardimport_model "github.com/ERONIS/wb-service/internal/feature/cardimport/service/model"
 
 	"go.uber.org/zap"
 	tele "gopkg.in/telebot.v3"
@@ -34,10 +33,6 @@ var (
 		Text:   "✅ Готово",
 		Unique: "cardimport_finalize",
 	}
-	buttonContinue = tele.Btn{
-		Text:   "➡️ Продолжить",
-		Unique: "cardimport_continue",
-	}
 	buttonResumeFiles = tele.Btn{
 		Text:   "🔄 Обработать зависшие файлы",
 		Unique: "cardimport_resume_files",
@@ -48,43 +43,38 @@ type CardImportService interface {
 	Begin(
 		ctx context.Context,
 		command cardimport_contract.BeginCommand,
-	) (cardimport_intake.Session, error)
+	) (cardimport_model.Session, error)
 
 	GetActiveView(
 		ctx context.Context,
 		authorTelegramID int64,
-	) (cardimport_intake.SessionView, error)
+	) (cardimport_model.SessionView, error)
 
 	GetView(
 		ctx context.Context,
 		command cardimport_contract.SessionCommand,
-	) (cardimport_intake.SessionView, error)
+	) (cardimport_model.SessionView, error)
 
 	Cancel(
 		ctx context.Context,
 		command cardimport_contract.SessionCommand,
 	) error
 
-	Continue(
-		ctx context.Context,
-		command cardimport_contract.ContinueCommand,
-	) (cardimport_intake.SessionView, error)
-
 	ReserveFile(
 		ctx context.Context,
 		command cardimport_contract.ReserveFileCommand,
-	) (cardimport_intake.File, error)
+	) (cardimport_model.File, error)
 
 	StoreFile(
 		ctx context.Context,
 		command cardimport_contract.StoreFileCommand,
 		source io.Reader,
-	) (cardimport_intake.File, error)
+	) (cardimport_model.File, error)
 
 	ParseFile(
 		ctx context.Context,
 		command cardimport_contract.ParseFileCommand,
-	) (cardimport_intake.SessionView, error)
+	) (cardimport_model.SessionView, error)
 
 	ListRecoverableFiles(
 		ctx context.Context,
@@ -97,7 +87,7 @@ type CardImportService interface {
 		ctx context.Context,
 		user domain.User,
 		command cardimport_contract.FinalizeCommand,
-	) (cardimport_batch.BatchHeader, error)
+	) (cardimport_model.BatchHeader, error)
 }
 
 type Handler struct {
@@ -112,9 +102,9 @@ type Handler struct {
 	recoveryStartedAt      time.Time
 	recoveryStart          sync.Once
 	recoveryWake           chan struct{}
-	recoveryJobs           chan cardimport_intake.FileID
+	recoveryJobs           chan cardimport_model.FileID
 	recoveryMu             sync.Mutex
-	recoveryStates         map[cardimport_intake.FileID]*cardimportRecoveryState
+	recoveryStates         map[cardimport_model.FileID]*cardimportRecoveryState
 	refreshWake            chan struct{}
 	refreshMu              sync.Mutex
 	pendingRefreshes       map[int64]cardimportSessionRefresh
@@ -123,7 +113,7 @@ type Handler struct {
 type CompletionNavigator interface {
 	ShowFinalizedSession(
 		tele.Context,
-		cardimport_batch.BatchHeader,
+		cardimport_model.BatchHeader,
 	) error
 }
 
@@ -151,8 +141,8 @@ func New(
 		recoveryStartedAt:      time.Now(),
 		uploadScreenGeneration: make(map[int64]uint64),
 		recoveryWake:           make(chan struct{}, 1),
-		recoveryJobs:           make(chan cardimport_intake.FileID, 256),
-		recoveryStates:         make(map[cardimport_intake.FileID]*cardimportRecoveryState),
+		recoveryJobs:           make(chan cardimport_model.FileID, 256),
+		recoveryStates:         make(map[cardimport_model.FileID]*cardimportRecoveryState),
 		refreshWake:            make(chan struct{}, 1),
 		pendingRefreshes:       make(map[int64]cardimportSessionRefresh),
 	}
@@ -192,11 +182,6 @@ func (h *Handler) Register(menu *core_tg_menu.Handler) {
 		buttonFinalize,
 		domain.RoleAdmin,
 		h.finalize,
-	)
-	menu.RegisterCallback(
-		buttonContinue,
-		domain.RoleAdmin,
-		h.continueImport,
 	)
 	menu.RegisterCallback(
 		buttonResumeFiles,

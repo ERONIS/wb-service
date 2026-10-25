@@ -3,11 +3,11 @@ package cardimport_telegram_transport
 import (
 	"context"
 	"errors"
-	cardimport_contract "github.com/ERONIS/wb-service/internal/feature/cardimport/service/contract"
 	"time"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
-	cardimport_intake "github.com/ERONIS/wb-service/internal/feature/cardimport/service/intake"
+	cardimport_contract "github.com/ERONIS/wb-service/internal/feature/cardimport/service/contract"
+	cardimport_model "github.com/ERONIS/wb-service/internal/feature/cardimport/service/model"
 
 	"go.uber.org/zap"
 )
@@ -25,7 +25,7 @@ const (
 type cardimportRecoveryJob struct {
 	authorTelegramID int64
 	chatID           int64
-	file             cardimport_intake.File
+	file             cardimport_model.File
 }
 
 type cardimportRecoveryState struct {
@@ -39,7 +39,7 @@ type cardimportRecoveryState struct {
 type cardimportSessionRefresh struct {
 	authorTelegramID int64
 	chatID           int64
-	sessionID        cardimport_intake.SessionID
+	sessionID        cardimport_model.SessionID
 }
 
 func (h *Handler) runRecoveryScheduler() {
@@ -125,7 +125,7 @@ func (h *Handler) enqueueRecovery(job cardimportRecoveryJob, force bool) {
 	}
 }
 
-func (h *Handler) markRecoveryDequeued(fileID cardimport_intake.FileID) {
+func (h *Handler) markRecoveryDequeued(fileID cardimport_model.FileID) {
 	h.recoveryMu.Lock()
 	if state := h.recoveryStates[fileID]; state != nil {
 		state.queued = false
@@ -133,7 +133,7 @@ func (h *Handler) markRecoveryDequeued(fileID cardimport_intake.FileID) {
 	h.recoveryMu.Unlock()
 }
 
-func (h *Handler) takeRecovery(fileID cardimport_intake.FileID) (cardimportRecoveryJob, bool) {
+func (h *Handler) takeRecovery(fileID cardimport_model.FileID) (cardimportRecoveryJob, bool) {
 	h.recoveryMu.Lock()
 	defer h.recoveryMu.Unlock()
 	state := h.recoveryStates[fileID]
@@ -145,7 +145,7 @@ func (h *Handler) takeRecovery(fileID cardimport_intake.FileID) (cardimportRecov
 	return state.job, true
 }
 
-func (h *Handler) finishRecovery(fileID cardimport_intake.FileID, err error) {
+func (h *Handler) finishRecovery(fileID cardimport_model.FileID, err error) {
 	h.recoveryMu.Lock()
 	defer h.recoveryMu.Unlock()
 	state := h.recoveryStates[fileID]
@@ -199,7 +199,7 @@ func (h *Handler) processRecoveryJob(job cardimportRecoveryJob) {
 		FileID:           job.file.ID,
 	}
 	var err error
-	if job.file.Status == cardimport_intake.FileStatusInvalid {
+	if job.file.Status == cardimport_model.FileStatusInvalid {
 		_, err = h.service.ParseFile(attemptCtx, command)
 	} else {
 		_, err = h.processFile(attemptCtx, job.file, nil, command)

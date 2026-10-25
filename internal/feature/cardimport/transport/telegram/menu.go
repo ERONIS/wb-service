@@ -75,29 +75,6 @@ func (h *Handler) cancel(ctx tele.Context) error {
 	)
 }
 
-func (h *Handler) continueImport(ctx tele.Context) error {
-	authorTelegramID, err := core_tg_identity.SenderID(ctx)
-	if err != nil {
-		return sendServiceError(ctx, err)
-	}
-	command, err := parseContinueCommand(ctx.Args())
-	if err != nil {
-		return core_tg_menu.Notify(ctx, "cardimport.stale_continue", "⚠️ Кнопка устарела. Откройте текущую загрузку заново.")
-	}
-	command.AuthorTelegramID = authorTelegramID
-
-	view, err := h.service.Continue(h.ctx, command)
-	if err != nil {
-		return sendServiceError(ctx, err)
-	}
-
-	text, markup := h.sessionView(view)
-	return ctx.EditOrSend(
-		"➡️ Ошибочные строки и карточки пропущены.\n\n"+text,
-		markup,
-	)
-}
-
 func (h *Handler) finalize(ctx tele.Context) error {
 	user, err := core_tg_identity.UserFromContext(ctx)
 	if err != nil {

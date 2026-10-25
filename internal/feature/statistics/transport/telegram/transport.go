@@ -6,7 +6,7 @@ import (
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
-	cardimport_batch "github.com/ERONIS/wb-service/internal/feature/cardimport/service/batch"
+	cardimport_model "github.com/ERONIS/wb-service/internal/feature/cardimport/service/model"
 	cardpublication_resolution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/resolution"
 	statistics_service "github.com/ERONIS/wb-service/internal/feature/statistics/service"
 
@@ -51,7 +51,7 @@ type ManualResolver interface {
 }
 
 type BatchReader interface {
-	GetBatch(context.Context, cardpipeline.BatchID) (cardimport_batch.BatchHeader, error)
+	GetBatch(context.Context, cardpipeline.BatchID) (cardimport_model.BatchHeader, error)
 }
 
 type Handler struct {

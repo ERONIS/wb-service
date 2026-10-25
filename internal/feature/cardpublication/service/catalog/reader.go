@@ -169,7 +169,7 @@ func (reader *CatalogReader) ReadVendorCodes(
 	if ctx == nil || targetID <= 0 || sellerID == "" {
 		return CatalogObservation{}, errors.New("publication catalog query is invalid")
 	}
-	vendorCodes = normalizedUniqueStrings(vendorCodes)
+	vendorCodes = cardpublication_model.NormalizeUniqueStrings(vendorCodes)
 	if len(vendorCodes) == 0 {
 		return CatalogObservation{}, errors.New("publication vendor-code query is empty")
 	}

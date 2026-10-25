@@ -5,7 +5,7 @@ import (
 
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
-	cardimport_batch "github.com/ERONIS/wb-service/internal/feature/cardimport/service/batch"
+	cardimport_model "github.com/ERONIS/wb-service/internal/feature/cardimport/service/model"
 	statistics_service "github.com/ERONIS/wb-service/internal/feature/statistics/service"
 
 	tele "gopkg.in/telebot.v3"
@@ -13,7 +13,7 @@ import (
 
 func (handler *Handler) ShowFinalizedSession(
 	ctx tele.Context,
-	batch cardimport_batch.BatchHeader,
+	batch cardimport_model.BatchHeader,
 ) error {
 	return handler.renderFinalizedSession(ctx, batch)
 }
@@ -32,7 +32,7 @@ func (handler *Handler) openCurrentSession(ctx tele.Context) error {
 
 func (handler *Handler) renderFinalizedSession(
 	ctx tele.Context,
-	batch cardimport_batch.BatchHeader,
+	batch cardimport_model.BatchHeader,
 ) error {
 	operations, err := handler.statistics.ListOperations(handler.ctx, statistics_service.OperationFilter{
 		BatchID: int64(batch.ID),
@@ -72,5 +72,5 @@ func (handler *Handler) renderFinalizedSession(
 }
 
 var _ interface {
-	ShowFinalizedSession(tele.Context, cardimport_batch.BatchHeader) error
+	ShowFinalizedSession(tele.Context, cardimport_model.BatchHeader) error
 } = (*Handler)(nil)

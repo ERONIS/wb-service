@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
 	cardpublication_execution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/execution"
 
 	"github.com/jackc/pgx/v5"
@@ -72,7 +71,7 @@ func (repository *Repository) BeginProductRetry(
 		action.AttemptID,
 	).Scan(&retry.ID, &retry.StartedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return cardpublication_execution.ProductRetry{}, cardpublication_service.ErrProductActionConflict
+			return cardpublication_execution.ProductRetry{}, cardpublication_execution.ErrProductActionConflict
 		}
 		return cardpublication_execution.ProductRetry{}, fmt.Errorf(
 			"insert publication product retry: %w",
@@ -96,7 +95,7 @@ func (repository *Repository) BeginProductRetry(
 		)
 	}
 	if updated.RowsAffected() != 1 {
-		return cardpublication_execution.ProductRetry{}, cardpublication_service.ErrProductActionConflict
+		return cardpublication_execution.ProductRetry{}, cardpublication_execution.ErrProductActionConflict
 	}
 	return retry, nil
 }
@@ -110,7 +109,7 @@ func (repository *Repository) RecordProductRetry(
 	if tx == nil {
 		return errors.New("record publication product retry: DBTX is nil")
 	}
-	if err := cardpublication_service.ValidateSubmissionResult(command.Result); err != nil {
+	if err := cardpublication_execution.ValidateSubmissionResult(command.Result); err != nil {
 		return err
 	}
 	action, retry, result := command.Action, command.Retry, command.Result
@@ -118,24 +117,24 @@ func (repository *Repository) RecordProductRetry(
 		retry.TransferID != action.TransferID || retry.ActionID != action.ActionID ||
 		retry.AuthorizationID != action.AuthorizationID ||
 		!equalBytes(retry.RequestPayload, action.RequestPayload) || !retry.FinishedAt.IsZero() {
-		return cardpublication_service.ErrProductActionConflict
+		return cardpublication_execution.ErrProductActionConflict
 	}
-	if result.Disposition == cardpublication_service.SubmissionRejectedProven {
+	if result.Disposition == cardpublication_execution.SubmissionRejectedProven {
 		members := make(map[int64]struct{}, len(action.Members))
 		for _, member := range action.Members {
 			members[member.ID] = struct{}{}
 		}
 		if len(result.MemberResults) != len(members) {
-			return cardpublication_service.ErrProductActionConflict
+			return cardpublication_execution.ErrProductActionConflict
 		}
 		for _, memberResult := range result.MemberResults {
 			if _, exists := members[memberResult.ActionMemberID]; !exists {
-				return cardpublication_service.ErrProductActionConflict
+				return cardpublication_execution.ErrProductActionConflict
 			}
 			delete(members, memberResult.ActionMemberID)
 		}
 		if len(members) != 0 {
-			return cardpublication_service.ErrProductActionConflict
+			return cardpublication_execution.ErrProductActionConflict
 		}
 	}
 	var httpStatus any
@@ -177,7 +176,7 @@ func (repository *Repository) RecordProductRetry(
 		return fmt.Errorf("finish publication product retry: %w", err)
 	}
 	if updated.RowsAffected() != 1 {
-		return cardpublication_service.ErrProductActionConflict
+		return cardpublication_execution.ErrProductActionConflict
 	}
 	const touchAction = `
 		UPDATE wb.publication_actions
@@ -192,7 +191,7 @@ func (repository *Repository) RecordProductRetry(
 		return fmt.Errorf("touch publication action after product retry: %w", err)
 	}
 	if updated.RowsAffected() != 1 {
-		return cardpublication_service.ErrProductActionConflict
+		return cardpublication_execution.ErrProductActionConflict
 	}
 	return nil
 }

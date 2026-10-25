@@ -7,7 +7,6 @@ import (
 	"fmt"
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
 	cardpublication_execution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/execution"
 )
 
@@ -34,7 +33,7 @@ func (repository *Repository) BeginMediaAttempt(
 	if err != nil || request.NMID != action.NMID ||
 		!bytes.Equal(payload, command.RequestPayload) {
 		return cardpublication_execution.MediaAttempt{},
-			cardpublication_service.ErrMediaActionConflict
+			cardpublication_execution.ErrMediaActionConflict
 	}
 	const bindIdentity = `
 		UPDATE wb.product_identities
@@ -65,7 +64,7 @@ func (repository *Repository) BeginMediaAttempt(
 	}
 	if result.RowsAffected() != 1 {
 		return cardpublication_execution.MediaAttempt{},
-			cardpublication_service.ErrMediaActionConflict
+			cardpublication_execution.ErrMediaActionConflict
 	}
 	const beginAction = `
 		UPDATE wb.publication_actions AS action
@@ -95,7 +94,7 @@ func (repository *Repository) BeginMediaAttempt(
 	}
 	if result.RowsAffected() != 1 {
 		return cardpublication_execution.MediaAttempt{},
-			cardpublication_service.ErrMediaActionConflict
+			cardpublication_execution.ErrMediaActionConflict
 	}
 	const beginPlan = `
 		UPDATE wb.publication_plans
@@ -114,7 +113,7 @@ func (repository *Repository) BeginMediaAttempt(
 	}
 	if result.RowsAffected() != 1 {
 		return cardpublication_execution.MediaAttempt{},
-			cardpublication_service.ErrMediaActionConflict
+			cardpublication_execution.ErrMediaActionConflict
 	}
 	const insertAttempt = `
 		INSERT INTO wb.publication_attempts (
@@ -195,7 +194,7 @@ func (repository *Repository) FinishMediaWithoutAttempt(
 	}
 	if result.RowsAffected() != 1 {
 		return cardpublication_execution.MediaGroupResult{},
-			cardpublication_service.ErrMediaActionConflict
+			cardpublication_execution.ErrMediaActionConflict
 	}
 	const finishAction = `
 		UPDATE wb.publication_actions
@@ -218,7 +217,7 @@ func (repository *Repository) FinishMediaWithoutAttempt(
 	}
 	if result.RowsAffected() != 1 {
 		return cardpublication_execution.MediaGroupResult{},
-			cardpublication_service.ErrMediaActionConflict
+			cardpublication_execution.ErrMediaActionConflict
 	}
 	if err := reducePublicationPlan(ctx, tx, action.TransferID, action.PlanID); err != nil {
 		return cardpublication_execution.MediaGroupResult{}, err

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	tx "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
 	cardpublication_execution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/execution"
 	transfer "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 )
@@ -16,7 +15,7 @@ func (repository *Repository) ScheduleMediaVisibility(ctx context.Context, dbtx 
 	action cardpublication_execution.MediaAction, attempt cardpublication_execution.MediaAttempt, result cardpublication_execution.MediaMutationResult,
 	interval, timeout time.Duration,
 ) error {
-	if (result.Disposition != service.SubmissionAccepted && result.Disposition != service.SubmissionUncertain) ||
+	if (result.Disposition != cardpublication_execution.SubmissionAccepted && result.Disposition != cardpublication_execution.SubmissionUncertain) ||
 		result.Validate() != nil ||
 		interval <= 0 || timeout <= interval {
 		return errors.New("schedule publication media visibility: invalid submission")
@@ -34,7 +33,7 @@ func (repository *Repository) ScheduleMediaVisibility(ctx context.Context, dbtx 
 		return fmt.Errorf("advance media action to visibility: %w", err)
 	}
 	if tag.RowsAffected() != 1 {
-		return service.ErrMediaActionConflict
+		return cardpublication_execution.ErrMediaActionConflict
 	}
 	const insert = `
 		INSERT INTO wb.publication_media_visibility
@@ -117,7 +116,7 @@ func (repository *Repository) UpdateMediaVisibility(ctx context.Context, dbtx tx
 	if dbtx == nil || action.State != "reconciling" || action.AttemptID != job.AttemptID ||
 		action.TransferID != job.Candidate.TransferID || action.ActionID != job.Candidate.ActionID ||
 		job.Revision <= 0 || update.NextDelay <= 0 || update.Observation.PhotosCount < 0 || len(update.ErrorCode) > 128 {
-		return cardpublication_execution.MediaGroupResult{}, service.ErrMediaActionConflict
+		return cardpublication_execution.MediaGroupResult{}, cardpublication_execution.ErrMediaActionConflict
 	}
 	terminal := update.OutcomeClass != ""
 	if (!terminal && update.OutcomeCode != "") || (terminal &&
@@ -149,7 +148,7 @@ func (repository *Repository) UpdateMediaVisibility(ctx context.Context, dbtx tx
 		return cardpublication_execution.MediaGroupResult{}, fmt.Errorf("update media visibility: %w", err)
 	}
 	if tag.RowsAffected() != 1 {
-		return cardpublication_execution.MediaGroupResult{}, service.ErrMediaActionConflict
+		return cardpublication_execution.MediaGroupResult{}, cardpublication_execution.ErrMediaActionConflict
 	}
 	if !terminal {
 		return cardpublication_execution.MediaGroupResult{GroupTargetID: action.Member.GroupTargetID}, nil

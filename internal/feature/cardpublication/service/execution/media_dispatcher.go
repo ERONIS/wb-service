@@ -54,69 +54,6 @@ type mediaTemplate struct {
 	Links []string `json:"links"`
 }
 
-func (action MediaAction) Validate() error {
-	if action.TransferID <= 0 || action.ActionID <= 0 || action.TargetID <= 0 ||
-		action.SellerID.Validate() != nil || action.AuthorizationID <= 0 ||
-		action.AuthorizationRevision < 0 || action.PlanID <= 0 || action.Revision < 0 ||
-		len(action.RequestPayload) == 0 ||
-		action.ClientGeneration.IsZero() ||
-		action.CredentialExpiresAt.IsZero() || action.PreflightObservationID <= 0 ||
-		action.Member.ID <= 0 || action.Member.GroupTargetID <= 0 ||
-		action.Member.TransferItemTargetID <= 0 ||
-		action.Member.RequestMemberIndex != 0 || action.Member.VendorCode == "" ||
-		strings.TrimSpace(action.Member.VendorCode) != action.Member.VendorCode ||
-		action.AttributionID < 0 || action.NMID <= 0 || action.IdentityRevision < 0 ||
-		(action.State != "planned" && action.State != "dispatching" && action.State != "reconciling") {
-		return errors.New("publication media action is invalid")
-	}
-	var template mediaTemplate
-	if err := decodeExactJSON(action.RequestPayload, &template); err != nil ||
-		len(template.Links) == 0 || len(template.Links) > contentapi.MaxMediaLinks {
-		return errors.New("publication media template is invalid")
-	}
-	for _, link := range template.Links {
-		if link == "" {
-			return errors.New("publication media template contains an empty link")
-		}
-	}
-	if action.AttemptID == 0 {
-		if action.State != "planned" || action.RecheckObservationID != 0 ||
-			len(action.AttemptRequestPayload) != 0 || !action.AttemptStartedAt.IsZero() {
-			return errors.New("publication media action has a partial attempt")
-		}
-		return nil
-	}
-	if (action.State != "dispatching" && action.State != "reconciling") || action.RecheckObservationID <= 0 ||
-		len(action.AttemptRequestPayload) == 0 || action.AttemptStartedAt.IsZero() {
-		return errors.New("publication media attempt is incomplete")
-	}
-	request, _, err := action.FinalRequest()
-	if err != nil || request.NMID != action.NMID {
-		return errors.New("publication media attempt request is invalid")
-	}
-	return nil
-}
-
-func (action MediaAction) FinalRequest() (
-	contentapi.SaveMediaByLinksRequest,
-	[]byte,
-	error,
-) {
-	var template mediaTemplate
-	if err := decodeExactJSON(action.RequestPayload, &template); err != nil {
-		return contentapi.SaveMediaByLinksRequest{}, nil, err
-	}
-	request := contentapi.SaveMediaByLinksRequest{
-		NMID: action.NMID,
-		Data: append([]string(nil), template.Links...),
-	}
-	payload, err := json.Marshal(request)
-	if err != nil {
-		return contentapi.SaveMediaByLinksRequest{}, nil, err
-	}
-	return request, payload, nil
-}
-
 type MediaAttempt struct {
 	ID                   int64
 	TransferID           transfer_model.TransferID
@@ -146,74 +83,11 @@ type MediaMutationResult struct {
 	UnmatchedCount    int
 }
 
-func (result MediaMutationResult) Validate() error {
-	if result.ClassifierVersion <= 0 || result.OutcomeCode == "" ||
-		len(result.OutcomeCode) > 128 || result.UnmatchedCount < 0 ||
-		!result.OutcomeClass.IsValid() || result.OutcomeClass == transfer_service.ResultPartial {
-		return errors.New("publication media mutation result is invalid")
-	}
-	switch result.Delivery {
-	case SubmissionNotDispatched:
-		if result.HTTPStatus != 0 || result.Disposition != SubmissionRejectedProven ||
-			result.OutcomeClass != transfer_service.ResultInternalError {
-			return errors.New("not-dispatched media result is invalid")
-		}
-	case SubmissionResponseReceived:
-		if result.HTTPStatus != 0 && (result.HTTPStatus < 100 || result.HTTPStatus > 599) {
-			return errors.New("publication media response status is invalid")
-		}
-	case SubmissionUnknownDelivery:
-		if result.HTTPStatus != 0 || result.Disposition != SubmissionUncertain ||
-			result.OutcomeClass != transfer_service.ResultUnresolved {
-			return errors.New("unknown-delivery media result is invalid")
-		}
-	default:
-		return errors.New("publication media delivery state is invalid")
-	}
-	switch result.Disposition {
-	case SubmissionAccepted:
-		if result.OutcomeClass != transfer_service.ResultSuccess || result.UnmatchedCount != 0 {
-			return errors.New("accepted publication media result is invalid")
-		}
-	case SubmissionRejectedProven:
-		if (result.OutcomeClass != transfer_service.ResultRejected &&
-			result.OutcomeClass != transfer_service.ResultInternalError) ||
-			result.UnmatchedCount != 0 {
-			return errors.New("rejected publication media result is invalid")
-		}
-	case SubmissionUncertain:
-		if result.OutcomeClass != transfer_service.ResultUnresolved ||
-			result.UnmatchedCount != 1 {
-			return errors.New("uncertain publication media result is invalid")
-		}
-	default:
-		return errors.New("publication media disposition is invalid")
-	}
-	return nil
-}
-
 type MediaGroupResult struct {
 	Terminal      bool
 	GroupTargetID int64
 	OutcomeClass  transfer_model.ResultClass
 	OutcomeCode   string
-}
-
-func (result MediaGroupResult) Validate() error {
-	if result.GroupTargetID <= 0 {
-		return errors.New("publication media group identity is invalid")
-	}
-	if !result.Terminal {
-		if result.OutcomeClass != "" || result.OutcomeCode != "" {
-			return errors.New("pending publication media group has a result")
-		}
-		return nil
-	}
-	if !result.OutcomeClass.IsValid() || result.OutcomeClass == transfer_service.ResultPartial ||
-		result.OutcomeCode == "" || len(result.OutcomeCode) > 128 {
-		return errors.New("terminal publication media group result is invalid")
-	}
-	return nil
 }
 
 type MediaJournalRepository interface {
@@ -285,6 +159,132 @@ type MediaDispatcher struct {
 type mediaActionKey struct {
 	transferID transfer_model.TransferID
 	actionID   int64
+}
+
+func (action MediaAction) Validate() error {
+	if action.TransferID <= 0 || action.ActionID <= 0 || action.TargetID <= 0 ||
+		action.SellerID.Validate() != nil || action.AuthorizationID <= 0 ||
+		action.AuthorizationRevision < 0 || action.PlanID <= 0 || action.Revision < 0 ||
+		len(action.RequestPayload) == 0 ||
+		action.ClientGeneration.IsZero() ||
+		action.CredentialExpiresAt.IsZero() || action.PreflightObservationID <= 0 ||
+		action.Member.ID <= 0 || action.Member.GroupTargetID <= 0 ||
+		action.Member.TransferItemTargetID <= 0 ||
+		action.Member.RequestMemberIndex != 0 || action.Member.VendorCode == "" ||
+		strings.TrimSpace(action.Member.VendorCode) != action.Member.VendorCode ||
+		action.AttributionID < 0 || action.NMID <= 0 || action.IdentityRevision < 0 ||
+		(action.State != "planned" && action.State != "dispatching" && action.State != "reconciling") {
+		return errors.New("publication media action is invalid")
+	}
+	var template mediaTemplate
+	if err := cardpublication_model.DecodeExactJSON(action.RequestPayload, &template); err != nil ||
+		len(template.Links) == 0 || len(template.Links) > contentapi.MaxMediaLinks {
+		return errors.New("publication media template is invalid")
+	}
+	for _, link := range template.Links {
+		if link == "" {
+			return errors.New("publication media template contains an empty link")
+		}
+	}
+	if action.AttemptID == 0 {
+		if action.State != "planned" || action.RecheckObservationID != 0 ||
+			len(action.AttemptRequestPayload) != 0 || !action.AttemptStartedAt.IsZero() {
+			return errors.New("publication media action has a partial attempt")
+		}
+		return nil
+	}
+	if (action.State != "dispatching" && action.State != "reconciling") || action.RecheckObservationID <= 0 ||
+		len(action.AttemptRequestPayload) == 0 || action.AttemptStartedAt.IsZero() {
+		return errors.New("publication media attempt is incomplete")
+	}
+	request, _, err := action.FinalRequest()
+	if err != nil || request.NMID != action.NMID {
+		return errors.New("publication media attempt request is invalid")
+	}
+	return nil
+}
+
+func (action MediaAction) FinalRequest() (
+	contentapi.SaveMediaByLinksRequest,
+	[]byte,
+	error,
+) {
+	var template mediaTemplate
+	if err := cardpublication_model.DecodeExactJSON(action.RequestPayload, &template); err != nil {
+		return contentapi.SaveMediaByLinksRequest{}, nil, err
+	}
+	request := contentapi.SaveMediaByLinksRequest{
+		NMID: action.NMID,
+		Data: append([]string(nil), template.Links...),
+	}
+	payload, err := json.Marshal(request)
+	if err != nil {
+		return contentapi.SaveMediaByLinksRequest{}, nil, err
+	}
+	return request, payload, nil
+}
+
+func (result MediaMutationResult) Validate() error {
+	if result.ClassifierVersion <= 0 || result.OutcomeCode == "" ||
+		len(result.OutcomeCode) > 128 || result.UnmatchedCount < 0 ||
+		!result.OutcomeClass.IsValid() || result.OutcomeClass == transfer_service.ResultPartial {
+		return errors.New("publication media mutation result is invalid")
+	}
+	switch result.Delivery {
+	case SubmissionNotDispatched:
+		if result.HTTPStatus != 0 || result.Disposition != SubmissionRejectedProven ||
+			result.OutcomeClass != transfer_service.ResultInternalError {
+			return errors.New("not-dispatched media result is invalid")
+		}
+	case SubmissionResponseReceived:
+		if result.HTTPStatus != 0 && (result.HTTPStatus < 100 || result.HTTPStatus > 599) {
+			return errors.New("publication media response status is invalid")
+		}
+	case SubmissionUnknownDelivery:
+		if result.HTTPStatus != 0 || result.Disposition != SubmissionUncertain ||
+			result.OutcomeClass != transfer_service.ResultUnresolved {
+			return errors.New("unknown-delivery media result is invalid")
+		}
+	default:
+		return errors.New("publication media delivery state is invalid")
+	}
+	switch result.Disposition {
+	case SubmissionAccepted:
+		if result.OutcomeClass != transfer_service.ResultSuccess || result.UnmatchedCount != 0 {
+			return errors.New("accepted publication media result is invalid")
+		}
+	case SubmissionRejectedProven:
+		if (result.OutcomeClass != transfer_service.ResultRejected &&
+			result.OutcomeClass != transfer_service.ResultInternalError) ||
+			result.UnmatchedCount != 0 {
+			return errors.New("rejected publication media result is invalid")
+		}
+	case SubmissionUncertain:
+		if result.OutcomeClass != transfer_service.ResultUnresolved ||
+			result.UnmatchedCount != 1 {
+			return errors.New("uncertain publication media result is invalid")
+		}
+	default:
+		return errors.New("publication media disposition is invalid")
+	}
+	return nil
+}
+
+func (result MediaGroupResult) Validate() error {
+	if result.GroupTargetID <= 0 {
+		return errors.New("publication media group identity is invalid")
+	}
+	if !result.Terminal {
+		if result.OutcomeClass != "" || result.OutcomeCode != "" {
+			return errors.New("pending publication media group has a result")
+		}
+		return nil
+	}
+	if !result.OutcomeClass.IsValid() || result.OutcomeClass == transfer_service.ResultPartial ||
+		result.OutcomeCode == "" || len(result.OutcomeCode) > 128 {
+		return errors.New("terminal publication media group result is invalid")
+	}
+	return nil
 }
 
 func NewMediaDispatcher(
@@ -794,7 +794,7 @@ func BuildMediaRecheck(
 		Trash:      trash,
 		ObservedAt: observation.ObservedAt,
 	}
-	draft, err := observationDraft(targeted)
+	draft, err := cardpublication_catalog.DraftObservation(targeted)
 	if err != nil {
 		return TargetedRecheck{}, err
 	}

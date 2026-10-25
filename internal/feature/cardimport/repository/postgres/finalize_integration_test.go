@@ -8,9 +8,8 @@ import (
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
-	cardimport_batch "github.com/ERONIS/wb-service/internal/feature/cardimport/service/batch"
 	cardimport_contract "github.com/ERONIS/wb-service/internal/feature/cardimport/service/contract"
-	cardimport_intake "github.com/ERONIS/wb-service/internal/feature/cardimport/service/intake"
+	cardimport_model "github.com/ERONIS/wb-service/internal/feature/cardimport/service/model"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -46,8 +45,8 @@ func TestPostgresPersistFinalizedIsAtomic(t *testing.T) {
 		}
 	}
 	now := time.Now().UTC()
-	sessionID := cardimport_intake.SessionID(now.UnixNano())
-	fileID := cardimport_intake.FileID(now.UnixNano() + 1)
+	sessionID := cardimport_model.SessionID(now.UnixNano())
+	fileID := cardimport_model.FileID(now.UnixNano() + 1)
 	user := domain.CreateUser(now.UnixNano()+2, "Тест Пользователь")
 	card := cardpipeline.Card{
 		SourceRows: []int{2}, Group: "1", Category: "Одежда",
@@ -56,25 +55,25 @@ func TestPostgresPersistFinalizedIsAtomic(t *testing.T) {
 			Sizes:      []cardpipeline.Size{{TechSize: "M", SKUs: []string{"test-barcode"}}},
 		},
 	}
-	item := cardimport_batch.BatchItem{
+	item := cardimport_model.BatchItem{
 		Position: 1, SourceFileID: fileID, SourceRows: []int{2},
-		SourceGroupKey: cardimport_batch.NewSourceGroupKey(fileID, "1"),
+		SourceGroupKey: cardimport_model.NewSourceGroupKey(fileID, "1"),
 		VendorCode:     "test-sku", Payload: card,
 	}
 	finalized := cardimport_contract.FinalizedSession{
-		Session: cardimport_intake.Session{
+		Session: cardimport_model.Session{
 			ID: sessionID, AuthorTelegramID: user.TelegramID,
-			Status:   cardimport_intake.SessionStatusCollecting,
+			Status:   cardimport_model.SessionStatusCollecting,
 			Revision: 1, CreatedAt: now, UpdatedAt: now,
 		},
-		Files: []cardimport_intake.File{{
+		Files: []cardimport_model.File{{
 			ID: fileID, SessionID: sessionID, TelegramFileID: "test-file",
 			TelegramFileUniqueID: "test-unique", TelegramMessageID: 1,
 			OriginalFilename: "test.xlsx", DeclaredSize: 4, StoredSize: 4,
-			Status:    cardimport_intake.FileStatusValid,
+			Status:    cardimport_model.FileStatusValid,
 			CreatedAt: now, UpdatedAt: now,
 		}},
-		Items: []cardimport_batch.BatchItem{item}, GroupsCount: 1, User: user,
+		Items: []cardimport_model.BatchItem{item}, GroupsCount: 1, User: user,
 		Command: cardimport_contract.FinalizeCommand{
 			SessionID: sessionID, ExpectedRevision: 1, IdempotencyKey: "test",
 		},

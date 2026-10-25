@@ -10,15 +10,14 @@ import (
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	cardimport_batch "github.com/ERONIS/wb-service/internal/feature/cardimport/service/batch"
 	cardimport_contract "github.com/ERONIS/wb-service/internal/feature/cardimport/service/contract"
-	cardimport_intake "github.com/ERONIS/wb-service/internal/feature/cardimport/service/intake"
+	cardimport_model "github.com/ERONIS/wb-service/internal/feature/cardimport/service/model"
 
 	"github.com/jackc/pgx/v5"
 )
 
 type frozenBatchItem struct {
-	domain  cardimport_batch.BatchItem
+	domain  cardimport_model.BatchItem
 	payload []byte
 }
 
@@ -26,12 +25,12 @@ func (r *Repository) PersistFinalized(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
 	finalized cardimport_contract.FinalizedSession,
-) (cardimport_batch.BatchHeader, error) {
+) (cardimport_model.BatchHeader, error) {
 	if tx == nil {
-		return cardimport_batch.BatchHeader{}, errors.New("persist finalized cardimport: DBTX is nil")
+		return cardimport_model.BatchHeader{}, errors.New("persist finalized cardimport: DBTX is nil")
 	}
 	if err := validateFinalizedSession(finalized); err != nil {
-		return cardimport_batch.BatchHeader{}, err
+		return cardimport_model.BatchHeader{}, err
 	}
 	const insertBatch = `
 		INSERT INTO wb.card_batches (
@@ -55,36 +54,36 @@ func (r *Repository) PersistFinalized(
 		return loadExistingFinalization(ctx, tx, finalized)
 	}
 	if err != nil {
-		return cardimport_batch.BatchHeader{}, fmt.Errorf("insert cardimport batch: %w", err)
+		return cardimport_model.BatchHeader{}, fmt.Errorf("insert cardimport batch: %w", err)
 	}
 	items := make([]frozenBatchItem, len(finalized.Items))
 	for index, item := range finalized.Items {
 		payload, err := json.Marshal(item.Payload)
 		if err != nil {
-			return cardimport_batch.BatchHeader{}, fmt.Errorf("marshal cardimport item: %w", err)
+			return cardimport_model.BatchHeader{}, fmt.Errorf("marshal cardimport item: %w", err)
 		}
 		items[index] = frozenBatchItem{domain: item, payload: payload}
 	}
 	if err := copyFrozenItems(ctx, tx, cardpipeline.BatchID(batchID), items); err != nil {
-		return cardimport_batch.BatchHeader{}, err
+		return cardimport_model.BatchHeader{}, err
 	}
 	tag, err := tx.Exec(ctx,
 		"UPDATE wb.card_batches SET sealed = TRUE WHERE id = $1 AND NOT sealed",
 		batchID,
 	)
 	if err != nil {
-		return cardimport_batch.BatchHeader{}, fmt.Errorf("seal cardimport batch: %w", err)
+		return cardimport_model.BatchHeader{}, fmt.Errorf("seal cardimport batch: %w", err)
 	}
 	if tag.RowsAffected() != 1 {
-		return cardimport_batch.BatchHeader{}, fmt.Errorf("cardimport batch was not sealed: %w", core_errors.ErrConflict)
+		return cardimport_model.BatchHeader{}, fmt.Errorf("cardimport batch was not sealed: %w", core_errors.ErrConflict)
 	}
-	header := cardimport_batch.BatchHeader{
+	header := cardimport_model.BatchHeader{
 		ID: cardpipeline.BatchID(batchID), SourceSessionID: finalized.Session.ID,
 		ItemsCount: len(items), GroupsCount: finalized.GroupsCount,
 		AuthorTelegramID: finalized.User.TelegramID, FinalizedAt: finalizedAt,
 	}
 	if err := header.Validate(); err != nil {
-		return cardimport_batch.BatchHeader{}, err
+		return cardimport_model.BatchHeader{}, err
 	}
 	return header, nil
 }
@@ -96,19 +95,19 @@ func validateFinalizedSession(finalized cardimport_contract.FinalizedSession) er
 	if err := finalized.User.Validate(); err != nil {
 		return err
 	}
-	if finalized.Session.Status != cardimport_intake.SessionStatusCollecting ||
+	if finalized.Session.Status != cardimport_model.SessionStatusCollecting ||
 		finalized.Session.AuthorTelegramID != finalized.User.TelegramID ||
 		finalized.Session.Revision != finalized.Command.ExpectedRevision ||
 		finalized.Session.ID != finalized.Command.SessionID ||
 		len(finalized.Files) == 0 || len(finalized.Items) == 0 {
 		return fmt.Errorf("invalid finalized cardimport session: %w", core_errors.ErrConflict)
 	}
-	files := make(map[cardimport_intake.FileID]struct{}, len(finalized.Files))
+	files := make(map[cardimport_model.FileID]struct{}, len(finalized.Files))
 	for _, file := range finalized.Files {
 		if err := file.Validate(); err != nil {
 			return err
 		}
-		if file.SessionID != finalized.Session.ID || file.Status != cardimport_intake.FileStatusValid {
+		if file.SessionID != finalized.Session.ID || file.Status != cardimport_model.FileStatusValid {
 			return fmt.Errorf("invalid finalized cardimport file: %w", core_errors.ErrConflict)
 		}
 		files[file.ID] = struct{}{}
@@ -135,7 +134,7 @@ func validateFinalizedSession(finalized cardimport_contract.FinalizedSession) er
 func loadExistingFinalization(
 	ctx context.Context, tx core_postgres_transaction.DBTX,
 	finalized cardimport_contract.FinalizedSession,
-) (cardimport_batch.BatchHeader, error) {
+) (cardimport_model.BatchHeader, error) {
 	const query = `
 		SELECT id, author_telegram_id, finalized_from_revision,
 			finalize_idempotency_key, sealed
@@ -151,11 +150,11 @@ func loadExistingFinalization(
 	if err := tx.QueryRow(ctx, query, finalized.Session.ID).Scan(
 		&batchID, &authorID, &revision, &key, &sealed,
 	); err != nil {
-		return cardimport_batch.BatchHeader{}, fmt.Errorf("cardimport session ID collision: %w", core_errors.ErrConflict)
+		return cardimport_model.BatchHeader{}, fmt.Errorf("cardimport session ID collision: %w", core_errors.ErrConflict)
 	}
 	if !sealed || authorID != finalized.User.TelegramID ||
 		revision != finalized.Command.ExpectedRevision || key != finalized.Command.IdempotencyKey {
-		return cardimport_batch.BatchHeader{}, fmt.Errorf("cardimport finalize command differs: %w", core_errors.ErrConflict)
+		return cardimport_model.BatchHeader{}, fmt.Errorf("cardimport finalize command differs: %w", core_errors.ErrConflict)
 	}
 	return loadBatch(ctx, tx, cardpipeline.BatchID(batchID))
 }
