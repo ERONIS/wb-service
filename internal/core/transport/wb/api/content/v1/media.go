@@ -5,10 +5,7 @@ type SaveMediaByLinksRequest struct {
 	Data []string `json:"data"`
 }
 
-type SaveMediaByLinksResponse struct {
-	Data EmptyObject `json:"data"`
-	ResponseMeta
-}
+type SaveMediaByLinksResponse = DataResponse[EmptyObject]
 
 type UploadMediaFileRequest struct {
 	NMID        int64
@@ -23,7 +20,4 @@ type DownloadedMediaFile struct {
 	Data      []byte
 }
 
-type UploadMediaFileResponse struct {
-	Data EmptyObject `json:"data"`
-	ResponseMeta
-}
+type UploadMediaFileResponse = DataResponse[EmptyObject]

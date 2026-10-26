@@ -98,7 +98,9 @@ func classifySubmissionEnvelope(
 
 func classifySubmissionError(action ProductAction, err error) SubmissionResult {
 	var classified core_wb.ClassifiedError
-	if !errors.As(err, &classified) {
+	if !errors.As(err, &classified) ||
+		(classified.Delivery() == core_wb.NotDispatched &&
+			classified.Code() == core_wb.ErrorCodeExecutorUnavailable) {
 		return internalNotDispatched(action, "WB_CALL_NOT_DISPATCHED")
 	}
 	safeCode := "WB_TRANSPORT_" + strings.ToUpper(classified.Code())

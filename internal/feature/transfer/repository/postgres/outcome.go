@@ -10,6 +10,43 @@ import (
 
 // Общие SQL-фрагменты агрегации результатов групп и расчёта мастер-исходов переноса.
 const (
+	// itemOutcomeCountColumns содержит общие счётчики результатов товаров для одной группы.
+	itemOutcomeCountColumns = `
+		COUNT(*) AS total,
+		COUNT(*) FILTER (WHERE item_target.state = 'terminal') AS terminal,
+		COUNT(*) FILTER (WHERE item_target.outcome_class = 'rejected') AS rejected,
+		COUNT(*) FILTER (WHERE item_target.outcome_class = 'unresolved') AS unresolved,
+		COUNT(*) FILTER (WHERE item_target.outcome_class = 'internal_error') AS internal_error,
+		COUNT(*) FILTER (
+			WHERE item_target.outcome_class IN ('success', 'skipped')
+		) AS accepted,
+		COUNT(*) FILTER (
+			WHERE item_target.outcome_class IN ('unresolved', 'internal_error')
+			  AND item_target.attention_closed_at IS NULL
+		) AS open_attention
+	`
+
+	// itemToPublicationStatusExpression определяет статус публикации по результатам товаров.
+	itemToPublicationStatusExpression = `
+		CASE
+			WHEN item_counts.unresolved > 0 OR item_counts.internal_error > 0
+				THEN 'unresolved'
+			WHEN item_counts.rejected > 0 THEN 'rejected'
+			ELSE 'succeeded'
+		END
+	`
+
+	// itemToGroupOutcomeExpression определяет исход группы по результатам товаров.
+	itemToGroupOutcomeExpression = `
+		CASE
+			WHEN item_counts.unresolved > 0 OR item_counts.internal_error > 0
+				THEN 'unresolved'
+			WHEN item_counts.rejected = item_counts.total THEN 'rejected'
+			WHEN item_counts.rejected > 0 AND item_counts.accepted > 0 THEN 'partial'
+			ELSE 'success'
+		END
+	`
+
 	// groupOutcomeCountsCTE вычисляет агрегированные количества исходов групп для заданного переноса ($1).
 	groupOutcomeCountsCTE = `
 		group_counts AS (
@@ -19,7 +56,11 @@ const (
 				COUNT(*) FILTER (WHERE overall_outcome = 'rejected') AS rejected,
 				COUNT(*) FILTER (WHERE overall_outcome = 'partial') AS partial,
 				COUNT(*) FILTER (WHERE overall_outcome = 'unresolved') AS unresolved,
-				COUNT(*) FILTER (WHERE overall_outcome = 'internal_error') AS internal_error
+				COUNT(*) FILTER (WHERE overall_outcome = 'internal_error') AS internal_error,
+				COUNT(*) FILTER (
+					WHERE overall_outcome IN ('unresolved', 'internal_error')
+					  AND attention_code IS NOT NULL
+				) AS open_attention
 			FROM wb.transfer_group_targets
 			WHERE transfer_id = $1
 		)

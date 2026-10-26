@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
+	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
 
 	"github.com/jackc/pgx/v5"
@@ -73,6 +74,7 @@ func (r *Repository) ClaimFileForParsing(
 
 func (r *Repository) SaveParsedFile(
 	ctx context.Context,
+	tx core_postgres_transaction.DBTX,
 	command cardimport_service.ParseFileCommand,
 	result cardimport_service.AggregatedFile,
 ) (cardimport_service.File, error) {
@@ -82,18 +84,6 @@ func (r *Repository) SaveParsedFile(
 			core_errors.ErrConflict,
 		)
 	}
-
-	ctx, cancel := r.pool.OperationContext(ctx)
-	defer cancel()
-
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return cardimport_service.File{}, fmt.Errorf(
-			"begin save parsed cardimport file: %w",
-			err,
-		)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
 
 	if err := lockParsingFile(ctx, tx, command); err != nil {
 		return cardimport_service.File{}, err
@@ -133,19 +123,12 @@ func (r *Repository) SaveParsedFile(
 		)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return cardimport_service.File{}, fmt.Errorf(
-			"commit parsed cardimport file: %w",
-			err,
-		)
-	}
-
 	return file, nil
 }
 
 func lockParsingFile(
 	ctx context.Context,
-	tx pgx.Tx,
+	tx core_postgres_transaction.DBTX,
 	command cardimport_service.ParseFileCommand,
 ) error {
 	const query = `
@@ -184,7 +167,7 @@ func lockParsingFile(
 
 func clearPreviousParseResult(
 	ctx context.Context,
-	tx pgx.Tx,
+	tx core_postgres_transaction.DBTX,
 	command cardimport_service.ParseFileCommand,
 ) error {
 	queries := []struct {
@@ -222,7 +205,7 @@ func clearPreviousParseResult(
 
 func copyCards(
 	ctx context.Context,
-	tx pgx.Tx,
+	tx core_postgres_transaction.DBTX,
 	command cardimport_service.ParseFileCommand,
 	cards []cardimport_service.AggregatedCard,
 ) error {
@@ -284,7 +267,7 @@ func copyCards(
 
 func copyIssues(
 	ctx context.Context,
-	tx pgx.Tx,
+	tx core_postgres_transaction.DBTX,
 	command cardimport_service.ParseFileCommand,
 	issues []cardimport_service.ParseIssue,
 ) error {
@@ -335,7 +318,7 @@ func copyIssues(
 
 func rebuildCrossFileIssues(
 	ctx context.Context,
-	tx pgx.Tx,
+	tx core_postgres_transaction.DBTX,
 	sessionID cardimport_service.SessionID,
 ) error {
 	const vendorCodesQuery = `
@@ -396,7 +379,7 @@ func rebuildCrossFileIssues(
 
 func finishParsingFile(
 	ctx context.Context,
-	tx pgx.Tx,
+	tx core_postgres_transaction.DBTX,
 	command cardimport_service.ParseFileCommand,
 	status cardimport_service.FileStatus,
 ) (cardimport_service.File, error) {

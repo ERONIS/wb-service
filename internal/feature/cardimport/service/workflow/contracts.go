@@ -24,6 +24,8 @@ type FileParser interface {
 }
 
 type Repository interface {
+	OperationContext(context.Context) (context.Context, context.CancelFunc)
+
 	GetOrCreateCollectingSession(
 		ctx context.Context,
 		authorTelegramID int64,
@@ -55,6 +57,7 @@ type Repository interface {
 
 	ContinueAfterErrors(
 		ctx context.Context,
+		tx core_postgres_transaction.DBTX,
 		command ContinueCommand,
 	) (Session, error)
 
@@ -84,6 +87,7 @@ type Repository interface {
 
 	SaveParsedFile(
 		ctx context.Context,
+		tx core_postgres_transaction.DBTX,
 		command ParseFileCommand,
 		result AggregatedFile,
 	) (File, error)

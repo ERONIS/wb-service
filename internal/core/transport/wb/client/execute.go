@@ -2,11 +2,6 @@ package client
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"net/http"
-	"net/http/httptrace"
-	"sync/atomic"
 	"time"
 
 	"github.com/ERONIS/wb-service/internal/core/transport/wb/client/request"
@@ -14,17 +9,25 @@ import (
 	policy "github.com/ERONIS/wb-service/internal/core/transport/wb/policy"
 )
 
-type executionResult struct {
-	statusCode     int
-	body           []byte
-	err            error
-	delivery       DeliveryState
-	retryable      bool
-	retryAfter     time.Duration
-	observationErr error
+// ExecuteResponse выполняет операцию и возвращает ответ нужного типа.
+func ExecuteResponse[Response any](
+	ctx context.Context,
+	executor *APIClient,
+	operation policy.Operation,
+	query any,
+	body any,
+) (Response, error) {
+	var response Response
+	if executor == nil {
+		return response, ExecutorUnavailableError(errAPIClientRequired)
+	}
+	if err := executor.Execute(ctx, operation, query, body, &response); err != nil {
+		return response, err
+	}
+	return response, nil
 }
 
-// Execute выполняет полный lifecycle одного логического WB-запроса.
+// Execute выполняет полный цикл одного логического запроса к WB.
 func (client *APIClient) Execute(
 	ctx context.Context,
 	operation policy.Operation,
@@ -32,17 +35,12 @@ func (client *APIClient) Execute(
 	body any,
 	target any,
 ) (executeErr error) {
-	attemptLimit := client.attemptLimit(operation)
-	trace := newRequestTrace(client, operation, attemptLimit)
+	maxAttempts := attemptLimit(operation)
+	trace := newRequestTrace(client, operation, maxAttempts)
 	result := executionResult{delivery: NotDispatched}
 
 	defer func() {
-		var classified *classifiedError
-		if errors.As(executeErr, &classified) && classified.delivery == ResponseReceived {
-			classified.httpStatus = result.statusCode
-		}
-		trace.complete(result, executeErr)
-		trace.log(clientLogger(client))
+		trace.log(clientLogger(client), result, executeErr)
 	}()
 
 	if client == nil {
@@ -50,9 +48,9 @@ func (client *APIClient) Execute(
 			ErrorCodeInvalidRequest,
 			NotDispatched,
 			0,
+			0,
 			errAPIClientRequired,
 		)
-
 		return result.err
 	}
 	if ctx == nil {
@@ -60,380 +58,87 @@ func (client *APIClient) Execute(
 			ErrorCodeInvalidRequest,
 			NotDispatched,
 			0,
+			0,
 			errRequestContextRequired,
 		)
-
 		return result.err
 	}
-	executionContext, cancelExecution := context.WithTimeout(ctx, client.httpClient.Timeout*time.Duration(attemptLimit))
+
+	executionContext, cancelExecution := context.WithTimeout(
+		ctx,
+		client.httpClient.Timeout*time.Duration(maxAttempts),
+	)
 	defer cancelExecution()
 
+	prepared, err := prepareExecutionRequest(operation, query, body, target)
+	if err != nil {
+		result.err = err
+		return result.err
+	}
+	trace.metrics.requestBytes = prepared.BodyBytes()
+
+	result = client.executeAttempts(executionContext, prepared, operation, trace, maxAttempts)
+	if result.err != nil {
+		return result.err
+	}
+
+	result.err = decodeExecutionResponse(result, operation, target)
+	return result.err
+}
+
+// prepareExecutionRequest проверяет приёмник ответа и готовит данные запроса.
+func prepareExecutionRequest(
+	operation policy.Operation,
+	query any,
+	body any,
+	target any,
+) (request.Prepared, error) {
 	if operation.ResponseMode().IsJSON() {
 		if err := response.ValidateTarget(target); err != nil {
-			result.err = newClassifiedError(
+			return request.Prepared{}, newClassifiedError(
 				ErrorCodeInvalidResultTarget,
 				NotDispatched,
 				0,
+				0,
 				err,
 			)
-
-			return result.err
 		}
 	}
 
-	prepared, err := request.Prepare(
-		operation,
-		query,
-		body,
-	)
+	prepared, err := request.Prepare(operation, query, body)
 	if err != nil {
-		result.err = newClassifiedError(
+		return request.Prepared{}, newClassifiedError(
 			ErrorCodeInvalidRequest,
 			NotDispatched,
 			0,
+			0,
 			err,
 		)
-
-		return result.err
 	}
-	trace.requestBytes = prepared.BodyBytes()
-
-	for attemptNumber := 1; attemptNumber <= attemptLimit; attemptNumber++ {
-		if attemptNumber > 1 {
-			if err := executionContext.Err(); err != nil {
-				result = retryInterruptedResult(result, err)
-
-				return result.err
-			}
-		}
-		waitStartedAt := time.Now()
-		waitErr := client.rateLimiters.Wait(
-			executionContext,
-			client.sellerID,
-			operation.BucketID(),
-		)
-		trace.addLimiterWait(time.Since(waitStartedAt))
-		if waitErr != nil {
-			code := ErrorCodeRateLimited
-			if errors.Is(waitErr, context.Canceled) {
-				code = ErrorCodeCanceled
-			} else if errors.Is(waitErr, context.DeadlineExceeded) {
-				code = ErrorCodeDeadlineExceeded
-			}
-			waitResult := executionResult{
-				err: newClassifiedError(
-					code,
-					NotDispatched,
-					0,
-					waitErr,
-				),
-				delivery: NotDispatched,
-			}
-			if attemptNumber > 1 {
-				result = retryInterruptedResult(result, waitResult.err)
-			} else {
-				result = waitResult
-			}
-
-			return result.err
-		}
-		attemptContext := executionContext
-		cancelAttempt := func() {}
-		remainingAttempts := attemptLimit - attemptNumber + 1
-		if remainingAttempts > 1 {
-			if deadline, exists := executionContext.Deadline(); exists {
-				remaining := time.Until(deadline)
-				attemptContext, cancelAttempt = context.WithTimeout(
-					executionContext,
-					remaining/time.Duration(remainingAttempts),
-				)
-			}
-		}
-
-		attemptResult := client.doAttempt(
-			attemptContext,
-			prepared,
-			operation,
-			trace,
-		)
-		cancelAttempt()
-		trace.addResponseBytes(len(attemptResult.body))
-		trace.recordObservationError(attemptResult.observationErr)
-
-		result = attemptResult
-		if !client.shouldRetry(
-			executionContext,
-			operation,
-			result,
-			attemptNumber,
-			attemptLimit,
-		) {
-			break
-		}
-
-		if err := client.backoff.Wait(
-			executionContext,
-			attemptNumber,
-			result.retryAfter,
-		); err != nil {
-			result = retryInterruptedResult(result, err)
-
-			return result.err
-		}
-	}
-
-	if result.err != nil {
-		return result.err
-	}
-
-	if operation.ResponseMode().IsJSON() {
-		if err := response.Decode(result.body, target); err != nil {
-			code := ErrorCodeInvalidResponse
-			if response.IsEmptyBody(err) {
-				code = ErrorCodeEmptyResponse
-			}
-			result.err = newClassifiedError(
-				code,
-				result.delivery,
-				0,
-				err,
-			)
-
-			return result.err
-		}
-	}
-
-	return nil
+	return prepared, nil
 }
 
-func (client *APIClient) attemptLimit(
-	operation policy.Operation,
-) int {
-	if client != nil &&
-		operation.Kind().IsRead() &&
-		operation.RetryMode().AllowsRetry() {
-		return policy.DefaultMaxReadAttempts
-	}
-
-	return 1
-}
-
-func (client *APIClient) shouldRetry(
-	ctx context.Context,
-	operation policy.Operation,
+// decodeExecutionResponse переносит JSON-ответ в результат и классифицирует ошибку.
+func decodeExecutionResponse(
 	result executionResult,
-	attemptNumber int,
-	attemptLimit int,
-) bool {
-	return ctx.Err() == nil &&
-		attemptNumber < attemptLimit &&
-		operation.Kind().IsRead() &&
-		operation.RetryMode().AllowsRetry() &&
-		result.retryable
-}
-
-func (client *APIClient) doAttempt(
-	ctx context.Context,
-	prepared request.Prepared,
 	operation policy.Operation,
-	trace *requestTrace,
-) executionResult {
-	var dispatchCount atomic.Int64
-	attemptContext := httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
-		WroteRequest: func(_ httptrace.WroteRequestInfo) {
-			dispatchCount.Add(1)
-		},
-	})
-
-	httpRequest, err := prepared.NewHTTPRequest(attemptContext)
-	if err != nil {
-		return executionResult{
-			err: newClassifiedError(
-				ErrorCodeInvalidRequest,
-				NotDispatched,
-				0,
-				err,
-			),
-			delivery: NotDispatched,
+	target any,
+) error {
+	if !operation.ResponseMode().IsJSON() {
+		return nil
+	}
+	if err := response.Decode(result.body, target); err != nil {
+		code := ErrorCodeInvalidResponse
+		if response.IsEmptyBody(err) {
+			code = ErrorCodeEmptyResponse
 		}
-	}
-	httpRequest.Header.Set("Authorization", client.token)
-
-	httpResponse, transportErr := client.httpClient.Do(httpRequest)
-	statusCode := 0
-	if httpResponse != nil {
-		statusCode = httpResponse.StatusCode
-	}
-	dispatches := int(dispatchCount.Load())
-	trace.recordAttempt(statusCode, dispatches)
-	dispatched := dispatches > 0
-	if transportErr != nil {
-		return client.transportErrorResult(
-			httpResponse,
-			operation,
-			transportErr,
-			dispatched,
-		)
-	}
-	if httpResponse == nil {
-		delivery := deliveryWithoutResponse(dispatched)
-
-		return executionResult{
-			err: newClassifiedError(
-				ErrorCodeTransport,
-				delivery,
-				0,
-				errHTTPResponseRequired,
-			),
-			delivery: delivery,
-		}
-	}
-
-	return client.responseResult(httpResponse, operation)
-}
-
-func (client *APIClient) transportErrorResult(
-	httpResponse *http.Response,
-	operation policy.Operation,
-	transportErr error,
-	dispatched bool,
-) executionResult {
-	if httpResponse == nil {
-		delivery := deliveryWithoutResponse(dispatched)
-
-		return executionResult{
-			err: newClassifiedError(
-				ErrorCodeTransport,
-				delivery,
-				0,
-				newSafeTransportError(transportErr),
-			),
-			delivery: delivery,
-			retryable: response.IsRetryableTransportError(transportErr) ||
-				errors.Is(transportErr, context.DeadlineExceeded),
-		}
-	}
-
-	result := client.responseResult(httpResponse, operation)
-	cause := transportErr
-	if result.err != nil {
-		cause = errors.Join(transportErr, result.err)
-	}
-
-	result.err = newClassifiedError(
-		ErrorCodeTransport,
-		ResponseReceived,
-		result.retryAfter,
-		newSafeTransportError(cause),
-	)
-	result.delivery = ResponseReceived
-	result.retryable = false
-
-	return result
-}
-
-func (client *APIClient) responseResult(
-	httpResponse *http.Response,
-	operation policy.Operation,
-) executionResult {
-	result := executionResult{
-		statusCode: httpResponse.StatusCode,
-		delivery:   ResponseReceived,
-	}
-
-	result.retryAfter, result.observationErr = client.rateLimiters.Observe(
-		client.sellerID,
-		operation.BucketID(),
-		httpResponse,
-	)
-
-	var readErr error
-	switch {
-	case operation.ResponseMode().IsJSON():
-		result.body, readErr = response.ReadAndClose(
-			httpResponse,
-			operation.MaxResponseBytes(),
-		)
-
-	case operation.ResponseMode().IsNone():
-		readErr = response.Close(httpResponse)
-
-	default:
-		readErr = fmt.Errorf(
-			"WB response has unsupported body mode %q",
-			operation.ResponseMode(),
-		)
-		if httpResponse.Body != nil {
-			readErr = errors.Join(readErr, httpResponse.Body.Close())
-		}
-	}
-
-	if readErr != nil {
-		result.err = newClassifiedError(
-			ErrorCodeInvalidResponse,
-			ResponseReceived,
-			0,
-			readErr,
-		)
-		result.retryable = response.IsRetryableTransportError(readErr) ||
-			errors.Is(readErr, context.DeadlineExceeded)
-
-		return result
-	}
-
-	if operation.IsSuccessStatus(result.statusCode) {
-		return result
-	}
-
-	code := ErrorCodeUnexpectedStatus
-	if result.statusCode == http.StatusTooManyRequests {
-		code = ErrorCodeRateLimited
-	}
-	result.retryable = response.IsRetryableStatus(result.statusCode)
-	result.err = newClassifiedError(
-		code,
-		ResponseReceived,
-		result.retryAfter,
-		fmt.Errorf(
-			"WB API returned HTTP status %d",
+		return newClassifiedError(
+			code,
+			result.delivery,
 			result.statusCode,
-		),
-	)
-
-	return result
-}
-
-func retryInterruptedResult(
-	result executionResult,
-	cause error,
-) executionResult {
-	if cause == nil {
-		return result
+			0,
+			err,
+		)
 	}
-
-	retryCause := cause
-	if result.err != nil {
-		retryCause = errors.Join(result.err, cause)
-	}
-
-	result.err = newClassifiedError(
-		ErrorCodeRetryInterrupted,
-		result.delivery,
-		0,
-		newSafeWrappedError(
-			"WB read retry interrupted",
-			retryCause,
-		),
-	)
-	result.retryable = false
-
-	return result
-}
-
-func deliveryWithoutResponse(dispatched bool) DeliveryState {
-	if dispatched {
-		return UnknownDelivery
-	}
-
-	return NotDispatched
+	return nil
 }

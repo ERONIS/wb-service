@@ -19,6 +19,8 @@ export PROJECT_ROOT
 	migrate-action \
 	admin-bootstrap \
 	cabinet-bootstrap \
+	postgres-integration-test \
+	postgres-integration-test-local \
 	wb-service-run
 
 init: env-init
@@ -128,6 +130,19 @@ cabinet-bootstrap:
 		-d "$(POSTGRES_DB)" \
 		< scripts/bootstrap_cabinets.sql
 	@echo "Кабинеты WB для Admin с TG ID $(ADMIN_TG_ID) успешно созданы или обновлены"
+
+postgres-integration-test:
+	@if [ -z "$$POSTGRES_TEST_DSN" ]; then \
+		echo "Укажите POSTGRES_TEST_DSN для отдельной БД с применёнными миграциями"; \
+		exit 1; \
+	fi
+	@go test -count=1 -v \
+		./internal/feature/cardimport/repository/postgres \
+		./internal/feature/transfer/repository/postgres \
+		-run '^TestPostgres'
+
+postgres-integration-test-local:
+	@python3 scripts/postgres_integration_test.py
 
 wb-service-run:
 	@$(MAKE) migrate-up

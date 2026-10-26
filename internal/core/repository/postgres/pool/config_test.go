@@ -26,6 +26,9 @@ func TestConfigValidate(t *testing.T) {
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("ожидалась валидная конфигурация, получена ошибка: %v", err)
 	}
+	if valid.ApplicationName != "wb-service" {
+		t.Fatalf("неверное имя приложения по умолчанию: %q", valid.ApplicationName)
+	}
 
 	// Проверка MinConns > MaxConns
 	invalidMinConns := valid
@@ -46,6 +49,12 @@ func TestConfigValidate(t *testing.T) {
 	emptyHost.Host = ""
 	if err := emptyHost.Validate(); err == nil {
 		t.Fatal("ожидалась ошибка при пустом хосте, получен nil")
+	}
+
+	invalidApplicationName := valid
+	invalidApplicationName.ApplicationName = "name\nsecret"
+	if err := invalidApplicationName.Validate(); err == nil {
+		t.Fatal("ожидалась ошибка при недопустимом имени приложения")
 	}
 }
 

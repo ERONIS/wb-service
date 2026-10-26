@@ -65,6 +65,12 @@ type Repository interface {
 		transferID TransferID,
 	) ([]SellerID, error)
 
+	ListTargetSellerIDsWithin(
+		ctx context.Context,
+		tx core_postgres_transaction.DBTX,
+		transferID TransferID,
+	) ([]SellerID, error)
+
 	Create(
 		ctx context.Context,
 		tx core_postgres_transaction.DBTX,

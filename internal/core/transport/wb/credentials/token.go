@@ -17,12 +17,14 @@ const (
 	maxTokenBytes        = 16 * 1024
 )
 
+// Claims содержит сведения из токена WB.
 type Claims struct {
 	SellerID   string
 	Properties TokenProperties
 	ExpiresAt  time.Time
 }
 
+// TokenProperties хранит битовую маску прав токена.
 type TokenProperties uint64
 
 const (
@@ -41,18 +43,6 @@ const (
 	PermissionUsers         TokenProperties = 1 << 16
 	PermissionReadOnly      TokenProperties = 1 << 30
 )
-
-// ValidateTokenShape проверяет размер, пробелы и непустые части токена WB.
-func ValidateTokenShape(token string) error {
-	if token == "" || strings.TrimSpace(token) != token || len(token) > maxTokenBytes {
-		return ErrInvalidCredential
-	}
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
-		return ErrInvalidCredential
-	}
-	return nil
-}
 
 // ParseToken разбирает поля токена; подлинность проверяется отдельно запросом к WB.
 func ParseToken(token string, now time.Time) (Claims, error) {
@@ -100,6 +90,24 @@ func ParseToken(token string, now time.Time) (Claims, error) {
 	}, nil
 }
 
+// ValidateTokenShape проверяет размер, пробелы и непустые части токена WB.
+func ValidateTokenShape(token string) error {
+	if token == "" || strings.TrimSpace(token) != token || len(token) > maxTokenBytes {
+		return ErrInvalidCredential
+	}
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return ErrInvalidCredential
+	}
+	return nil
+}
+
+// Has проверяет наличие указанного права в битовой маске.
+func (properties TokenProperties) Has(permission TokenProperties) bool {
+	return permission != 0 && properties&permission != 0
+}
+
+// requiredUUIDClaim читает обязательный идентификатор из полей токена.
 func requiredUUIDClaim(values map[string]any, name string) (string, error) {
 	value, ok := values[name].(string)
 	if !ok || !validCanonicalUUID(value) {
@@ -108,6 +116,7 @@ func requiredUUIDClaim(values map[string]any, name string) (string, error) {
 	return strings.ToLower(value), nil
 }
 
+// requiredUintClaim читает обязательное неотрицательное целое из полей токена.
 func requiredUintClaim(values map[string]any, name string) (uint64, error) {
 	number, ok := values[name].(json.Number)
 	if !ok {
@@ -120,6 +129,7 @@ func requiredUintClaim(values map[string]any, name string) (uint64, error) {
 	return value, nil
 }
 
+// validCanonicalUUID проверяет каноническую запись идентификатора.
 func validCanonicalUUID(value string) bool {
 	if len(value) != 36 {
 		return false
@@ -139,8 +149,4 @@ func validCanonicalUUID(value string) bool {
 		}
 	}
 	return true
-}
-
-func (properties TokenProperties) Has(permission TokenProperties) bool {
-	return permission != 0 && properties&permission != 0
 }

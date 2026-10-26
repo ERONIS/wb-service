@@ -54,6 +54,10 @@ func NewProcessor(
 }
 
 func (processor *Processor) ProcessPending(ctx context.Context) error {
+	return processor.ProcessPendingWithNotify(ctx, nil)
+}
+
+func (processor *Processor) ProcessPendingWithNotify(ctx context.Context, onProgress func()) error {
 	if ctx == nil {
 		return errors.New("process pending publication plans: context is nil")
 	}
@@ -72,7 +76,8 @@ func (processor *Processor) ProcessPending(ctx context.Context) error {
 			return fmt.Errorf("list publication planning transfers: %w", err)
 		}
 		for _, transfer := range transfers {
-			if err := processor.processTransfer(ctx, transfer); err != nil {
+			progress, err := processor.processTransfer(ctx, transfer)
+			if err != nil {
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
@@ -83,6 +88,8 @@ func (processor *Processor) ProcessPending(ctx context.Context) error {
 						err,
 					)
 				}
+			} else if progress && onProgress != nil {
+				onProgress()
 			}
 			afterID = transfer.ID
 		}
@@ -95,16 +102,16 @@ func (processor *Processor) ProcessPending(ctx context.Context) error {
 func (processor *Processor) processTransfer(
 	ctx context.Context,
 	transfer transfer_service.Transfer,
-) error {
+) (bool, error) {
 	source, err := processor.transferSource.LoadPublicationPlanningSource(
 		ctx,
 		transfer.ID,
 	)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if len(source.Groups) == 0 {
-		return nil
+		return false, nil
 	}
 	queries := make([]cardprepare_service.ProposalQuery, len(source.Groups))
 	for index, sourceGroup := range source.Groups {
@@ -116,15 +123,15 @@ func (processor *Processor) processTransfer(
 	}
 	proposals, err := processor.proposalReader.LoadProposals(ctx, queries)
 	if err != nil {
-		return fmt.Errorf("load prepared publication proposals: %w", err)
+		return false, fmt.Errorf("load prepared publication proposals: %w", err)
 	}
 	if len(proposals) != len(source.Groups) {
-		return errors.New("prepared publication proposal count differs")
+		return false, errors.New("prepared publication proposal count differs")
 	}
 	loaded := make([]loadedPlanningGroup, len(source.Groups))
 	for index, proposal := range proposals {
 		if proposal.TransferID != transfer.ID {
-			return errors.New("prepared proposal transfer identity differs")
+			return false, errors.New("prepared proposal transfer identity differs")
 		}
 		loaded[index] = loadedPlanningGroup{
 			Source: source.Groups[index], Proposal: proposal,
@@ -136,7 +143,7 @@ func (processor *Processor) processTransfer(
 	for _, group := range source.Groups {
 		sellerID := SellerID(group.SellerID)
 		if existing, ok := cabinetByTarget[group.TargetID]; ok && existing != sellerID {
-			return errors.New("publication target has multiple cabinets")
+			return false, errors.New("publication target has multiple cabinets")
 		}
 		cabinetByTarget[group.TargetID] = sellerID
 		for _, member := range group.Members {
@@ -171,14 +178,17 @@ func (processor *Processor) processTransfer(
 		})
 	}
 	if err := group.Wait(); err != nil {
-		return err
+		return false, err
 	}
 	for index, targetID := range targetIDs {
 		observations[targetID] = loadedObservations[index]
 	}
 	draft, err := processor.planner.Build(transfer, loaded, observations)
 	if err != nil {
-		return err
+		return false, err
 	}
-	return processor.saver.Save(ctx, draft)
+	if err := processor.saver.Save(ctx, draft); err != nil {
+		return false, err
+	}
+	return true, nil
 }

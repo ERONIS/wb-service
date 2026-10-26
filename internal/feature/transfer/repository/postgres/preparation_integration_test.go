@@ -18,47 +18,39 @@ import (
 	transfer_postgres_repository "github.com/ERONIS/wb-service/internal/feature/transfer/repository/postgres"
 	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+type integrationPool struct {
+	*pgxpool.Pool
+}
+
+func (pool *integrationPool) OperationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, 10*time.Second)
+}
 
 func getTestPool(t *testing.T) (core_postgres_pool.Pool, core_postgres_transaction.UnitOfWork) {
 	t.Helper()
-	host := os.Getenv("POSTGRES_HOST")
-	if host == "" {
-		host = "127.0.0.1"
+	dsn := os.Getenv("POSTGRES_TEST_DSN")
+	if dsn == "" {
+		t.Skip("POSTGRES_TEST_DSN не задан")
 	}
-	port := os.Getenv("POSTGRES_PORT")
-	if port == "" {
-		port = "5432"
-	}
-	user := os.Getenv("POSTGRES_USER")
-	if user == "" {
-		user = "Eronis"
-	}
-	pass := os.Getenv("POSTGRES_PASSWORD")
-	if pass == "" {
-		pass = "1234"
-	}
-	db := os.Getenv("POSTGRES_DB")
-	if db == "" {
-		db = "test-db"
-	}
-
-	cfg := core_postgres_pool.Config{
-		Host:     host,
-		Port:     port,
-		User:     user,
-		Password: pass,
-		Database: db,
-		Timeout:  10 * time.Second,
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	pool, err := core_postgres_pool.NewConnectionPool(cfg, ctx)
+	pgxPool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
-		t.Skipf("Пропуск интеграционного теста: PostgreSQL недоступен (%v)", err)
-		return nil, nil
+		t.Fatalf("создать тестовый пул PostgreSQL: %v", err)
 	}
+	if err := pgxPool.Ping(ctx); err != nil {
+		pgxPool.Close()
+		t.Fatalf("подключиться к тестовому PostgreSQL: %v", err)
+	}
+	var table string
+	if err := pgxPool.QueryRow(ctx, "SELECT coalesce(to_regclass('wb.transfer_group_targets')::text, '')").Scan(&table); err != nil || table == "" {
+		pgxPool.Close()
+		t.Fatalf("миграции transfer не применены: table=%q err=%v", table, err)
+	}
+	pool := &integrationPool{Pool: pgxPool}
 	uow := core_postgres_transaction.New(pool, pgx.TxOptions{})
 	return pool, uow
 }
@@ -71,14 +63,7 @@ func setupTestTransferData(
 ) (transferID transfer_service.TransferID, groupTargetID1 int64, groupTargetID2 int64, targetID1 int64, targetID2 int64) {
 	t.Helper()
 
-	// 1. Создаем пользователя, если нет
-	_, _ = pool.Exec(ctx, `
-		INSERT INTO wb.users (id, username, full_name, role, status)
-		VALUES (999999, 'test_user', 'Тестовый пользователь', 'admin', 'active')
-		ON CONFLICT (id) DO NOTHING;
-	`)
-
-	// 2. Создаем сессию и batch
+	// Создаём сессию и пачку карточек.
 	var batchID int64
 	checksum := make([]byte, 32)
 	copy(checksum, []byte("test_checksum_"+prefix))
@@ -227,6 +212,9 @@ func setupTestTransferData(
 			($1, $2, $3, $4, 'running', CURRENT_TIMESTAMP),
 			($1, $2, $3, $5, 'running', CURRENT_TIMESTAMP);
 	`, transferID, groupID, itemID, groupTargetID1, groupTargetID2)
+	if err != nil {
+		t.Fatalf("создание item targets: %v", err)
+	}
 	// 9. Переводим transfer в фазу preparing
 	_, err = pool.Exec(ctx, `
 		UPDATE wb.transfers
@@ -412,6 +400,78 @@ func TestPostgres_PreparationResult_DiagnosticsAndIdempotency(t *testing.T) {
 	})
 	if err != nil {
 		t.Errorf("повторный отклонённый результат должен быть идемпотентным, получено: %v", err)
+	}
+}
+
+func TestPostgres_PreparationArtifactAndProjectionRollbackTogether(t *testing.T) {
+	pool, uow := getTestPool(t)
+	defer pool.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	transferID, groupTargetID, _, _, _ := setupTestTransferData(t, ctx, pool, fmt.Sprintf("rollback_%d", time.Now().UnixNano()))
+	repository := transfer_postgres_repository.New(pool)
+
+	var semanticDigest transfer_service.Digest
+	copy(semanticDigest[:], []byte("rollback-semantic-digest"))
+	metadata := []byte(`{}`)
+	metadataDigest, err := cardpipeline.DigestJSON("cardprepare-metadata:v1", json.RawMessage(metadata))
+	if err != nil {
+		t.Fatalf("хеш метаданных: %v", err)
+	}
+	payload := []byte(`{"cards":[]}`)
+	proposalRoot := cardpipeline.DigestProposal(semanticDigest, metadataDigest, payload)
+	startedAt := time.Now().UTC()
+	command := transfer_service.ApplyPreparationResultCommand{
+		TransferID:    transferID,
+		GroupTargetID: groupTargetID,
+		Status:        transfer_service.PreparationResultSucceeded,
+		OutcomeCode:   "prepared",
+		StartedAt:     startedAt,
+		FinishedAt:    startedAt.Add(time.Millisecond),
+		ProposalRoot:  proposalRoot,
+		Artifact: &transfer_service.PreparationArtifact{
+			SubjectID:        12345,
+			SemanticDigest:   semanticDigest,
+			MetadataDigest:   metadataDigest,
+			ProposalRoot:     proposalRoot,
+			RequestPayload:   payload,
+			MetadataSnapshot: metadata,
+			LimitsFree:       1,
+			LimitsObservedAt: startedAt,
+		},
+		Revision: 1,
+	}
+	if err := command.Validate(); err != nil {
+		t.Fatalf("тестовая команда подготовки некорректна: %v", err)
+	}
+	rollbackReason := errors.New("rollback after preparation result")
+	err = uow.WithinTransaction(ctx, func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
+		if err := repository.ApplyPreparationResult(ctx, tx, command); err != nil {
+			return err
+		}
+		return rollbackReason
+	})
+	if !errors.Is(err, rollbackReason) {
+		t.Fatalf("ожидался откат после записи результата: %v", err)
+	}
+
+	var status string
+	var revision int64
+	if err := pool.QueryRow(ctx, `
+		SELECT preparation_status, preparation_result_revision
+		FROM wb.transfer_group_targets WHERE id = $1
+	`, groupTargetID).Scan(&status, &revision); err != nil {
+		t.Fatalf("прочитать проекцию после отката: %v", err)
+	}
+	var artifactCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM wb.card_preparation_artifacts
+		WHERE transfer_id = $1 AND group_target_id = $2
+	`, transferID, groupTargetID).Scan(&artifactCount); err != nil {
+		t.Fatalf("прочитать артефакт после отката: %v", err)
+	}
+	if status != "running" || revision != 0 || artifactCount != 0 {
+		t.Fatalf("результат пережил откат: status=%q revision=%d artifacts=%d", status, revision, artifactCount)
 	}
 }
 

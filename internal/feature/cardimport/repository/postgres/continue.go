@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
+	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
 
 	"github.com/jackc/pgx/v5"
@@ -13,20 +14,9 @@ import (
 
 func (r *Repository) ContinueAfterErrors(
 	ctx context.Context,
+	tx core_postgres_transaction.DBTX,
 	command cardimport_service.ContinueCommand,
 ) (cardimport_service.Session, error) {
-	ctx, cancel := r.pool.OperationContext(ctx)
-	defer cancel()
-
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return cardimport_service.Session{}, fmt.Errorf(
-			"begin continue cardimport session: %w",
-			err,
-		)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
 	const lockQuery = `
 		SELECT ` + sessionColumns + `
 		FROM wb.card_import_sessions
@@ -162,11 +152,5 @@ func (r *Repository) ContinueAfterErrors(
 		)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return cardimport_service.Session{}, fmt.Errorf(
-			"commit continued cardimport session: %w",
-			err,
-		)
-	}
 	return updated.domain(), nil
 }

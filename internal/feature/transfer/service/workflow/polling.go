@@ -12,22 +12,26 @@ import (
 const pollingPageSize = 100
 
 func (service *Service) ProcessPending(ctx context.Context) error {
+	return service.ProcessPendingWithNotify(ctx, nil)
+}
+
+func (service *Service) ProcessPendingWithNotify(ctx context.Context, onProgress func()) error {
 	if ctx == nil {
 		return errors.New("process pending transfers: context is nil")
 	}
 	service.processMu.Lock()
 	defer service.processMu.Unlock()
 
-	if err := service.resumeInitializing(ctx); err != nil {
+	if err := service.resumeInitializing(ctx, onProgress); err != nil {
 		return err
 	}
-	if err := service.discoverFinalizedBatches(ctx); err != nil {
+	if err := service.discoverFinalizedBatches(ctx, onProgress); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (service *Service) resumeInitializing(ctx context.Context) error {
+func (service *Service) resumeInitializing(ctx context.Context, onProgress func()) error {
 	var afterID TransferID
 	for {
 		transfers, err := service.repository.ListInitializing(
@@ -39,12 +43,16 @@ func (service *Service) resumeInitializing(ctx context.Context) error {
 			return fmt.Errorf("list initializing transfers: %w", err)
 		}
 		for _, transfer := range transfers {
-			if err := service.Initialize(ctx, transfer.ID); err != nil {
+			progress, err := service.Initialize(ctx, transfer.ID)
+			if err != nil {
 				return fmt.Errorf(
 					"resume transfer ID='%d' initialization: %w",
 					transfer.ID,
 					err,
 				)
+			}
+			if progress && onProgress != nil {
+				onProgress()
 			}
 			afterID = transfer.ID
 		}
@@ -54,7 +62,7 @@ func (service *Service) resumeInitializing(ctx context.Context) error {
 	}
 }
 
-func (service *Service) discoverFinalizedBatches(ctx context.Context) error {
+func (service *Service) discoverFinalizedBatches(ctx context.Context, onProgress func()) error {
 	for {
 		batches, err := service.batchReader.ListFinalizedBatches(
 			ctx,
@@ -80,12 +88,16 @@ func (service *Service) discoverFinalizedBatches(ctx context.Context) error {
 					err,
 				)
 			}
-			if err := service.Initialize(ctx, transferID); err != nil {
+			progress, err := service.Initialize(ctx, transferID)
+			if err != nil {
 				return fmt.Errorf(
 					"initialize transfer ID='%d': %w",
 					transferID,
 					err,
 				)
+			}
+			if progress && onProgress != nil {
+				onProgress()
 			}
 			service.advanceBatchCursor(batch)
 		}

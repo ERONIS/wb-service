@@ -5,27 +5,32 @@ import (
 	"errors"
 	"io"
 	"net"
-	"syscall"
+	"net/http"
 )
 
-// IsRetryableTransportError проверяет ограниченный allowlist transport errors.
+// IsRetryableTransportError распознаёт обрыв ответа и сетевой тайм-аут.
 func IsRetryableTransportError(err error) bool {
-	if err == nil ||
-		errors.Is(err, context.Canceled) ||
-		errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.Canceled) {
 		return false
 	}
 
-	if errors.Is(err, io.EOF) ||
-		errors.Is(err, io.ErrUnexpectedEOF) ||
-		errors.Is(err, net.ErrClosed) ||
-		errors.Is(err, syscall.ECONNRESET) ||
-		errors.Is(err, syscall.EPIPE) {
-		return true
-	}
-
 	var networkErr net.Error
+	return errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		(errors.As(err, &networkErr) && networkErr.Timeout())
+}
 
-	return errors.As(err, &networkErr) &&
-		networkErr.Timeout()
+// IsRetryableStatus определяет, допускает ли ответ повторную попытку.
+func IsRetryableStatus(statusCode int) bool {
+	switch statusCode {
+	case http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+
+	default:
+		return false
+	}
 }
