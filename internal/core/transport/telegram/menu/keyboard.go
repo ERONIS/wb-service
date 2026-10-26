@@ -45,25 +45,15 @@ func (host *menuHost) ensurePersistentReplyKeyboard(ctx tele.Context) {
 
 	state := host.chatState(chat.ID)
 	state.keyboardMu.Lock()
-	if state.keyboardInstalled || state.keyboardInstalling {
-		state.keyboardMu.Unlock()
+	defer state.keyboardMu.Unlock()
+	if state.keyboardInstalled {
 		return
 	}
-	state.keyboardInstalling = true
-	state.keyboardMu.Unlock()
-
-	go func(chatID int64) {
-		err := host.sendReplyKeyboard(
-			&tele.Chat{ID: chatID},
-			setup.text,
-			setup.markup(),
-		)
-		state.keyboardMu.Lock()
-		state.keyboardInstalling = false
-		state.keyboardInstalled = err == nil
-		state.keyboardMu.Unlock()
-	}(chat.ID)
+	if err := host.sendReplyKeyboard(chat, setup.text, setup.markup()); err == nil {
+		state.keyboardInstalled = true
+	}
 }
+
 func SendNewMenu(ctx tele.Context, what interface{}, opts ...interface{}) error {
 	if sender, ok := ctx.(interface {
 		SendNewMenu(interface{}, ...interface{}) error
@@ -71,39 +61,6 @@ func SendNewMenu(ctx tele.Context, what interface{}, opts ...interface{}) error 
 		return sender.SendNewMenu(what, opts...)
 	}
 	return ctx.Send(what, opts...)
-}
-
-func InstallReplyKeyboard(
-	ctx tele.Context,
-	text string,
-	markup *tele.ReplyMarkup,
-) error {
-	if installer, ok := ctx.(interface {
-		InstallReplyKeyboard(string, *tele.ReplyMarkup) error
-	}); ok {
-		return installer.InstallReplyKeyboard(text, markup)
-	}
-	return ctx.Send(text, markup)
-}
-
-func (host *menuHost) installReplyKeyboard(
-	ctx tele.Context,
-	text string,
-	markup *tele.ReplyMarkup,
-) error {
-	chat := ctx.Chat()
-	if chat == nil || chat.ID == 0 {
-		return tele.ErrBadContext
-	}
-	if err := host.sendReplyKeyboard(chat, text, markup); err != nil {
-		return err
-	}
-	state := host.chatState(chat.ID)
-	state.keyboardMu.Lock()
-	state.keyboardInstalled = true
-	state.keyboardInstalling = false
-	state.keyboardMu.Unlock()
-	return nil
 }
 
 func (host *menuHost) sendReplyKeyboard(

@@ -2,67 +2,49 @@ package statistics_postgres_repository
 
 import (
 	"context"
-	"fmt"
-	"strings"
-	"time"
 
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
+	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
+	statistics_postgres_aggregates "github.com/ERONIS/wb-service/internal/feature/statistics/repository/postgres/aggregates"
+	statistics_postgres_attention "github.com/ERONIS/wb-service/internal/feature/statistics/repository/postgres/attention"
+	statistics_postgres_cabinets "github.com/ERONIS/wb-service/internal/feature/statistics/repository/postgres/cabinets"
+	statistics_postgres_operations "github.com/ERONIS/wb-service/internal/feature/statistics/repository/postgres/operations"
+	statistics_service "github.com/ERONIS/wb-service/internal/feature/statistics/service"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type Repository struct {
-	pool core_postgres_pool.Pool
+	*statistics_postgres_aggregates.AggregatesRepository
+	*statistics_postgres_attention.AttentionRepository
+	*statistics_postgres_cabinets.CabinetsRepository
+	*statistics_postgres_operations.OperationsRepository
+	snapshotUoW *core_postgres_transaction.PGXUnitOfWork
 }
+
+var _ statistics_service.Reader = (*Repository)(nil)
 
 func New(pool core_postgres_pool.Pool) *Repository {
 	if pool == nil {
 		panic("statistics PostgreSQL pool is nil")
 	}
-	return &Repository{pool: pool}
-}
-
-func (repository *Repository) queryContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	return repository.pool.OperationContext(ctx)
-}
-
-type whereBuilder struct {
-	conditions []string
-	arguments  []any
-}
-
-type rowScanner interface {
-	Scan(...any) error
-}
-
-func (builder *whereBuilder) add(expression string, value any) {
-	builder.arguments = append(builder.arguments, value)
-	builder.conditions = append(
-		builder.conditions,
-		fmt.Sprintf(expression, len(builder.arguments)),
-	)
-}
-
-func (builder *whereBuilder) addIf(condition bool, expression string, value any) {
-	if condition {
-		builder.add(expression, value)
+	snapshotUoW := core_postgres_transaction.New(pool, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	return &Repository{
+		AggregatesRepository: statistics_postgres_aggregates.New(pool),
+		AttentionRepository:  statistics_postgres_attention.New(pool),
+		CabinetsRepository:   statistics_postgres_cabinets.New(pool, snapshotUoW),
+		OperationsRepository: statistics_postgres_operations.New(pool, snapshotUoW),
+		snapshotUoW:          snapshotUoW,
 	}
 }
 
-func (builder *whereBuilder) addCreatedRange(column string, from, to *time.Time) {
-	if from != nil {
-		builder.add(column+" >= $%d", *from)
-	}
-	if to != nil {
-		builder.add(column+" < $%d", *to)
-	}
-}
-
-func (builder *whereBuilder) addRaw(expression string) {
-	builder.conditions = append(builder.conditions, expression)
-}
-
-func (builder *whereBuilder) clause() string {
-	if len(builder.conditions) == 0 {
-		return ""
-	}
-	return " WHERE " + strings.Join(builder.conditions, " AND ")
+// withinSnapshot выполняет связанные чтения на одном снимке PostgreSQL.
+func (repository *Repository) withinSnapshot(
+	ctx context.Context,
+	fn func(context.Context, core_postgres_transaction.DBTX) error,
+) error {
+	return repository.snapshotUoW.WithinTransaction(ctx, fn)
 }

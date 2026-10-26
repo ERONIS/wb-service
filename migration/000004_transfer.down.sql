@@ -1,3 +1,11 @@
+DROP TRIGGER IF EXISTS card_batch_items_validate_handoff_delete ON wb.card_batch_items;
+DROP TRIGGER IF EXISTS card_batch_items_reject_update ON wb.card_batch_items;
+DROP FUNCTION IF EXISTS wb.validate_card_batch_item_handoff_delete;
+
+CREATE TRIGGER card_batch_items_reject_mutation
+BEFORE UPDATE OR DELETE ON wb.card_batch_items
+FOR EACH ROW EXECUTE FUNCTION wb.reject_frozen_card_batch_mutation();
+
 DROP TRIGGER IF EXISTS transfer_targets_reject_activated_insert ON wb.transfer_targets;
 DROP TRIGGER IF EXISTS transfer_item_targets_reject_activated_membership
     ON wb.transfer_item_targets;

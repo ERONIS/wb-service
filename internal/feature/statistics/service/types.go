@@ -33,25 +33,6 @@ type OperationFilter struct {
 	Offset            int
 }
 
-func (filter OperationFilter) Normalize() (OperationFilter, error) {
-	filter.SellerID = strings.TrimSpace(filter.SellerID)
-	filter.Phase = strings.TrimSpace(filter.Phase)
-	filter.Outcome = strings.TrimSpace(filter.Outcome)
-	if filter.TransferID < 0 || filter.BatchID < 0 || filter.Offset < 0 || filter.Limit < 0 ||
-		filter.Limit > MaxPageSize || len(filter.SellerID) > 128 ||
-		!oneOf(filter.Phase, transferPhases...) ||
-		!oneOf(filter.Outcome, transferOutcomes...) ||
-		invalidRange(filter.CreatedFrom, filter.CreatedTo) {
-		return OperationFilter{}, ErrInvalidFilter
-	}
-	if filter.Limit == 0 {
-		filter.Limit = DefaultPageSize
-	}
-	filter.CreatedFrom = utcTime(filter.CreatedFrom)
-	filter.CreatedTo = utcTime(filter.CreatedTo)
-	return filter, nil
-}
-
 type AggregateFilter struct {
 	TransferID          int64
 	SellerID            string
@@ -64,29 +45,6 @@ type AggregateFilter struct {
 	RequiresAttention   *bool
 	CreatedFrom         *time.Time
 	CreatedTo           *time.Time
-}
-
-func (filter AggregateFilter) Normalize() (AggregateFilter, error) {
-	filter.SellerID = strings.TrimSpace(filter.SellerID)
-	filter.ActionKind = strings.TrimSpace(filter.ActionKind)
-	filter.Phase = strings.TrimSpace(filter.Phase)
-	filter.OutcomeClass = strings.TrimSpace(filter.OutcomeClass)
-	filter.OutcomeCode = strings.TrimSpace(filter.OutcomeCode)
-	filter.DeliveryState = strings.TrimSpace(filter.DeliveryState)
-	filter.ResponseDisposition = strings.TrimSpace(filter.ResponseDisposition)
-	if filter.TransferID < 0 || len(filter.SellerID) > 128 ||
-		len(filter.OutcomeCode) > 128 ||
-		!oneOf(filter.ActionKind, actionKinds...) ||
-		!oneOf(filter.Phase, transferPhases...) ||
-		!oneOf(filter.OutcomeClass, outcomeClasses...) ||
-		!oneOf(filter.DeliveryState, deliveryStates...) ||
-		!oneOf(filter.ResponseDisposition, responseDispositions...) ||
-		invalidRange(filter.CreatedFrom, filter.CreatedTo) {
-		return AggregateFilter{}, ErrInvalidFilter
-	}
-	filter.CreatedFrom = utcTime(filter.CreatedFrom)
-	filter.CreatedTo = utcTime(filter.CreatedTo)
-	return filter, nil
 }
 
 type AttentionFilter struct {
@@ -103,47 +61,12 @@ type CabinetTaskFilter struct {
 	Offset     int
 }
 
-func (filter CabinetTaskFilter) Normalize() (CabinetTaskFilter, error) {
-	if filter.TransferID <= 0 || filter.TargetID <= 0 || filter.Offset < 0 ||
-		filter.Limit < 0 || filter.Limit > MaxPageSize {
-		return CabinetTaskFilter{}, ErrInvalidFilter
-	}
-	if filter.Limit == 0 {
-		filter.Limit = CabinetPageSize
-	}
-	return filter, nil
-}
-
-func (filter AttentionFilter) Normalize() (AttentionFilter, error) {
-	if filter.TransferID < 0 || filter.ItemTargetID < 0 || filter.Offset < 0 ||
-		filter.Limit < 0 || filter.Limit > MaxPageSize {
-		return AttentionFilter{}, ErrInvalidFilter
-	}
-	if filter.Limit == 0 {
-		filter.Limit = DefaultPageSize
-	}
-	return filter, nil
-}
-
-func invalidRange(from, to *time.Time) bool {
-	return from != nil && to != nil && !from.Before(*to)
-}
-
-func utcTime(value *time.Time) *time.Time {
-	if value == nil {
-		return nil
-	}
-	normalized := value.UTC()
-	return &normalized
-}
-
 var (
 	transferPhases = []string{
-		"initializing", "preparing", "awaiting_authorization", "publishing",
-		"reconciling", "media", "finished",
+		"initializing", "active", "finished",
 	}
 	transferOutcomes = []string{
-		"running", "succeeded", "partial", "rejected", "unresolved", "failed", "cancelled",
+		"running", "succeeded", "partial", "rejected", "unresolved", "failed",
 	}
 	actionKinds    = []string{"create_group", "add_to_group", "upload_media"}
 	outcomeClasses = []string{
@@ -153,18 +76,6 @@ var (
 	responseDispositions = []string{"accepted", "rejected_proven", "uncertain"}
 )
 
-func oneOf(value string, allowed ...string) bool {
-	if value == "" {
-		return true
-	}
-	for _, candidate := range allowed {
-		if value == candidate {
-			return true
-		}
-	}
-	return false
-}
-
 type OperationRow struct {
 	TransferID        int64
 	BatchID           int64
@@ -172,7 +83,6 @@ type OperationRow struct {
 	Phase             string
 	Outcome           string
 	AttentionCode     string
-	CohortName        string
 	ItemsCount        int
 	GroupsCount       int
 	TargetsCount      int
@@ -181,17 +91,6 @@ type OperationRow struct {
 	CreatedAt         time.Time
 	StartedAt         time.Time
 	FinishedAt        *time.Time
-}
-
-func (row OperationRow) Duration(now time.Time) time.Duration {
-	end := now.UTC()
-	if row.FinishedAt != nil {
-		end = row.FinishedAt.UTC()
-	}
-	if end.Before(row.StartedAt) {
-		return 0
-	}
-	return end.Sub(row.StartedAt.UTC())
 }
 
 type GroupTargetRow struct {
@@ -248,27 +147,28 @@ type CabinetProgressRow struct {
 }
 
 type CabinetTaskRow struct {
-	TransferID        int64
-	ItemTargetID      int64
-	TargetID          int64
-	SellerID          string
-	ItemPosition      int
-	VendorCode        string
-	GroupName         string
-	State             string
-	OutcomeClass      string
-	OutcomeCode       string
-	NMID              int64
-	PreparationStatus string
-	PublicationStatus string
-	MediaStatus       string
-	OverallOutcome    string
-	AttentionCode     string
-	MediaActionState  string
-	MediaOutcomeCode  string
-	CreatedAt         time.Time
-	StartedAt         *time.Time
-	FinishedAt        *time.Time
+	TransferID         int64
+	ItemTargetID       int64
+	TargetID           int64
+	SellerID           string
+	ItemPosition       int
+	VendorCode         string
+	GroupName          string
+	State              string
+	OutcomeClass       string
+	OutcomeCode        string
+	NMID               int64
+	PreparationStatus  string
+	PublicationStatus  string
+	MediaStatus        string
+	OverallOutcome     string
+	AttentionCode      string
+	ProductActionState string
+	MediaActionState   string
+	MediaOutcomeCode   string
+	CreatedAt          time.Time
+	StartedAt          *time.Time
+	FinishedAt         *time.Time
 }
 
 type CabinetTaskPage struct {
@@ -364,7 +264,6 @@ type TransferTotals struct {
 	Rejected          int64
 	Unresolved        int64
 	Failed            int64
-	Cancelled         int64
 	RequiresAttention int64
 	AverageDuration   time.Duration
 }
@@ -420,4 +319,103 @@ type AttentionRow struct {
 	ObservationEvidenceID int64
 	ErrorBatchEvidenceID  int64
 	FinishedAt            time.Time
+}
+
+func (filter OperationFilter) Normalize() (OperationFilter, error) {
+	filter.SellerID = strings.TrimSpace(filter.SellerID)
+	filter.Phase = strings.TrimSpace(filter.Phase)
+	filter.Outcome = strings.TrimSpace(filter.Outcome)
+	if filter.TransferID < 0 || filter.BatchID < 0 || filter.Offset < 0 || filter.Limit < 0 ||
+		filter.Limit > MaxPageSize || len(filter.SellerID) > 128 ||
+		!oneOf(filter.Phase, transferPhases...) ||
+		!oneOf(filter.Outcome, transferOutcomes...) ||
+		invalidRange(filter.CreatedFrom, filter.CreatedTo) {
+		return OperationFilter{}, ErrInvalidFilter
+	}
+	if filter.Limit == 0 {
+		filter.Limit = DefaultPageSize
+	}
+	filter.CreatedFrom = utcTime(filter.CreatedFrom)
+	filter.CreatedTo = utcTime(filter.CreatedTo)
+	return filter, nil
+}
+
+func (filter AggregateFilter) Normalize() (AggregateFilter, error) {
+	filter.SellerID = strings.TrimSpace(filter.SellerID)
+	filter.ActionKind = strings.TrimSpace(filter.ActionKind)
+	filter.Phase = strings.TrimSpace(filter.Phase)
+	filter.OutcomeClass = strings.TrimSpace(filter.OutcomeClass)
+	filter.OutcomeCode = strings.TrimSpace(filter.OutcomeCode)
+	filter.DeliveryState = strings.TrimSpace(filter.DeliveryState)
+	filter.ResponseDisposition = strings.TrimSpace(filter.ResponseDisposition)
+	if filter.TransferID < 0 || len(filter.SellerID) > 128 ||
+		len(filter.OutcomeCode) > 128 ||
+		!oneOf(filter.ActionKind, actionKinds...) ||
+		!oneOf(filter.Phase, transferPhases...) ||
+		!oneOf(filter.OutcomeClass, outcomeClasses...) ||
+		!oneOf(filter.DeliveryState, deliveryStates...) ||
+		!oneOf(filter.ResponseDisposition, responseDispositions...) ||
+		invalidRange(filter.CreatedFrom, filter.CreatedTo) {
+		return AggregateFilter{}, ErrInvalidFilter
+	}
+	filter.CreatedFrom = utcTime(filter.CreatedFrom)
+	filter.CreatedTo = utcTime(filter.CreatedTo)
+	return filter, nil
+}
+
+func (filter CabinetTaskFilter) Normalize() (CabinetTaskFilter, error) {
+	if filter.TransferID <= 0 || filter.TargetID <= 0 || filter.Offset < 0 ||
+		filter.Limit < 0 || filter.Limit > MaxPageSize {
+		return CabinetTaskFilter{}, ErrInvalidFilter
+	}
+	if filter.Limit == 0 {
+		filter.Limit = CabinetPageSize
+	}
+	return filter, nil
+}
+
+func (filter AttentionFilter) Normalize() (AttentionFilter, error) {
+	if filter.TransferID < 0 || filter.ItemTargetID < 0 || filter.Offset < 0 ||
+		filter.Limit < 0 || filter.Limit > MaxPageSize {
+		return AttentionFilter{}, ErrInvalidFilter
+	}
+	if filter.Limit == 0 {
+		filter.Limit = DefaultPageSize
+	}
+	return filter, nil
+}
+
+func invalidRange(from, to *time.Time) bool {
+	return from != nil && to != nil && !from.Before(*to)
+}
+
+func utcTime(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	normalized := value.UTC()
+	return &normalized
+}
+
+func oneOf(value string, allowed ...string) bool {
+	if value == "" {
+		return true
+	}
+	for _, candidate := range allowed {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func (row OperationRow) Duration(now time.Time) time.Duration {
+	end := now.UTC()
+	if row.FinishedAt != nil {
+		end = row.FinishedAt.UTC()
+	}
+	if end.Before(row.StartedAt) {
+		return 0
+	}
+	return end.Sub(row.StartedAt.UTC())
 }

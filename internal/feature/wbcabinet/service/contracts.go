@@ -24,7 +24,6 @@ type Repository interface {
 	UpsertVerified(context.Context, core_postgres_transaction.DBTX, VerifiedCredential) (Cabinet, error)
 	ListByOwner(context.Context, int64) ([]Cabinet, error)
 	ListStored(context.Context) ([]StoredCabinet, error)
-	ListTargets(context.Context, int64) ([]domain.CabinetAccess, error)
 	ListTargetsByOwnerRole(context.Context, domain.UserRole) ([]domain.CabinetAccess, error)
 	ListAllTargets(context.Context) ([]domain.CabinetAccess, error)
 	MarkStatus(context.Context, domain.SellerID, Status) error

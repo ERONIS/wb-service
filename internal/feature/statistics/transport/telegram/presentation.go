@@ -230,8 +230,6 @@ func operationStatus(row statistics_service.OperationRow) string {
 			return "Завершено частично"
 		case "rejected":
 			return "Карточки не отправлены"
-		case "cancelled":
-			return "Отменено"
 		default:
 			return "Нужна проверка"
 		}
@@ -239,16 +237,8 @@ func operationStatus(row statistics_service.OperationRow) string {
 	switch row.Phase {
 	case "initializing":
 		return "Принимаем данные"
-	case "preparing":
-		return "Проверяем карточки"
-	case "awaiting_authorization":
-		return "Запускаем отправку"
-	case "publishing":
-		return "Отправляем в WB"
-	case "reconciling":
-		return "Проверяем результат"
-	case "media":
-		return "Завершаем перенос"
+	case "active":
+		return "Переносим карточки"
 	default:
 		return "В работе"
 	}

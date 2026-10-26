@@ -4,10 +4,13 @@ import (
 	"context"
 
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
+	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
 	users_postgres_repository "github.com/ERONIS/wb-service/internal/feature/users/repository/postgres"
 	users_service "github.com/ERONIS/wb-service/internal/feature/users/service"
 	users_transport_tg "github.com/ERONIS/wb-service/internal/feature/users/transport/telegram"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Feature объединяет зависимости модуля пользователей.
@@ -21,11 +24,12 @@ func New(
 	ctx context.Context,
 	postgresPool core_postgres_pool.Pool,
 ) *Feature {
-	repository := users_postgres_repository.NewUsersRepository(
+	repository := users_postgres_repository.New(
 		postgresPool,
 	)
 	service := users_service.NewUsersService(
 		repository,
+		core_postgres_transaction.New(postgresPool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}),
 	)
 
 	return &Feature{

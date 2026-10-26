@@ -7,11 +7,7 @@ CREATE TABLE wb.transfers (
     phase                   TEXT NOT NULL DEFAULT 'initializing'
                             CHECK (phase IN (
                                 'initializing',
-                                'preparing',
-                                'awaiting_authorization',
-                                'publishing',
-                                'reconciling',
-                                'media',
+                                'active',
                                 'finished'
                             )),
     outcome                 TEXT NOT NULL DEFAULT 'running'
@@ -21,17 +17,13 @@ CREATE TABLE wb.transfers (
                                 'partial',
                                 'rejected',
                                 'unresolved',
-                                'failed',
-                                'cancelled'
+                                'failed'
                             )),
     attention_code          VARCHAR(128)
                             CHECK (
                                 attention_code IS NULL
                                 OR char_length(attention_code) > 0
                             ),
-
-    revision                BIGINT NOT NULL DEFAULT 0
-                            CHECK (revision >= 0),
 
     items_count             INTEGER NOT NULL
                             CHECK (items_count > 0),
@@ -41,8 +33,6 @@ CREATE TABLE wb.transfers (
                                 AND groups_count <= items_count
                             ),
 
-    cohort_name             VARCHAR(128) NOT NULL
-                            CHECK (char_length(cohort_name) > 0),
     targets_count           INTEGER NOT NULL
                             CHECK (targets_count > 0),
     item_targets_count      BIGINT NOT NULL
@@ -72,7 +62,7 @@ CREATE TABLE wb.transfers (
         OR (outcome = 'failed' AND attention_code IS NOT NULL)
         OR outcome = 'unresolved'
         OR outcome IN (
-            'succeeded', 'partial', 'rejected', 'cancelled'
+            'succeeded', 'partial', 'rejected'
         )
     ),
     CHECK (started_at >= created_at),
@@ -119,14 +109,14 @@ CREATE TABLE wb.transfer_groups (
 
     transfer_id             BIGINT NOT NULL
                             REFERENCES wb.transfers(id),
-    source_group_key        BYTEA NOT NULL
-                            CHECK (octet_length(source_group_key) = 32),
+    source_group_number     INTEGER NOT NULL
+                            CHECK (source_group_number > 0),
     source_group_name       TEXT NOT NULL,
 
     created_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE (transfer_id, id),
-    UNIQUE (transfer_id, source_group_key)
+    UNIQUE (transfer_id, source_group_number)
 );
 
 
@@ -165,13 +155,11 @@ CREATE TABLE wb.transfer_group_targets (
     target_id               BIGINT NOT NULL,
     revision                BIGINT NOT NULL DEFAULT 0
                             CHECK (revision >= 0),
-    preparation_status      TEXT NOT NULL DEFAULT 'not_started'
+    preparation_status      TEXT NOT NULL DEFAULT 'running'
                             CHECK (preparation_status IN (
-                                'not_started', 'running', 'succeeded',
-                                'rejected', 'unresolved', 'skipped'
+                                'running', 'succeeded',
+                                'rejected', 'unresolved'
                             )),
-    preparation_result_revision BIGINT NOT NULL DEFAULT 0
-                            CHECK (preparation_result_revision IN (0, 1)),
     preparation_result_code VARCHAR(128)
                             CHECK (
                                 preparation_result_code IS NULL
@@ -211,7 +199,7 @@ CREATE TABLE wb.transfer_group_targets (
                             ),
 
     created_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    started_at              TIMESTAMPTZ,
+    started_at              TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     finished_at             TIMESTAMPTZ,
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -227,8 +215,7 @@ CREATE TABLE wb.transfer_group_targets (
 
     CHECK (
         (
-            preparation_status IN ('not_started', 'running')
-            AND preparation_result_revision = 0
+            preparation_status = 'running'
             AND preparation_result_code IS NULL
             AND preparation_item_position IS NULL
             AND preparation_field IS NULL
@@ -236,7 +223,7 @@ CREATE TABLE wb.transfer_group_targets (
         )
         OR (
             preparation_status = 'succeeded'
-            AND preparation_result_revision = 1
+            AND preparation_result_code IS NOT NULL
             AND preparation_result_code = 'prepared'
             AND preparation_item_position IS NULL
             AND preparation_field IS NULL
@@ -246,19 +233,10 @@ CREATE TABLE wb.transfer_group_targets (
         )
         OR (
             preparation_status IN ('rejected', 'unresolved')
-            AND preparation_result_revision = 1
             AND preparation_result_code IS NOT NULL
             AND preparation_started_at IS NOT NULL
             AND preparation_finished_at IS NOT NULL
             AND preparation_finished_at >= preparation_started_at
-        )
-        OR (
-            preparation_status = 'skipped'
-            AND preparation_result_revision = 0
-            AND preparation_result_code IS NULL
-            AND preparation_item_position IS NULL
-            AND preparation_field IS NULL
-            AND preparation_finished_at IS NULL
         )
     ),
     CHECK (preparation_finished_at IS NULL OR (
@@ -288,14 +266,10 @@ CREATE TABLE wb.transfer_group_targets (
     CHECK (updated_at >= created_at)
 );
 
-CREATE INDEX transfer_group_targets_preparation_pending_idx
-ON wb.transfer_group_targets (transfer_id)
-WHERE preparation_status NOT IN ('succeeded', 'rejected', 'unresolved');
-
 CREATE INDEX transfer_group_targets_pending_keyset_idx
 ON wb.transfer_group_targets (transfer_id, source_group_id, target_id)
 INCLUDE (id)
-WHERE preparation_status = 'running' AND preparation_result_revision = 0;
+WHERE preparation_status = 'running';
 
 CREATE INDEX transfer_group_targets_running_idx
 ON wb.transfer_group_targets (transfer_id)
@@ -311,10 +285,8 @@ CREATE TABLE wb.transfer_item_targets (
     group_target_id         BIGINT NOT NULL,
     revision                BIGINT NOT NULL DEFAULT 0
                             CHECK (revision >= 0),
-    state                   TEXT NOT NULL DEFAULT 'pending'
-                            CHECK (state IN (
-                                'pending', 'running', 'terminal'
-                            )),
+    state                   TEXT NOT NULL DEFAULT 'running'
+                            CHECK (state IN ('running', 'terminal')),
     outcome_class           TEXT
                             CHECK (
                                 outcome_class IS NULL
@@ -338,7 +310,7 @@ CREATE TABLE wb.transfer_item_targets (
     attention_closed_at     TIMESTAMPTZ,
 
     created_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    started_at              TIMESTAMPTZ,
+    started_at              TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     finished_at             TIMESTAMPTZ,
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -361,16 +333,6 @@ CREATE TABLE wb.transfer_item_targets (
 
     CHECK (
         (
-            state = 'pending'
-            AND outcome_class IS NULL
-            AND outcome_code IS NULL
-            AND nm_id IS NULL
-            AND source_action_id IS NULL
-            AND attention_closed_at IS NULL
-            AND started_at IS NULL
-            AND finished_at IS NULL
-        )
-        OR (
             state = 'running'
             AND outcome_class IS NULL
             AND outcome_code IS NULL
@@ -531,7 +493,6 @@ BEGIN
         NEW.batch_id,
         NEW.items_count,
         NEW.groups_count,
-        NEW.cohort_name,
         NEW.targets_count,
         NEW.item_targets_count,
         NEW.group_targets_count,
@@ -541,7 +502,6 @@ BEGIN
         OLD.batch_id,
         OLD.items_count,
         OLD.groups_count,
-        OLD.cohort_name,
         OLD.targets_count,
         OLD.item_targets_count,
         OLD.group_targets_count,
@@ -567,3 +527,35 @@ FOR EACH ROW EXECUTE FUNCTION wb.reject_transfer_target_mutation();
 CREATE TRIGGER transfer_targets_reject_activated_insert
 BEFORE INSERT ON wb.transfer_targets
 FOR EACH ROW EXECUTE FUNCTION wb.reject_activated_transfer_derived_mutation();
+
+CREATE FUNCTION wb.validate_card_batch_item_handoff_delete()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM wb.transfers AS transfer
+        JOIN wb.transfer_items AS item
+          ON item.transfer_id = transfer.id
+         AND item.batch_item_id = OLD.id
+        WHERE transfer.batch_id = OLD.batch_id
+          AND transfer.phase = 'active'
+    ) THEN
+        RAISE EXCEPTION 'card batch item has not been transferred'
+            USING ERRCODE = '55000';
+    END IF;
+
+    RETURN OLD;
+END;
+$$;
+
+DROP TRIGGER card_batch_items_reject_mutation ON wb.card_batch_items;
+
+CREATE TRIGGER card_batch_items_reject_update
+BEFORE UPDATE ON wb.card_batch_items
+FOR EACH ROW EXECUTE FUNCTION wb.reject_frozen_card_batch_mutation();
+
+CREATE TRIGGER card_batch_items_validate_handoff_delete
+BEFORE DELETE ON wb.card_batch_items
+FOR EACH ROW EXECUTE FUNCTION wb.validate_card_batch_item_handoff_delete();

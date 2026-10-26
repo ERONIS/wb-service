@@ -32,13 +32,8 @@ CREATE TABLE wb.card_batch_items (
                         REFERENCES wb.card_batches(id),
     position            INTEGER NOT NULL
                         CHECK (position > 0),
-    source_file_id      BIGINT NOT NULL
-                        CHECK (source_file_id > 0),
-    source_rows         INTEGER[] NOT NULL
-                        CHECK (cardinality(source_rows) > 0),
-    source_group_key    BYTEA NOT NULL
-                        CHECK (octet_length(source_group_key) = 32),
-    vendor_code         TEXT NOT NULL,
+    source_group_number INTEGER NOT NULL
+                        CHECK (source_group_number > 0),
     payload             JSONB NOT NULL
                         CHECK (jsonb_typeof(payload) = 'object'),
 

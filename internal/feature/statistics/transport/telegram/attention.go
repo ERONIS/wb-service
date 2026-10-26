@@ -9,7 +9,6 @@ import (
 	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
 	cardpublication_resolution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/resolution"
 	statistics_service "github.com/ERONIS/wb-service/internal/feature/statistics/service"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 
 	tele "gopkg.in/telebot.v3"
@@ -17,8 +16,9 @@ import (
 
 func (handler *Handler) listAttention(ctx tele.Context) error {
 	filter := statistics_service.AttentionFilter{Limit: 20}
-	if len(ctx.Args()) > 0 {
-		transferID, err := parsePositiveInt64(ctx.Args(), 0, 1)
+	arguments := callbackArguments(ctx.Args())
+	if len(arguments) > 0 {
+		transferID, err := parsePositiveInt64(arguments, 0, 1)
 		if err != nil {
 			return staleCallback(ctx)
 		}
@@ -226,9 +226,9 @@ func attentionReason(code string) string {
 
 func resolutionResultText(outcome transfer_model.ResultClass) string {
 	switch outcome {
-	case transfer_service.ResultSuccess:
+	case transfer_model.ResultSuccess:
 		return "Карточка отмечена как присутствующая в WB."
-	case transfer_service.ResultRejected:
+	case transfer_model.ResultRejected:
 		return "Карточка отмечена как отклонённая."
 	default:
 		return "Карточка оставлена без повторной отправки."

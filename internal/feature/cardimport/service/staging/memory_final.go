@@ -6,11 +6,15 @@ import (
 	"time"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
-	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	cardimport_contract "github.com/ERONIS/wb-service/internal/feature/cardimport/service/contract"
 	cardimport_model "github.com/ERONIS/wb-service/internal/feature/cardimport/service/model"
 )
+
+type sourceGroupIdentity struct {
+	fileID cardimport_model.FileID
+	name   string
+}
 
 // PrepareFinalization проверяет сессию и собирает карточки для сохранения.
 func (store *Store) PrepareFinalization(ctx context.Context, user domain.User, command cardimport_contract.FinalizeCommand) (cardimport_contract.FinalizedSession, cardimport_model.BatchHeader, error) {
@@ -36,24 +40,28 @@ func (store *Store) PrepareFinalization(ctx context.Context, user domain.User, c
 	selected := session.selectedCards()
 	finalized := cardimport_contract.FinalizedSession{
 		Session: session.Session, User: user, Command: command,
-		Files: make([]cardimport_model.File, 0, len(view.Files)), Items: make([]cardimport_model.BatchItem, 0, len(selected)),
+		SourceFiles: make([]cardimport_contract.FinalizedSourceFile, 0, len(view.Files)), Items: make([]cardimport_model.BatchItem, 0, len(selected)),
 	}
-	groups := make(map[cardpipeline.SourceGroupKey]struct{})
+	groupNumbers := make(map[sourceGroupIdentity]int)
 	seenFiles := make(map[cardimport_model.FileID]struct{})
 	for _, item := range selected {
 		if _, exists := seenFiles[item.fileID]; !exists {
-			finalized.Files = append(finalized.Files, session.files[item.fileID].File)
+			finalized.SourceFiles = append(finalized.SourceFiles, cardimport_contract.FinalizedSourceFile{ID: item.fileID, SessionID: session.ID})
 			seenFiles[item.fileID] = struct{}{}
 		}
 		position := len(finalized.Items) + 1
-		key := cardimport_model.NewSourceGroupKey(item.fileID, item.card.Group)
-		groups[key] = struct{}{}
+		identity := sourceGroupIdentity{fileID: item.fileID, name: item.card.Group}
+		groupNumber, exists := groupNumbers[identity]
+		if !exists {
+			groupNumber = len(groupNumbers) + 1
+			groupNumbers[identity] = groupNumber
+		}
 		finalized.Items = append(finalized.Items, cardimport_model.BatchItem{
-			Position: position, SourceFileID: item.fileID, SourceRows: append([]int(nil), item.card.SourceRows...),
-			SourceGroupKey: key, VendorCode: item.card.Variant.VendorCode, Payload: item.card,
+			Position: position, SourceFileID: item.fileID,
+			SourceGroupNumber: groupNumber, Payload: item.card,
 		})
 	}
-	finalized.GroupsCount = len(groups)
+	finalized.GroupsCount = len(groupNumbers)
 	session.finalizing = true
 	return finalized, cardimport_model.BatchHeader{}, nil
 }

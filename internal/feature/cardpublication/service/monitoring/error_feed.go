@@ -121,15 +121,15 @@ func (feed *ErrorFeed) ProcessPending(ctx context.Context) error {
 		return nil
 	}
 	feed.nextPoll = now.Add(errorFeedInterval)
-	targets, err := feed.targets.PublicationTargets(ctx)
+	targets, err := feed.targets.AllTargets(ctx)
 	if err != nil {
 		return err
 	}
-	group, refreshCtx := errgroup.WithContext(ctx)
+	var group errgroup.Group
 	for _, target := range targets {
 		target := target
 		group.Go(func() error {
-			_, err := feed.Refresh(refreshCtx, core_domain.SellerID(target.SellerID))
+			_, err := feed.Refresh(ctx, target.SellerID)
 			return err
 		})
 	}

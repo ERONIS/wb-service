@@ -30,7 +30,7 @@ func (s *UsersService) GetUser(
 		)
 	}
 
-	user, err := s.usersRepository.GetUserByTelegramID(
+	user, err := s.usersRepository.FindByTelegramID(
 		ctx,
 		targetTelegramID,
 	)

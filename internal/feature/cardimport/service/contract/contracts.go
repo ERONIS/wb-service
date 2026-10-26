@@ -15,9 +15,14 @@ type RecoverableFile struct {
 	File             cardimport_model.File
 }
 
+type FinalizedSourceFile struct {
+	ID        cardimport_model.FileID
+	SessionID cardimport_model.SessionID
+}
+
 type FinalizedSession struct {
 	Session     cardimport_model.Session
-	Files       []cardimport_model.File
+	SourceFiles []FinalizedSourceFile
 	Items       []cardimport_model.BatchItem
 	GroupsCount int
 	User        domain.User
@@ -35,11 +40,5 @@ type Repository interface {
 		tx core_postgres_transaction.DBTX,
 		finalized FinalizedSession,
 	) (cardimport_model.BatchHeader, error)
-	BatchReader
-}
-
-type BatchReader interface {
-	ListFinalizedBatches(ctx context.Context, after *cardpipeline.BatchCursor, limit int) ([]cardimport_model.BatchHeader, error)
 	GetBatch(ctx context.Context, batchID cardpipeline.BatchID) (cardimport_model.BatchHeader, error)
-	ListBatchItems(ctx context.Context, batchID cardpipeline.BatchID, afterPosition int, limit int) ([]cardimport_model.BatchItem, error)
 }

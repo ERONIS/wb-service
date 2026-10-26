@@ -11,7 +11,6 @@ import (
 	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
 	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
-	transfer_preparation "github.com/ERONIS/wb-service/internal/feature/transfer/service/preparation"
 
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
@@ -24,7 +23,6 @@ const (
 type Processor struct {
 	repository     Repository
 	transferSource TransferSource
-	proposalReader ProposalReader
 	catalogReader  *cardpublication_catalog.CatalogReader
 	planner        *Planner
 	saver          *Saver
@@ -35,20 +33,18 @@ type Processor struct {
 func NewProcessor(
 	repository Repository,
 	transferSource TransferSource,
-	proposalReader ProposalReader,
 	catalogReader *cardpublication_catalog.CatalogReader,
 	planner *Planner,
 	saver *Saver,
 	loggers ...*zap.Logger,
 ) *Processor {
-	if repository == nil || transferSource == nil || proposalReader == nil ||
+	if repository == nil || transferSource == nil ||
 		catalogReader == nil || planner == nil || saver == nil {
 		panic("cardpublication processor dependency is nil")
 	}
 	return &Processor{
 		repository:     repository,
 		transferSource: transferSource,
-		proposalReader: proposalReader,
 		catalogReader:  catalogReader,
 		planner:        planner,
 		saver:          saver,
@@ -70,7 +66,7 @@ func (processor *Processor) ProcessPendingWithNotify(ctx context.Context, onProg
 	var afterID transfer_model.TransferID
 	var firstErr error
 	for {
-		transfers, err := processor.transferSource.ListAwaitingAuthorization(
+		transfers, err := processor.transferSource.ListReadyForPublicationPlanning(
 			ctx,
 			afterID,
 			publicationTransferPageSize,
@@ -116,30 +112,6 @@ func (processor *Processor) processTransfer(
 	if len(source.Groups) == 0 {
 		return false, nil
 	}
-	queries := make([]transfer_preparation.ProposalQuery, len(source.Groups))
-	for index, sourceGroup := range source.Groups {
-		queries[index] = transfer_preparation.ProposalQuery{
-			TransferID:    transfer.ID,
-			GroupTargetID: sourceGroup.GroupTargetID,
-		}
-	}
-	proposals, err := processor.proposalReader.LoadProposals(ctx, queries)
-	if err != nil {
-		return false, fmt.Errorf("load prepared publication proposals: %w", err)
-	}
-	if len(proposals) != len(source.Groups) {
-		return false, errors.New("prepared publication proposal count differs")
-	}
-	loaded := make([]loadedPlanningGroup, len(source.Groups))
-	for index, proposal := range proposals {
-		if proposal.TransferID != transfer.ID {
-			return false, errors.New("prepared proposal transfer identity differs")
-		}
-		loaded[index] = loadedPlanningGroup{
-			Source: source.Groups[index], Proposal: proposal,
-		}
-	}
-
 	vendorCodesByTarget := make(map[int64][]string)
 	cabinetByTarget := make(map[int64]core_domain.SellerID)
 	for _, group := range source.Groups {
@@ -185,7 +157,7 @@ func (processor *Processor) processTransfer(
 	for index, targetID := range targetIDs {
 		observations[targetID] = loadedObservations[index]
 	}
-	draft, err := processor.planner.Build(transfer, loaded, observations)
+	draft, err := processor.planner.Build(transfer, source.Groups, observations)
 	if err != nil {
 		return false, err
 	}

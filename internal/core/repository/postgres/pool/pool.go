@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strconv"
 	"time"
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
@@ -37,6 +38,33 @@ func NewConnectionPool(
 		return nil, fmt.Errorf("validate postgres config: %w", err)
 	}
 
+	pgxconfig, err := newPGXPoolConfig(config)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(loggers) > 0 && loggers[0] != nil {
+		pgxconfig.ConnConfig.Tracer = newQueryTracer(loggers[0])
+	}
+
+	pool, err := pgxpool.NewWithConfig(ctx, pgxconfig)
+	if err != nil {
+		return nil, fmt.Errorf("create pgxpool: %w", err)
+	}
+
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("ping pgxpool: %w", err)
+	}
+
+	return &ConnectionPool{
+		Pool:      pool,
+		opTimeout: config.Timeout,
+	}, nil
+}
+
+// newPGXPoolConfig собирает параметры соединения и серверный таймаут для каждого SQL-запроса.
+func newPGXPoolConfig(config Config) (*pgxpool.Config, error) {
 	u := &url.URL{
 		Scheme: "postgres",
 		User:   url.UserPassword(config.User, config.Password),
@@ -59,24 +87,13 @@ func NewConnectionPool(
 	pgxconfig.MaxConnIdleTime = config.MaxConnIdleTime
 	pgxconfig.HealthCheckPeriod = config.HealthCheckPeriod
 
-	if len(loggers) > 0 && loggers[0] != nil {
-		pgxconfig.ConnConfig.Tracer = newQueryTracer(loggers[0])
+	timeoutMillis := config.Timeout / time.Millisecond
+	if config.Timeout%time.Millisecond != 0 {
+		timeoutMillis++
 	}
-
-	pool, err := pgxpool.NewWithConfig(ctx, pgxconfig)
-	if err != nil {
-		return nil, fmt.Errorf("create pgxpool: %w", err)
-	}
-
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("ping pgxpool: %w", err)
-	}
-
-	return &ConnectionPool{
-		Pool:      pool,
-		opTimeout: config.Timeout,
-	}, nil
+	pgxconfig.ConnConfig.RuntimeParams["statement_timeout"] =
+		strconv.FormatInt(int64(timeoutMillis), 10) + "ms"
+	return pgxconfig, nil
 }
 
 func (p *ConnectionPool) OperationContext(

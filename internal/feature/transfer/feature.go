@@ -5,16 +5,18 @@ import (
 	"fmt"
 	"time"
 
+	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	transfer_postgres_repository "github.com/ERONIS/wb-service/internal/feature/transfer/repository/postgres"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 	"github.com/ERONIS/wb-service/internal/feature/transfer/service/authorization"
+	transfer_polling "github.com/ERONIS/wb-service/internal/feature/transfer/service/polling"
 	"github.com/ERONIS/wb-service/internal/feature/transfer/service/preparation"
 	"github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
 	"github.com/ERONIS/wb-service/internal/feature/transfer/service/registry"
 	"github.com/ERONIS/wb-service/internal/feature/transfer/service/workflow"
 	transfer_config_transport "github.com/ERONIS/wb-service/internal/feature/transfer/transport/config"
+
 	"go.uber.org/zap"
 )
 
@@ -25,17 +27,15 @@ const (
 )
 
 type Feature struct {
-	service                     *workflow.Service
-	preparationResultApplier    *preparation.PreparationResultApplier
-	publicationResultApplier    *publication.PublicationPlanResultApplier
-	publicationExecutionApplier *publication.PublicationExecutionResultApplier
-	repository                  *transfer_postgres_repository.Repository
-	uow                         core_postgres_transaction.UnitOfWork
-	liveMode                    bool
-	authorizationTTL            time.Duration
-	liveAuthorization           *authorization.LiveAuthorizationService
-	automaticAuthorization      *authorization.AutomaticAuthorizationProcessor
-	pollingInterval             time.Duration
+	service                *workflow.Service
+	repository             *transfer_postgres_repository.Repository
+	uow                    core_postgres_transaction.UnitOfWork
+	liveMode               bool
+	authorizationTTL       time.Duration
+	liveAuthorization      *authorization.LiveAuthorizationService
+	automaticAuthorization *authorization.AutomaticAuthorizationProcessor
+	pollingInterval        time.Duration
+	logger                 *zap.Logger
 }
 
 func NewConfig() (transfer_config_transport.Config, error) {
@@ -50,7 +50,7 @@ func New(
 	ctx context.Context,
 	postgresPool core_postgres_pool.Pool,
 	uow core_postgres_transaction.UnitOfWork,
-	targetTransport registry.TargetTransport,
+	cabinets registry.CabinetSource,
 	config transfer_config_transport.Config,
 	loggers ...*zap.Logger,
 ) (*Feature, error) {
@@ -65,35 +65,22 @@ func New(
 	}
 
 	repository := transfer_postgres_repository.New(postgresPool)
-	targets := registry.NewMutationTargetRegistry(
-		targetTransport,
-		config.CohortName,
-	)
+	targets := registry.NewMutationTargetRegistry(cabinets)
 	service := workflow.New(
 		repository,
 		repository,
 		targets,
 		uow,
 		config.CapacityPolicy(),
-		loggers...,
 	)
 	return &Feature{
-		service: service,
-		preparationResultApplier: preparation.NewPreparationResultApplier(
-			repository,
-			uow,
-		),
-		publicationResultApplier: publication.NewPublicationPlanResultApplier(
-			repository,
-		),
-		publicationExecutionApplier: publication.NewPublicationExecutionResultApplier(
-			repository,
-		),
+		service:          service,
 		repository:       repository,
 		uow:              uow,
 		liveMode:         config.Mode == ModeLive,
 		authorizationTTL: config.AuthorizationTTL,
 		pollingInterval:  config.PollInterval,
+		logger:           core_logger.Fallback(loggers...),
 	}, nil
 }
 
@@ -114,7 +101,6 @@ func (feature *Feature) ConfigureLiveAuthorization(
 	feature.automaticAuthorization = authorization.NewAutomaticAuthorizationProcessor(
 		plans,
 		service,
-		feature.service.Logger(),
 	)
 }
 
@@ -132,44 +118,32 @@ func (feature *Feature) LiveAuthorizationVerifier() *authorization.LiveAuthoriza
 	return feature.liveAuthorization
 }
 
-func (feature *Feature) Service() *workflow.Service {
-	return feature.service
-}
-
-func (feature *Feature) PreparationResultApplier() *preparation.PreparationResultApplier {
-	return feature.preparationResultApplier
-}
-
 func (feature *Feature) PreparationProcessor(preparer preparation.CardPreparer) *preparation.Processor {
-	return preparation.NewProcessor(preparer, feature.service, feature.preparationResultApplier, feature.uow, feature.service.Logger())
+	return preparation.NewProcessor(preparer, feature.repository, feature.repository, feature.uow)
 }
 
-func (feature *Feature) ProposalReader() *transfer_postgres_repository.Repository {
+func (feature *Feature) PublicationSource() *transfer_postgres_repository.Repository {
 	return feature.repository
 }
 
-func (feature *Feature) PublicationResultApplier() *publication.PublicationPlanResultApplier {
-	return feature.publicationResultApplier
-}
-
-func (feature *Feature) PublicationExecutionResultApplier() *publication.PublicationExecutionResultApplier {
-	return feature.publicationExecutionApplier
+func (feature *Feature) PublicationExecutionResults() publication.PublicationExecutionResultRepository {
+	return feature.repository
 }
 
 func (feature *Feature) RunPolling(
 	ctx context.Context,
-	onError transfer_service.ErrorHandler,
-	afterTransfer ...transfer_service.Processor,
+	onError transfer_polling.ErrorHandler,
+	afterTransfer ...transfer_polling.Processor,
 ) error {
 	processors := make(
-		[]transfer_service.Processor,
+		[]transfer_polling.Processor,
 		0,
 		1+len(afterTransfer),
 	)
 	processors = append(processors, feature.service)
 	processors = append(processors, afterTransfer...)
-	return transfer_service.NewPolling(
+	return transfer_polling.NewPolling(
 		feature.pollingInterval,
 		processors...,
-	).Run(ctx, onError, feature.service.Logger())
+	).Run(ctx, onError, feature.logger)
 }

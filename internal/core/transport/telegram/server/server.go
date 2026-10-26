@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 
 	core_tg_middleware "github.com/ERONIS/wb-service/internal/core/transport/telegram/middleware"
 
@@ -35,9 +36,14 @@ func New(
 		Verbose:     cfg.Verbose,
 		Offline:     cfg.Offline,
 		ParseMode:   tele.ModeHTML,
+		OnError:     core_tg_middleware.ErrorHandler(logger, cfg.Token),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("create telegram bot: %w", err)
+		message := core_tg_middleware.RedactTelegramBotTokens(err.Error())
+		if cfg.Token != "" {
+			message = strings.ReplaceAll(message, cfg.Token, "<redacted>")
+		}
+		return nil, fmt.Errorf("create telegram bot: %s", message)
 	}
 	bot.Use(core_tg_middleware.Logger(logger))
 

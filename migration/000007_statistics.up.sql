@@ -5,7 +5,6 @@ SELECT
     transfer.phase,
     transfer.outcome,
     transfer.attention_code,
-    transfer.cohort_name,
     transfer.items_count,
     transfer.groups_count,
     transfer.targets_count,

@@ -21,6 +21,15 @@ type taskSummary struct {
 	Errors   int64
 }
 
+var terminalOutcomeLabels = map[string]string{
+	"success":        "✅ Готово",
+	"skipped":        "⏭️ Пропущено",
+	"rejected":       "❌ Не отправлено",
+	"partial":        "⚠️ Завершено частично",
+	"unresolved":     "⚠️ Нужна проверка",
+	"internal_error": "❌ Ошибка обработки",
+}
+
 func summarizeCabinetProgress(cabinets []statistics_service.CabinetProgressRow) taskSummary {
 	var result taskSummary
 	for _, cabinet := range cabinets {
@@ -173,7 +182,7 @@ func (handler *Handler) openCabinetTasks(ctx tele.Context) error {
 			"\n\n%d. %s · %s",
 			int64(index)+start,
 			escapeLimited(task.VendorCode, 90),
-			cabinetTaskStatus(task, operation.Phase),
+			cabinetTaskStatus(task),
 		)
 	}
 	end := start + int64(len(tasks.Tasks)) - 1
@@ -218,28 +227,11 @@ func findCabinetProgress(
 	return statistics_service.CabinetProgressRow{}, false
 }
 
-var terminalOutcomeLabels = map[string]string{
-	"success":        "✅ Готово",
-	"skipped":        "⏭️ Пропущено",
-	"rejected":       "❌ Не отправлено",
-	"partial":        "⚠️ Завершено частично",
-	"unresolved":     "⚠️ Нужна проверка",
-	"internal_error": "❌ Ошибка обработки",
-}
-
-var phaseLabels = map[string]string{
-	"preparing":              "🔎 Проверяется",
-	"awaiting_authorization": "🕐 Готовится к отправке",
-	"publishing":             "🛠️ Создаётся карточка",
-	"reconciling":            "🕐 Проверяется в WB",
-	"media":                  "📸 Загружается фото",
-}
-
 func cabinetTaskPages(total int64) int64 {
 	return core_tg_ui.CalculateTotalPages(total, int64(statistics_service.CabinetPageSize))
 }
 
-func cabinetTaskStatus(task statistics_service.CabinetTaskRow, phase string) string {
+func cabinetTaskStatus(task statistics_service.CabinetTaskRow) string {
 	if task.MediaActionState == "terminal" && (task.OutcomeClass == "success" || task.OutcomeClass == "skipped") {
 		if task.OverallOutcome == "unresolved" || task.OverallOutcome == "internal_error" || task.OverallOutcome == "partial" {
 			return mediaFailureStatus(task.MediaOutcomeCode)
@@ -252,23 +244,29 @@ func cabinetTaskStatus(task statistics_service.CabinetTaskRow, phase string) str
 		return terminalItemStatus(task)
 	}
 	if task.State == "terminal" {
+		switch task.MediaStatus {
+		case "running":
+			if task.MediaActionState == "reconciling" {
+				return "🕐 Проверяются фото в WB"
+			}
+			if task.MediaActionState == "planned" {
+				return "🟡 Фото в очереди"
+			}
+			return "📸 Загружается фото"
+		case "not_started":
+			if task.MediaActionState == "planned" || task.PublicationStatus == "succeeded" || task.PublicationStatus == "skipped" {
+				return "🟡 Фото в очереди"
+			}
+		}
 		return terminalItemStatus(task)
-	}
-	switch task.MediaStatus {
-	case "running":
-		if task.MediaActionState == "reconciling" {
-			return "🕐 Проверяются фото в WB"
-		}
-		return "📸 Загружается фото"
-	case "not_started":
-		if task.MediaActionState == "planned" || task.PublicationStatus == "succeeded" || task.PublicationStatus == "skipped" {
-			return "🟡 Фото в очереди"
-		}
 	}
 	switch task.PublicationStatus {
 	case "running":
-		if phase == "reconciling" {
+		if task.ProductActionState == "reconciling" {
 			return "🕐 Проверяется в WB"
+		}
+		if task.ProductActionState == "planned" {
+			return "🟡 Отправка в очереди"
 		}
 		return "🛠️ Создаётся карточка"
 	case "not_started":
@@ -279,13 +277,7 @@ func cabinetTaskStatus(task statistics_service.CabinetTaskRow, phase string) str
 	if task.PreparationStatus == "running" {
 		return "🔎 Проверяется"
 	}
-	if task.PreparationStatus == "not_started" || task.State == "pending" {
-		return "🟡 В очереди"
-	}
 	if task.State == "running" {
-		if label, ok := phaseLabels[phase]; ok {
-			return label
-		}
 		return "🔵 В работе"
 	}
 	return "❔ Статус неизвестен"

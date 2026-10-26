@@ -25,13 +25,12 @@ type menuSnapshot struct {
 }
 
 type chatState struct {
-	mu                 sync.Mutex
-	notification       notificationState
-	menu               menuSnapshot
-	lastMenuUpdate     time.Time
-	keyboardMu         sync.Mutex
-	keyboardInstalled  bool
-	keyboardInstalling bool
+	mu                sync.Mutex
+	notification      notificationState
+	menu              menuSnapshot
+	lastMenuUpdate    time.Time
+	keyboardMu        sync.Mutex
+	keyboardInstalled bool
 }
 
 type persistentReplyKeyboard struct {

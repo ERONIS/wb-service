@@ -6,10 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
-
-	"go.uber.org/zap"
 )
 
 const automaticAuthorizationPageSize = 100
@@ -26,7 +23,6 @@ type AutomaticLiveAuthorization interface {
 type AutomaticAuthorizationProcessor struct {
 	plans           AutomaticAuthorizationPlanSource
 	authorization   AutomaticLiveAuthorization
-	logger          *zap.Logger
 	processMu       sync.Mutex
 	afterTransferID transfer_model.TransferID
 	afterPlanID     int64
@@ -35,7 +31,6 @@ type AutomaticAuthorizationProcessor struct {
 func NewAutomaticAuthorizationProcessor(
 	plans AutomaticAuthorizationPlanSource,
 	authorization AutomaticLiveAuthorization,
-	loggers ...*zap.Logger,
 ) *AutomaticAuthorizationProcessor {
 	if plans == nil || authorization == nil {
 		panic("automatic live authorization dependency is nil")
@@ -43,7 +38,6 @@ func NewAutomaticAuthorizationProcessor(
 	return &AutomaticAuthorizationProcessor{
 		plans:         plans,
 		authorization: authorization,
-		logger:        core_logger.Fallback(loggers...),
 	}
 }
 

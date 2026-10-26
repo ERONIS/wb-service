@@ -89,8 +89,15 @@ func (host *menuHost) recordNotification(
 	if state.notification.shownAt == nil {
 		state.notification.shownAt = make(map[string]time.Time)
 	}
+	for previousKey, previousTime := range state.notification.shownAt {
+		age := shownAt.Sub(previousTime)
+		if age < 0 || age >= notificationDedupeFor {
+			delete(state.notification.shownAt, previousKey)
+		}
+	}
 	state.notification.shownAt[key] = shownAt
 }
+
 func normalizedNotificationKey(key string, text string) string {
 	key = strings.TrimSpace(key)
 	if key != "" {

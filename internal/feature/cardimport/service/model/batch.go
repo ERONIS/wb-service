@@ -4,12 +4,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ERONIS/wb-service/internal/core/canonicalhash"
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 )
-
-const MaxBatchPageSize = 1000
 
 type BatchHeader struct {
 	ID               cardpipeline.BatchID
@@ -21,14 +18,12 @@ type BatchHeader struct {
 }
 
 type BatchItem struct {
-	ID             cardpipeline.BatchItemID
-	BatchID        cardpipeline.BatchID
-	Position       int
-	SourceFileID   FileID
-	SourceRows     []int
-	SourceGroupKey cardpipeline.SourceGroupKey
-	VendorCode     string
-	Payload        cardpipeline.Card
+	ID                cardpipeline.BatchItemID
+	BatchID           cardpipeline.BatchID
+	Position          int
+	SourceFileID      FileID
+	SourceGroupNumber int
+	Payload           cardpipeline.Card
 }
 
 // Validate проверяет состав и автора готовой пачки.
@@ -58,50 +53,24 @@ func (item BatchItem) Validate() error {
 		return invalidBatch("item position must be positive")
 	case item.SourceFileID <= 0:
 		return invalidBatch("item source file ID must be positive")
-	case len(item.SourceRows) == 0:
+	case len(item.Payload.SourceRows) == 0:
 		return invalidBatch("item source rows are empty")
-	case strings.TrimSpace(item.VendorCode) == "":
+	case strings.TrimSpace(item.Payload.Variant.VendorCode) == "":
 		return invalidBatch("item vendor code is empty")
-	case item.Payload.Variant.VendorCode != item.VendorCode:
-		return invalidBatch("item vendor code differs from payload")
-	case !equalRows(item.SourceRows, item.Payload.SourceRows):
-		return invalidBatch("item source rows differ from payload")
 	case strings.TrimSpace(item.Payload.Group) == "":
 		return invalidBatch("item group is empty")
-	case item.SourceGroupKey != NewSourceGroupKey(item.SourceFileID, item.Payload.Group):
-		return invalidBatch("item source group key differs from payload")
+	case item.SourceGroupNumber <= 0:
+		return invalidBatch("item source group number must be positive")
 	}
-	for index, row := range item.SourceRows {
+	for index, row := range item.Payload.SourceRows {
 		if row <= 0 {
 			return invalidBatch("item source row must be positive")
 		}
-		if index > 0 && row <= item.SourceRows[index-1] {
+		if index > 0 && row <= item.Payload.SourceRows[index-1] {
 			return invalidBatch("item source rows must be strictly increasing")
 		}
 	}
 	return nil
-}
-
-// NewSourceGroupKey создаёт ключ группы из ID файла и значения группы.
-func NewSourceGroupKey(fileID FileID, group string) cardpipeline.SourceGroupKey {
-	builder := canonicalhash.NewSHA256("cardimport-source-group:v1")
-	builder.Int64(int64(fileID))
-	builder.String("group")
-	builder.String(group)
-	return cardpipeline.SourceGroupKey(builder.Sum())
-}
-
-// equalRows сравнивает номера исходных строк по порядку.
-func equalRows(left, right []int) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for index := range left {
-		if left[index] != right[index] {
-			return false
-		}
-	}
-	return true
 }
 
 // invalidBatch оформляет ошибку некорректной пачки.

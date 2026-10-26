@@ -12,8 +12,8 @@ import (
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
 	cardpublication_monitoring "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/monitoring"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 	transfer_authorization "github.com/ERONIS/wb-service/internal/feature/transfer/service/authorization"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 	transfer_publication "github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
 
 	"go.uber.org/zap"
@@ -27,7 +27,7 @@ type ProductDispatcher struct {
 	catalogReader         *cardpublication_catalog.CatalogReader
 	errorFeed             *cardpublication_monitoring.ErrorFeed
 	authorization         LiveAuthorizationVerifier
-	transferResults       PublicationExecutionResultApplier
+	transferResults       transfer_publication.PublicationExecutionResultRepository
 	uow                   core_postgres_transaction.UnitOfWork
 	reconciliationDelay   time.Duration
 	reconciliationTimeout time.Duration
@@ -35,6 +35,9 @@ type ProductDispatcher struct {
 	now                   func() time.Time
 	logger                *zap.Logger
 	processMu             sync.Mutex
+	interruptedAfterID    int64
+	dispatchAfterID       int64
+	reconcileAfterID      int64
 }
 
 func NewProductDispatcher(
@@ -43,7 +46,7 @@ func NewProductDispatcher(
 	catalogReader *cardpublication_catalog.CatalogReader,
 	errorFeed *cardpublication_monitoring.ErrorFeed,
 	authorization LiveAuthorizationVerifier,
-	transferResults PublicationExecutionResultApplier,
+	transferResults transfer_publication.PublicationExecutionResultRepository,
 	uow core_postgres_transaction.UnitOfWork,
 	reconciliationDelay time.Duration,
 	reconciliationTimeout time.Duration,
@@ -81,10 +84,14 @@ func (dispatcher *ProductDispatcher) ProcessPending(ctx context.Context) error {
 	var firstErr error
 	interrupted, err := dispatcher.repository.ListInterruptedProductActions(
 		ctx,
+		dispatcher.interruptedAfterID,
 		productDispatchPageSize,
 	)
 	if err != nil {
 		return err
+	}
+	if len(interrupted) > 0 {
+		dispatcher.interruptedAfterID = interrupted[len(interrupted)-1].ActionID
 	}
 	for _, candidate := range interrupted {
 		if err := dispatcher.recordInterrupted(ctx, candidate); err != nil && firstErr == nil {
@@ -93,6 +100,7 @@ func (dispatcher *ProductDispatcher) ProcessPending(ctx context.Context) error {
 	}
 	candidates, err := dispatcher.repository.ListDispatchableProductActions(
 		ctx,
+		dispatcher.dispatchAfterID,
 		productDispatchPageSize,
 	)
 	if err != nil {
@@ -100,6 +108,9 @@ func (dispatcher *ProductDispatcher) ProcessPending(ctx context.Context) error {
 			return errors.Join(firstErr, err)
 		}
 		return err
+	}
+	if len(candidates) > 0 {
+		dispatcher.dispatchAfterID = candidates[len(candidates)-1].ActionID
 	}
 	var reconciliationErr, dispatchErr error
 	var wait sync.WaitGroup
@@ -165,7 +176,7 @@ func (dispatcher *ProductDispatcher) dispatchCandidates(
 func isExpectedProductDispatchStop(err error) bool {
 	return errors.Is(err, ErrProductPlanSuperseded) ||
 		errors.Is(err, ErrProductPlanStopped) ||
-		errors.Is(err, transfer_service.ErrLiveExpired)
+		errors.Is(err, transfer_authorization.ErrLiveExpired)
 }
 
 func (dispatcher *ProductDispatcher) dispatch(
@@ -235,7 +246,7 @@ func (dispatcher *ProductDispatcher) dispatch(
 							items = append(items, transfer_publication.PublicationTerminalItem{
 								GroupTargetID:        member.GroupTargetID,
 								TransferItemTargetID: member.TransferItemTargetID,
-								OutcomeClass:         transfer_service.ResultUnresolved,
+								OutcomeClass:         transfer_model.ResultUnresolved,
 								OutcomeCode:          "PLAN_CHANGED_AFTER_DISPATCH_STARTED",
 							})
 							groupSet[member.GroupTargetID] = struct{}{}
@@ -244,7 +255,7 @@ func (dispatcher *ProductDispatcher) dispatch(
 						for groupTargetID := range groupSet {
 							groups = append(groups, groupTargetID)
 						}
-						if err := dispatcher.transferResults.ApplyWithin(
+						if err := dispatcher.transferResults.ApplyPublicationActionResult(
 							ctx,
 							tx,
 							transfer_publication.ApplyPublicationActionResultCommand{
@@ -284,7 +295,7 @@ func (dispatcher *ProductDispatcher) dispatch(
 				); err != nil {
 					return err
 				}
-				if err := dispatcher.transferResults.ResetPlanningWithin(
+				if err := dispatcher.transferResults.ResetPublicationPlanning(
 					ctx,
 					tx,
 					action.TransferID,
@@ -310,7 +321,7 @@ func (dispatcher *ProductDispatcher) dispatch(
 					ClientGeneration:              action.ClientGeneration,
 				},
 			)
-			if errors.Is(err, transfer_service.ErrLiveExpired) {
+			if errors.Is(err, transfer_authorization.ErrLiveExpired) {
 				authorizationExpired = true
 				return nil
 			}
@@ -342,11 +353,7 @@ func (dispatcher *ProductDispatcher) dispatch(
 			if err != nil {
 				return err
 			}
-			return dispatcher.transferResults.BeginWithin(
-				ctx,
-				tx,
-				action.TransferID,
-			)
+			return nil
 		},
 	)
 	if err != nil {
@@ -359,7 +366,7 @@ func (dispatcher *ProductDispatcher) dispatch(
 		return ErrProductPlanStopped
 	}
 	if authorizationExpired {
-		return transfer_service.ErrLiveExpired
+		return transfer_authorization.ErrLiveExpired
 	}
 	if attempt.ID <= 0 {
 		return ErrProductActionConflict
@@ -421,7 +428,7 @@ func (dispatcher *ProductDispatcher) recordSubmission(
 				return err
 			}
 			if result.Disposition != SubmissionRejectedProven {
-				return dispatcher.transferResults.MarkReconcilingWithin(
+				return dispatcher.transferResults.EnsureActivePublication(
 					ctx,
 					tx,
 					action.TransferID,
@@ -448,7 +455,7 @@ func (dispatcher *ProductDispatcher) recordSubmission(
 					OutcomeCode:          memberResult.OutcomeCode,
 				})
 			}
-			if err := dispatcher.transferResults.ApplyWithin(
+			if err := dispatcher.transferResults.ApplyPublicationActionResult(
 				ctx,
 				tx,
 				transfer_publication.ApplyPublicationActionResultCommand{

@@ -15,10 +15,8 @@ import (
 	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
 	cardpublication_model "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/model"
 	cardpublication_monitoring "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/monitoring"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 	transfer_authorization "github.com/ERONIS/wb-service/internal/feature/transfer/service/authorization"
 	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
-	transfer_publication "github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
 )
 
 const submissionClassifierVersion = 1
@@ -194,11 +192,13 @@ type MemberReconciliationResult struct {
 type ProductJournalRepository interface {
 	ListDispatchableProductActions(
 		ctx context.Context,
+		afterActionID int64,
 		limit int,
 	) ([]ProductActionCandidate, error)
 
 	ListInterruptedProductActions(
 		ctx context.Context,
+		afterActionID int64,
 		limit int,
 	) ([]ProductActionCandidate, error)
 
@@ -265,6 +265,7 @@ type ProductJournalRepository interface {
 		ctx context.Context,
 		now time.Time,
 		baseDelay time.Duration,
+		afterActionID int64,
 		limit int,
 	) ([]ProductActionCandidate, error)
 
@@ -305,35 +306,13 @@ type ProductJournalRepository interface {
 	) ([]int64, error)
 }
 
-type PublicationExecutionResultApplier interface {
-	BeginWithin(context.Context, core_postgres_transaction.DBTX, transfer_model.TransferID) error
-	MarkReconcilingWithin(context.Context, core_postgres_transaction.DBTX, transfer_model.TransferID) error
-	BeginMediaWithin(context.Context, core_postgres_transaction.DBTX, transfer_model.TransferID) error
-	ApplyWithin(
-		context.Context,
-		core_postgres_transaction.DBTX,
-		transfer_publication.ApplyPublicationActionResultCommand,
-	) error
-	ApplyMediaWithin(
-		context.Context,
-		core_postgres_transaction.DBTX,
-		transfer_publication.ApplyPublicationMediaResultCommand,
-	) error
-	CorrectWithin(
-		context.Context,
-		core_postgres_transaction.DBTX,
-		transfer_publication.CorrectPublicationItemResultCommand,
-	) error
-	ResetPlanningWithin(
-		context.Context,
-		core_postgres_transaction.DBTX,
-		transfer_model.TransferID,
-		int64,
-	) error
-}
-
 type LiveAuthorizationVerifier interface {
 	LockValid(
+		context.Context,
+		core_postgres_transaction.DBTX,
+		transfer_authorization.LiveAuthorizationCheck,
+	) (transfer_authorization.LiveAuthorizationEvidence, error)
+	LockValidProductRetry(
 		context.Context,
 		core_postgres_transaction.DBTX,
 		transfer_authorization.LiveAuthorizationCheck,
@@ -378,7 +357,7 @@ func (action ProductAction) Validate() error {
 		if !member.OutcomeClass.IsValid() || member.OutcomeCode == "" ||
 			strings.TrimSpace(member.OutcomeCode) != member.OutcomeCode ||
 			len(member.OutcomeCode) > 128 || member.NMID < 0 ||
-			(member.OutcomeClass == transfer_service.ResultSuccess && member.NMID <= 0) {
+			(member.OutcomeClass == transfer_model.ResultSuccess && member.NMID <= 0) {
 			return fmt.Errorf("terminal publication product member at index %d is invalid", index)
 		}
 	}

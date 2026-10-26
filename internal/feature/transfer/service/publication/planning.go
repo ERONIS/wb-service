@@ -1,21 +1,18 @@
 package publication
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strings"
 
 	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
-	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
+	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
+	cardprepare_model "github.com/ERONIS/wb-service/internal/feature/cardprepare/service/model"
 	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
 
-const MaxPublicationPlanningPageSize = 1000
-
 type PublicationPlanningMember struct {
-	TransferItemID       int64
 	TransferItemTargetID int64
 	Position             int
 	VendorCode           string
@@ -24,53 +21,15 @@ type PublicationPlanningMember struct {
 
 type PublicationPlanningGroup struct {
 	GroupTargetID int64
-	SourceGroupID int64
 	TargetID      int64
 	SellerID      core_domain.SellerID
 	Members       []PublicationPlanningMember
+	Proposal      cardprepare_model.Proposal
 }
 
 type PublicationPlanningSource struct {
 	TransferID transfer_model.TransferID
 	Groups     []PublicationPlanningGroup
-}
-
-func (source PublicationPlanningSource) Validate() error {
-	if source.TransferID <= 0 {
-		return invalidTransfer("publication planning source transfer ID is invalid")
-	}
-	seenGroups := make(map[int64]struct{}, len(source.Groups))
-	seenItemTargets := make(map[int64]struct{})
-	for groupIndex, group := range source.Groups {
-		if group.GroupTargetID <= 0 || group.SourceGroupID <= 0 ||
-			group.TargetID <= 0 ||
-			len(group.Members) == 0 ||
-			strings.TrimSpace(string(group.SellerID)) != string(group.SellerID) ||
-			group.SellerID == "" {
-			return fmt.Errorf("publication planning group at index %d is invalid", groupIndex)
-		}
-		if _, exists := seenGroups[group.GroupTargetID]; exists {
-			return errors.New("publication planning group is duplicated")
-		}
-		seenGroups[group.GroupTargetID] = struct{}{}
-		for memberIndex, member := range group.Members {
-			if member.TransferItemID <= 0 || member.TransferItemTargetID <= 0 ||
-				member.Position <= 0 || member.VendorCode == "" ||
-				strings.TrimSpace(member.VendorCode) != member.VendorCode ||
-				(memberIndex > 0 && member.Position <= group.Members[memberIndex-1].Position) {
-				return fmt.Errorf(
-					"publication planning member at index %d/%d is invalid",
-					groupIndex,
-					memberIndex,
-				)
-			}
-			if _, exists := seenItemTargets[member.TransferItemTargetID]; exists {
-				return errors.New("publication planning item-target is duplicated")
-			}
-			seenItemTargets[member.TransferItemTargetID] = struct{}{}
-		}
-	}
-	return nil
 }
 
 type PublicationProjectionStatus string
@@ -98,16 +57,55 @@ type PublicationPlannedItem struct {
 	NMID                 int64
 }
 
-func (item PublicationPlannedItem) IsTerminal() bool {
-	return item.SourceActionID == 0
-}
-
 type ApplyPublicationPlanResultCommand struct {
 	TransferID  transfer_model.TransferID
 	PlanID      int64
 	Groups      []PublicationPlannedGroup
 	Items       []PublicationPlannedItem
 	ActionCount int
+}
+
+func (source PublicationPlanningSource) Validate() error {
+	if source.TransferID <= 0 {
+		return invalidTransfer("publication planning source transfer ID is invalid")
+	}
+	seenGroups := make(map[int64]struct{}, len(source.Groups))
+	seenItemTargets := make(map[int64]struct{})
+	for groupIndex, group := range source.Groups {
+		if group.GroupTargetID <= 0 || group.TargetID <= 0 ||
+			len(group.Members) == 0 ||
+			strings.TrimSpace(string(group.SellerID)) != string(group.SellerID) ||
+			group.SellerID == "" || group.Proposal.Validate() != nil ||
+			len(group.Proposal.Request[0].Variants) != len(group.Members) {
+			return fmt.Errorf("publication planning group at index %d is invalid", groupIndex)
+		}
+		if _, exists := seenGroups[group.GroupTargetID]; exists {
+			return errors.New("publication planning group is duplicated")
+		}
+		seenGroups[group.GroupTargetID] = struct{}{}
+		for memberIndex, member := range group.Members {
+			if member.TransferItemTargetID <= 0 ||
+				member.Position <= 0 || member.VendorCode == "" ||
+				strings.TrimSpace(member.VendorCode) != member.VendorCode ||
+				(memberIndex > 0 && member.Position <= group.Members[memberIndex-1].Position) ||
+				member.VendorCode != group.Proposal.Request[0].Variants[memberIndex].VendorCode {
+				return fmt.Errorf(
+					"publication planning member at index %d/%d is invalid",
+					groupIndex,
+					memberIndex,
+				)
+			}
+			if _, exists := seenItemTargets[member.TransferItemTargetID]; exists {
+				return errors.New("publication planning item-target is duplicated")
+			}
+			seenItemTargets[member.TransferItemTargetID] = struct{}{}
+		}
+	}
+	return nil
+}
+
+func (item PublicationPlannedItem) IsTerminal() bool {
+	return item.SourceActionID == 0
 }
 
 func (command ApplyPublicationPlanResultCommand) Validate() error {
@@ -127,11 +125,11 @@ func (command ApplyPublicationPlanResultCommand) Validate() error {
 				return errors.New("running publication group has terminal outcome")
 			}
 		case PublicationProjectionSkipped:
-			if group.OutcomeClass != ResultSkipped {
+			if group.OutcomeClass != transfer_model.ResultSkipped {
 				return errors.New("skipped publication group has invalid outcome")
 			}
 		case PublicationProjectionRejected:
-			if group.OutcomeClass != ResultRejected {
+			if group.OutcomeClass != transfer_model.ResultRejected {
 				return errors.New("rejected publication group has invalid outcome")
 			}
 		default:
@@ -165,29 +163,7 @@ func (command ApplyPublicationPlanResultCommand) Validate() error {
 	return nil
 }
 
-type PublicationPlanResultApplier struct {
-	repository PublicationPlanResultRepository
-}
-
-func NewPublicationPlanResultApplier(
-	repository PublicationPlanResultRepository,
-) *PublicationPlanResultApplier {
-	if repository == nil {
-		panic("transfer publication plan result repository is nil")
-	}
-	return &PublicationPlanResultApplier{repository: repository}
-}
-
-func (applier *PublicationPlanResultApplier) ApplyWithin(
-	ctx context.Context,
-	tx core_postgres_transaction.DBTX,
-	command ApplyPublicationPlanResultCommand,
-) error {
-	if ctx == nil || tx == nil {
-		return errors.New("apply publication plan result dependency is nil")
-	}
-	if err := command.Validate(); err != nil {
-		return err
-	}
-	return applier.repository.ApplyPublicationPlanResult(ctx, tx, command)
+// invalidTransfer оформляет ошибку некорректных данных публикации.
+func invalidTransfer(message string) error {
+	return core_errors.InvalidArgument("invalid transfer: %s", message)
 }

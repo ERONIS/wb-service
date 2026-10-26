@@ -19,7 +19,10 @@ import (
 	tele "gopkg.in/telebot.v3"
 )
 
-const sessionViewFilesLimit = 10
+const (
+	sessionViewFilesLimit  = 10
+	uploadedScreenDebounce = 350 * time.Millisecond
+)
 
 func parseSessionID(arguments []string) (cardimport_model.SessionID, error) {
 	value, err := core_tg_callback.ParseInt64Argument(arguments, 0, 1, 10, 1)
@@ -46,10 +49,7 @@ func (h *Handler) sendSessionView(
 	return ctx.EditOrSend(text, markup)
 }
 
-const uploadedScreenDebounce = 350 * time.Millisecond
-
-// sendUploadedSessionView places the current controls below uploaded files. A
-// short debounce combines Telegram multi-file sends into one new menu message.
+// sendUploadedSessionView обновляет экран после короткой задержки для группы загруженных файлов.
 func (h *Handler) sendUploadedSessionView(
 	ctx tele.Context,
 	view cardimport_model.SessionView,

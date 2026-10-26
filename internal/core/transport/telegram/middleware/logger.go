@@ -10,6 +10,7 @@ import (
 	tele "gopkg.in/telebot.v3"
 )
 
+// Logger пишет успешные обновления; ошибки передаются обработчику OnError telebot.
 func Logger(logger *zap.Logger) tele.MiddlewareFunc {
 	if logger == nil {
 		panic("telegram middleware logger is nil")
@@ -18,31 +19,47 @@ func Logger(logger *zap.Logger) tele.MiddlewareFunc {
 	return func(next tele.HandlerFunc) tele.HandlerFunc {
 		return func(ctx tele.Context) error {
 			startedAt := time.Now()
-			err := next(ctx)
-
-			fields := updateLogFields(ctx, time.Since(startedAt))
-			if errors.Is(err, context.Canceled) {
-				logger.Debug(
-					"telegram update processing canceled",
-					fields...,
-				)
+			if err := next(ctx); err != nil {
 				return err
 			}
-			if err != nil {
-				logger.Error(
-					"telegram update processing failed",
-					append(fields, zap.String("error", redactTelegramBotTokens(err.Error())))...,
-				)
-				return err
-			}
-
+			fields := append(updateLogFields(ctx), zap.Duration("duration", time.Since(startedAt)))
 			logger.Debug("telegram update processed", fields...)
 			return nil
 		}
 	}
 }
 
-func redactTelegramBotTokens(message string) string {
+// ErrorHandler записывает ошибки telebot один раз и скрывает токен в URL.
+func ErrorHandler(logger *zap.Logger, token string) func(error, tele.Context) {
+	if logger == nil {
+		panic("telegram error logger is nil")
+	}
+	return func(err error, ctx tele.Context) {
+		if err == nil {
+			return
+		}
+		message := RedactTelegramBotTokens(err.Error())
+		if token != "" {
+			message = strings.ReplaceAll(message, token, "<redacted>")
+		}
+		fields := []zap.Field{zap.String("error", message)}
+		if ctx != nil {
+			fields = append(updateLogFields(ctx), fields...)
+		}
+		if errors.Is(err, context.Canceled) {
+			logger.Debug("telegram update processing canceled", fields...)
+			return
+		}
+		if ctx == nil {
+			logger.Error("telegram bot failed", fields...)
+			return
+		}
+		logger.Error("telegram update processing failed", fields...)
+	}
+}
+
+// RedactTelegramBotTokens скрывает токен из URL Telegram API.
+func RedactTelegramBotTokens(message string) string {
 	const marker = "/bot"
 	const replacement = "/bot<redacted>"
 
@@ -65,12 +82,11 @@ func redactTelegramBotTokens(message string) string {
 	return message
 }
 
-func updateLogFields(ctx tele.Context, duration time.Duration) []zap.Field {
+func updateLogFields(ctx tele.Context) []zap.Field {
 	update := ctx.Update()
 	fields := []zap.Field{
 		zap.Int("update_id", update.ID),
 		zap.String("update_type", updateType(update)),
-		zap.Duration("duration", duration),
 	}
 
 	if sender := ctx.Sender(); sender != nil {

@@ -36,7 +36,7 @@ func (s *UsersService) AddUser(
 		)
 	}
 
-	savedUser, err := s.usersRepository.SaveUser(
+	savedUser, err := s.usersRepository.Create(
 		ctx,
 		user,
 	)

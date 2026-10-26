@@ -114,19 +114,15 @@ func (h *Handler) resumeFiles(ctx tele.Context) error {
 func (h *Handler) processFile(
 	processCtx context.Context,
 	file cardimport_model.File,
-	telegramFile *tele.File,
 	command cardimport_contract.ParseFileCommand,
 ) (cardimport_model.SessionView, error) {
 	switch file.Status {
 	case cardimport_model.FileStatusReserved:
-		if telegramFile == nil {
-			telegramFile = &tele.File{
-				FileID:   file.TelegramFileID,
-				UniqueID: file.TelegramFileUniqueID,
-				FileSize: file.DeclaredSize,
-			}
-		}
-		reader, err := h.bot.File(telegramFile)
+		reader, err := h.bot.File(&tele.File{
+			FileID:   file.TelegramFileID,
+			UniqueID: file.TelegramFileUniqueID,
+			FileSize: file.DeclaredSize,
+		})
 		if err != nil {
 			return cardimport_model.SessionView{}, fmt.Errorf(
 				"download reserved Telegram file: %w",
@@ -150,7 +146,7 @@ func (h *Handler) processFile(
 		}
 
 	case cardimport_model.FileStatusStored:
-		// Durable blob уже сохранён: продолжаем оборванную обработку.
+		// Сохранённый файл готов к повторному разбору.
 
 	case cardimport_model.FileStatusParsing:
 		if !isRecoverableFile(file, time.Now()) {

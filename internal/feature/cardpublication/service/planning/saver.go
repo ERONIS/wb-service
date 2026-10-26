@@ -11,32 +11,29 @@ import (
 )
 
 type Saver struct {
-	repository    Repository
-	resultApplier TransferResultApplier
-	uow           core_postgres_transaction.UnitOfWork
+	repository       Repository
+	resultRepository TransferResultRepository
+	uow              core_postgres_transaction.UnitOfWork
 }
 
 func NewSaver(
 	repository Repository,
-	resultApplier TransferResultApplier,
+	resultRepository TransferResultRepository,
 	uow core_postgres_transaction.UnitOfWork,
 ) *Saver {
-	if repository == nil || resultApplier == nil || uow == nil {
+	if repository == nil || resultRepository == nil || uow == nil {
 		panic("cardpublication saver dependency is nil")
 	}
 	return &Saver{
-		repository:    repository,
-		resultApplier: resultApplier,
-		uow:           uow,
+		repository:       repository,
+		resultRepository: resultRepository,
+		uow:              uow,
 	}
 }
 
 func (saver *Saver) Save(ctx context.Context, draft cardpublication_model.PlanDraft) error {
 	if ctx == nil {
 		return errors.New("save publication plan: context is nil")
-	}
-	if err := draft.Validate(); err != nil {
-		return err
 	}
 	if err := saver.uow.WithinTransaction(
 		ctx,
@@ -83,7 +80,7 @@ func (saver *Saver) Save(ctx context.Context, draft cardpublication_model.PlanDr
 					NMID:                 item.NMID,
 				})
 			}
-			return saver.resultApplier.ApplyWithin(ctx, tx, command)
+			return saver.resultRepository.ApplyPublicationPlanResult(ctx, tx, command)
 		},
 	); err != nil {
 		return fmt.Errorf("save publication plan transaction: %w", err)

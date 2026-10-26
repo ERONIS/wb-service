@@ -202,7 +202,7 @@ func (h *Handler) processRecoveryJob(job cardimportRecoveryJob) {
 	if job.file.Status == cardimport_model.FileStatusInvalid {
 		_, err = h.service.ParseFile(attemptCtx, command)
 	} else {
-		_, err = h.processFile(attemptCtx, job.file, nil, command)
+		_, err = h.processFile(attemptCtx, job.file, command)
 	}
 	cancel()
 	h.finishRecovery(job.file.ID, err)

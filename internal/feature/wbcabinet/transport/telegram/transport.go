@@ -77,6 +77,7 @@ func (handler *Handler) Register(
 	handler.profiles = profiles
 	handler.textFlows = menu
 	menu.RegisterTextFlow(addCabinetTextFlow, domain.RoleUser, handler.handleText)
+	menu.RegisterFlowCleanup(addCabinetTextFlow, handler.pending.Cancel)
 	menu.RegisterMenuItem(buttonCabinets, domain.RoleUser, handler.list)
 	menu.RegisterCallback(buttonAdd, domain.RoleUser, handler.startAdd)
 	menu.RegisterCallback(buttonCancel, domain.RoleUser, handler.cancelAdd)

@@ -128,6 +128,7 @@ func (h *UsersTgHandler) Register(
 ) {
 	h.textFlows = menu
 	menu.RegisterTextFlow(addUserTextFlow, domain.RoleAdmin, h.handleAddUserText)
+	menu.RegisterFlowCleanup(addUserTextFlow, h.pendingAdds.Cancel)
 
 	menu.RegisterMenuItem(
 		buttonListUsers,
@@ -184,6 +185,9 @@ func (h *UsersTgHandler) handleAddUserText(
 		return false, nil
 	}
 	pending, status := h.pendingAdds.Claim(senderID)
+	if status == core_tg_state.StateBusy {
+		return true, core_tg_menu.Notify(ctx, "users.add_busy", "⏳ Предыдущий запрос ещё обрабатывается.")
+	}
 	if status != core_tg_state.StateClaimed {
 		return false, nil
 	}

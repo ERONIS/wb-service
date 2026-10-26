@@ -22,8 +22,8 @@ var (
 )
 
 type InitializationGroup struct {
-	SourceGroupKey  cardpipeline.SourceGroupKey
-	SourceGroupName string
+	SourceGroupNumber int
+	SourceGroupName   string
 }
 
 type InitializationItem struct {
@@ -52,7 +52,7 @@ func (command InitializeTransferCommand) Validate() error {
 		return ErrInitializationInvalid
 	}
 	for index, group := range command.Groups {
-		if group.SourceGroupKey == (cardpipeline.SourceGroupKey{}) {
+		if group.SourceGroupNumber != index+1 || group.SourceGroupName == "" {
 			return fmt.Errorf(
 				"initialization group at position %d: %w",
 				index+1,
@@ -89,7 +89,7 @@ func (service *Service) Initialize(
 	if err != nil {
 		return false, fmt.Errorf("load transfer for initialization: %w", err)
 	}
-	if transfer.Phase != PhaseInitializing {
+	if transfer.Phase != transfer_model.PhaseInitializing {
 		return false, nil
 	}
 
@@ -108,10 +108,13 @@ func (service *Service) Initialize(
 		return false, err
 	}
 
+	var activated bool
 	err = service.uow.WithinTransaction(
 		ctx,
 		func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
-			return service.repository.Initialize(ctx, tx, command)
+			var initializeErr error
+			activated, initializeErr = service.repository.Initialize(ctx, tx, command)
+			return initializeErr
 		},
 	)
 	if core_errors.IsConflict(err) {
@@ -125,7 +128,7 @@ func (service *Service) Initialize(
 	if err != nil {
 		return false, fmt.Errorf("persist transfer initialization: %w", err)
 	}
-	return true, nil
+	return activated, nil
 }
 
 func (service *Service) buildInitialization(
@@ -140,7 +143,7 @@ func (service *Service) buildInitialization(
 		)
 	}
 	batch := ready.Header
-	if err := validateStartBatch(batch); err != nil {
+	if err := batch.Validate(); err != nil {
 		return InitializeTransferCommand{}, ErrInitializationInvalid
 	}
 	if batch.ItemsCount != transfer.ItemsCount ||
@@ -152,22 +155,24 @@ func (service *Service) buildInitialization(
 		return InitializeTransferCommand{}, ErrInitializationInvalid
 	}
 
-	groups := make([]InitializationGroup, 0, batch.GroupsCount)
-	groupPositions := make(map[cardpipeline.SourceGroupKey]int, batch.GroupsCount)
+	groups := make([]InitializationGroup, batch.GroupsCount)
+	seenGroups := make([]bool, batch.GroupsCount)
 	items := make([]InitializationItem, 0, len(ready.Items))
 	for _, batchItem := range ready.Items {
 		if batchItem.BatchID != batch.ID || batchItem.Position != len(items)+1 ||
 			batchItem.Validate() != nil {
 			return InitializeTransferCommand{}, ErrInitializationInvalid
 		}
-		groupPosition, exists := groupPositions[batchItem.SourceGroupKey]
-		if !exists {
-			groupPosition = len(groups)
-			groupPositions[batchItem.SourceGroupKey] = groupPosition
-			groups = append(groups, InitializationGroup{
-				SourceGroupKey:  batchItem.SourceGroupKey,
-				SourceGroupName: batchItem.Payload.Group,
-			})
+		groupPosition := batchItem.SourceGroupNumber - 1
+		if groupPosition < 0 || groupPosition >= len(groups) {
+			return InitializeTransferCommand{}, ErrInitializationInvalid
+		}
+		if !seenGroups[groupPosition] {
+			groups[groupPosition] = InitializationGroup{
+				SourceGroupNumber: batchItem.SourceGroupNumber,
+				SourceGroupName:   batchItem.Payload.Group,
+			}
+			seenGroups[groupPosition] = true
 		} else {
 			group := groups[groupPosition]
 			if group.SourceGroupName != batchItem.Payload.Group {
@@ -187,9 +192,14 @@ func (service *Service) buildInitialization(
 			BatchItemID:   batchItem.ID,
 			Position:      batchItem.Position,
 			GroupPosition: groupPosition,
-			VendorCode:    batchItem.VendorCode,
+			VendorCode:    batchItem.Payload.Variant.VendorCode,
 			Payload:       string(payload),
 		})
+	}
+	for _, seen := range seenGroups {
+		if !seen {
+			return InitializeTransferCommand{}, ErrInitializationInvalid
+		}
 	}
 
 	command := InitializeTransferCommand{
@@ -211,6 +221,14 @@ func (service *Service) markInitializationFailed(
 	transferID transfer_model.TransferID,
 	failureCode string,
 ) error {
+	transfer, err := service.repository.FindByID(ctx, transferID)
+	if err != nil {
+		return fmt.Errorf("load transfer before initialization failure: %w", err)
+	}
+	if transfer.Phase != transfer_model.PhaseInitializing {
+		return nil
+	}
+
 	if err := service.uow.WithinTransaction(
 		ctx,
 		func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
@@ -222,6 +240,15 @@ func (service *Service) markInitializationFailed(
 			)
 		},
 	); err != nil {
+		if core_errors.IsConflict(err) {
+			transfer, readErr := service.repository.FindByID(ctx, transferID)
+			if readErr != nil {
+				return fmt.Errorf("load transfer after initialization conflict: %w", readErr)
+			}
+			if transfer.Phase != transfer_model.PhaseInitializing {
+				return nil
+			}
+		}
 		return fmt.Errorf("mark transfer initialization failed: %w", err)
 	}
 	return nil

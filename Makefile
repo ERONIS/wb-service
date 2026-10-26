@@ -2,11 +2,14 @@ include .env
 export
 
 PROJECT_ROOT := $(CURDIR)
-export PROJECT_ROOT
 
 .PHONY: \
 	init \
 	env-init \
+	wb-service-run \
+	postgres-integration-test-local \
+	migrate-up \
+	migrate-down \
 	env-up \
 	env-wait \
 	env-down \
@@ -14,14 +17,10 @@ export PROJECT_ROOT
 	env-port-close \
 	env-cleanup \
 	migrate-create \
-	migrate-up \
-	migrate-down \
 	migrate-action \
 	admin-bootstrap \
 	cabinet-bootstrap \
-	postgres-integration-test \
-	postgres-integration-test-local \
-	wb-service-run
+	postgres-integration-test
 
 init: env-init
 
@@ -31,6 +30,20 @@ env-init:
 	@$(MAKE) migrate-up
 	@$(MAKE) admin-bootstrap
 	@$(MAKE) cabinet-bootstrap
+
+wb-service-run:
+	@$(MAKE) migrate-up
+	@$(MAKE) env-port-forward
+	@go run cmd/wb-service/main.go
+
+postgres-integration-test-local:
+	@python3 scripts/postgres_integration_test.py
+
+migrate-up:
+	@$(MAKE) migrate-action action=up
+
+migrate-down:
+	@$(MAKE) migrate-action action="down 1"
 
 env-up:
 	@docker compose up -d wb-postgresql
@@ -82,12 +95,6 @@ migrate-create:
 		-dir /migration \
 		-seq "$(seq)"
 
-migrate-up:
-	@$(MAKE) migrate-action action=up
-
-migrate-down:
-	@$(MAKE) migrate-action action="down 1"
-
 migrate-action:
 	@if [ -z "$(action)" ]; then \
 		echo "Отсутствует параметр action. Пример: make migrate-action action=up"; \
@@ -137,14 +144,12 @@ postgres-integration-test:
 		exit 1; \
 	fi
 	@go test -count=1 -v \
+		./internal/core/repository/postgres/transaction \
+		./internal/core/transport/telegram/storage/postgres \
 		./internal/feature/cardimport/repository/postgres \
+		./internal/feature/cardpublication/repository/postgres \
+		./internal/feature/statistics/repository/postgres \
 		./internal/feature/transfer/repository/postgres \
+		./internal/feature/users/repository/postgres \
+		./internal/feature/wbcabinet/repository/postgres \
 		-run '^TestPostgres'
-
-postgres-integration-test-local:
-	@python3 scripts/postgres_integration_test.py
-
-wb-service-run:
-	@$(MAKE) migrate-up
-	@$(MAKE) env-port-forward
-	@go run cmd/wb-service/main.go

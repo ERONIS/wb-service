@@ -45,11 +45,20 @@ func (h *Handler) RegisterMainMenu() {
 		domain.RoleUser,
 		h.handleStart,
 	)
+	h.RegisterHandler(
+		mainMenuReplyText,
+		domain.RoleUser,
+		h.handleMainMenuReply,
+	)
+	h.RegisterHandler(
+		tele.OnCallback,
+		domain.RoleUser,
+		h.handleUnknownCallback,
+	)
 }
 
 func (h *Handler) handleStart(ctx tele.Context) error {
 	_ = ctx.Delete()
-	_ = InstallReplyKeyboard(ctx, replyKeyboardMessage, h.mainMenuReplyMarkup())
 	return h.renderMainMenuFresh(ctx)
 }
 
@@ -84,6 +93,11 @@ func (h *Handler) handleMainMenu(
 func (h *Handler) handleMainMenuReply(ctx tele.Context) error {
 	_ = ctx.Delete()
 	return h.renderMainMenuFresh(ctx)
+}
+
+// handleUnknownCallback отвечает на кнопку, которой больше нет в текущей версии бота.
+func (h *Handler) handleUnknownCallback(ctx tele.Context) error {
+	return ctx.RespondAlert("Кнопка устарела. Откройте меню командой /start.")
 }
 
 func (h *Handler) renderMainMenu(ctx tele.Context) error {

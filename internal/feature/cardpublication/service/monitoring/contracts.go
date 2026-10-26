@@ -5,11 +5,10 @@ import (
 
 	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
 
 type ErrorTargetSource interface {
-	PublicationTargets(context.Context) ([]transfer_model.MutationTarget, error)
+	AllTargets(context.Context) ([]core_domain.CabinetAccess, error)
 }
 
 type ErrorFeedRepository interface {

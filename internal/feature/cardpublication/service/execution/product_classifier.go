@@ -10,7 +10,7 @@ import (
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
 	cardpublication_model "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/model"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
 
 func executeProductMutation(
@@ -75,7 +75,7 @@ func classifySubmissionEnvelope(
 		for index, member := range action.Members {
 			members[index] = MemberSubmissionResult{
 				ActionMemberID: member.ID,
-				OutcomeClass:   transfer_service.ResultRejected,
+				OutcomeClass:   transfer_model.ResultRejected,
 				OutcomeCode:    "WB_ENVELOPE_MEMBER_REJECTED",
 			}
 		}
@@ -136,7 +136,7 @@ func internalNotDispatched(action ProductAction, safeCode string) SubmissionResu
 	for index, member := range action.Members {
 		members[index] = MemberSubmissionResult{
 			ActionMemberID: member.ID,
-			OutcomeClass:   transfer_service.ResultInternalError,
+			OutcomeClass:   transfer_model.ResultInternalError,
 			OutcomeCode:    safeCode,
 		}
 	}
@@ -217,8 +217,8 @@ func ValidateSubmissionResult(result SubmissionResult) error {
 		for _, member := range result.MemberResults {
 			if member.ActionMemberID <= 0 || member.OutcomeCode == "" ||
 				len(member.OutcomeCode) > 128 ||
-				(member.OutcomeClass != transfer_service.ResultRejected &&
-					member.OutcomeClass != transfer_service.ResultInternalError) {
+				(member.OutcomeClass != transfer_model.ResultRejected &&
+					member.OutcomeClass != transfer_model.ResultInternalError) {
 				return errors.New("proven rejection member result is invalid")
 			}
 			if _, exists := seen[member.ActionMemberID]; exists {

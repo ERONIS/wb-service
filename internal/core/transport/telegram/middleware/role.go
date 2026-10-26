@@ -23,6 +23,17 @@ type RoleAccess struct {
 	roleProvider RoleProvider
 }
 
+const roleContextKey = "wb-service.telegram.role"
+
+var errTelegramSenderUnavailable = errors.New(
+	"Telegram sender is unavailable",
+)
+
+type cachedRole struct {
+	telegramID int64
+	role       domain.UserRole
+}
+
 func NewRoleAccess(
 	appCtx context.Context,
 	roleProvider RoleProvider,
@@ -50,12 +61,16 @@ func (a *RoleAccess) GetRole(
 		return "", false, err
 	}
 
-	return a.getRole(telegramID)
-}
+	if cached, ok := ctx.Get(roleContextKey).(cachedRole); ok && cached.telegramID == telegramID {
+		return cached.role, true, nil
+	}
 
-var errTelegramSenderUnavailable = errors.New(
-	"Telegram sender is unavailable",
-)
+	role, found, err := a.getRole(telegramID)
+	if err == nil && found {
+		ctx.Set(roleContextKey, cachedRole{telegramID: telegramID, role: role})
+	}
+	return role, found, err
+}
 
 func telegramSenderID(ctx tele.Context) (int64, error) {
 	if ctx == nil {
@@ -89,6 +104,9 @@ func (a *RoleAccess) getRole(
 		)
 	}
 
+	if role == "" {
+		return "", false, nil
+	}
 	if !role.IsValid() {
 		return "", false, fmt.Errorf(
 			"invalid role '%s' for TelegramID='%d'",
@@ -121,6 +139,21 @@ func HasMinimumRole(
 	}
 }
 
+func (a *RoleAccess) IgnoreWithoutRole() tele.MiddlewareFunc {
+	return func(next tele.HandlerFunc) tele.HandlerFunc {
+		return func(ctx tele.Context) error {
+			_, found, err := a.GetRole(ctx)
+			if err != nil {
+				return fmt.Errorf("check Telegram user registration: %w", err)
+			}
+			if !found {
+				return nil
+			}
+			return next(ctx)
+		}
+	}
+}
+
 func (a *RoleAccess) Require(
 	minimumRole domain.UserRole,
 ) tele.MiddlewareFunc {
@@ -133,24 +166,7 @@ func (a *RoleAccess) Require(
 
 	return func(next tele.HandlerFunc) tele.HandlerFunc {
 		return func(ctx tele.Context) error {
-			telegramID, err := telegramSenderID(ctx)
-			if err != nil {
-				responseErr := respondRoleMessage(
-					ctx,
-					"Не удалось определить Telegram-пользователя.",
-				)
-				if responseErr != nil {
-					return fmt.Errorf(
-						"respond to missing Telegram sender: %v: %w",
-						responseErr,
-						err,
-					)
-				}
-
-				return nil
-			}
-
-			actualRole, found, err := a.getRole(telegramID)
+			actualRole, found, err := a.GetRole(ctx)
 			if err != nil {
 				responseErr := respondRoleMessage(
 					ctx,
@@ -164,14 +180,12 @@ func (a *RoleAccess) Require(
 					)
 				}
 
-				return fmt.Errorf(
-					"check Telegram user role: %w",
-					err,
-				)
+				return fmt.Errorf("check Telegram user role: %w", err)
 			}
-
-			if !found ||
-				!HasMinimumRole(actualRole, minimumRole) {
+			if !found {
+				return nil
+			}
+			if !HasMinimumRole(actualRole, minimumRole) {
 				return respondRoleMessage(
 					ctx,
 					"⛔ Недостаточно прав.",

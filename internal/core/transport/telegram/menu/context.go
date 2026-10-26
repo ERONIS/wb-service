@@ -26,6 +26,29 @@ type menuContext struct {
 	inputMessageID    int
 	inputDeleted      bool
 	repositioned      bool
+	responded         bool
+}
+
+// Respond отправляет ответ на callback один раз за обработку обновления.
+func (ctx *menuContext) Respond(resp ...*tele.CallbackResponse) error {
+	if ctx.responded {
+		return nil
+	}
+	if err := ctx.Context.Respond(resp...); err != nil {
+		return err
+	}
+	ctx.responded = true
+	return nil
+}
+
+// RespondText подтверждает callback текстом без повторного запроса.
+func (ctx *menuContext) RespondText(text string) error {
+	return ctx.Respond(&tele.CallbackResponse{Text: text})
+}
+
+// RespondAlert подтверждает callback всплывающим сообщением.
+func (ctx *menuContext) RespondAlert(text string) error {
+	return ctx.Respond(&tele.CallbackResponse{Text: text, ShowAlert: true})
 }
 
 func (ctx *menuContext) Send(what interface{}, opts ...interface{}) error {
@@ -60,15 +83,8 @@ func (ctx *menuContext) SendNewMenu(what interface{}, opts ...interface{}) error
 	return err
 }
 
-func (ctx *menuContext) InstallReplyKeyboard(
-	text string,
-	markup *tele.ReplyMarkup,
-) error {
-	return ctx.host.installReplyKeyboard(ctx.Context, text, markup)
-}
-
 func (ctx *menuContext) NotifyMenu(key string, text string) error {
-	return ctx.host.notify(ctx.Context, key, text)
+	return ctx.host.notify(ctx, key, text)
 }
 
 func (ctx *menuContext) position() menuPosition {

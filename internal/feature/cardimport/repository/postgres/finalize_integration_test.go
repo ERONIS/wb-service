@@ -2,6 +2,7 @@ package cardimport_postgres_repository
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"testing"
 	"time"
@@ -56,9 +57,9 @@ func TestPostgresPersistFinalizedIsAtomic(t *testing.T) {
 		},
 	}
 	item := cardimport_model.BatchItem{
-		Position: 1, SourceFileID: fileID, SourceRows: []int{2},
-		SourceGroupKey: cardimport_model.NewSourceGroupKey(fileID, "1"),
-		VendorCode:     "test-sku", Payload: card,
+		Position: 1, SourceFileID: fileID,
+		SourceGroupNumber: 1,
+		Payload:           card,
 	}
 	finalized := cardimport_contract.FinalizedSession{
 		Session: cardimport_model.Session{
@@ -66,14 +67,8 @@ func TestPostgresPersistFinalizedIsAtomic(t *testing.T) {
 			Status:   cardimport_model.SessionStatusCollecting,
 			Revision: 1, CreatedAt: now, UpdatedAt: now,
 		},
-		Files: []cardimport_model.File{{
-			ID: fileID, SessionID: sessionID, TelegramFileID: "test-file",
-			TelegramFileUniqueID: "test-unique", TelegramMessageID: 1,
-			OriginalFilename: "test.xlsx", DeclaredSize: 4, StoredSize: 4,
-			Status:    cardimport_model.FileStatusValid,
-			CreatedAt: now, UpdatedAt: now,
-		}},
-		Items: []cardimport_model.BatchItem{item}, GroupsCount: 1, User: user,
+		SourceFiles: []cardimport_contract.FinalizedSourceFile{{ID: fileID, SessionID: sessionID}},
+		Items:       []cardimport_model.BatchItem{item}, GroupsCount: 1, User: user,
 		Command: cardimport_contract.FinalizeCommand{
 			SessionID: sessionID, ExpectedRevision: 1, IdempotencyKey: "test",
 		},
@@ -127,15 +122,21 @@ func TestPostgresPersistFinalizedIsAtomic(t *testing.T) {
 	if stored.ID != header.ID || stored.SourceSessionID != sessionID {
 		t.Fatal("сохранённая пачка не совпадает с исходной сессией")
 	}
-	items, err := repository.ListBatchItems(ctx, header.ID, 0, 10)
+	expectedPayload, err := json.Marshal(item.Payload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].VendorCode != item.VendorCode {
-		t.Fatal("сохранённая карточка не прочитана из пачки")
+	var storedPayloadMatches bool
+	var storedGroupNumber int
+	if err := pool.QueryRow(ctx, `
+		SELECT payload = $2::jsonb, source_group_number
+		FROM wb.card_batch_items
+		WHERE batch_id = $1 AND position = 1;
+	`, header.ID, string(expectedPayload)).Scan(&storedPayloadMatches, &storedGroupNumber); err != nil {
+		t.Fatal(err)
 	}
-	if items[0].SourceFileID != fileID {
-		t.Fatal("связь карточки с исходным файлом не сохранена")
+	if !storedPayloadMatches || storedGroupNumber != item.SourceGroupNumber {
+		t.Fatal("сохранённая карточка не совпадает с исходными данными")
 	}
 
 	replayTx, err := pool.Begin(ctx)

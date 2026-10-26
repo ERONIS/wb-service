@@ -13,7 +13,6 @@ import (
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 	cardpublication_model "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/model"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 	transfer_publication "github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
 )
@@ -167,17 +166,9 @@ type ManualResolutionRepository interface {
 	) (ManualResolution, error)
 }
 
-type ManualTransferResultCorrector interface {
-	CorrectWithin(
-		context.Context,
-		core_postgres_transaction.DBTX,
-		transfer_publication.CorrectPublicationItemResultCommand,
-	) error
-}
-
 type ManualResolver struct {
 	repository ManualResolutionRepository
-	transfer   ManualTransferResultCorrector
+	transfer   transfer_publication.PublicationExecutionResultRepository
 	uow        core_postgres_transaction.UnitOfWork
 }
 
@@ -238,7 +229,7 @@ func (command ManualResolutionCommand) validate() error {
 
 func NewManualResolver(
 	repository ManualResolutionRepository,
-	transfer ManualTransferResultCorrector,
+	transfer transfer_publication.PublicationExecutionResultRepository,
 	uow core_postgres_transaction.UnitOfWork,
 ) *ManualResolver {
 	if repository == nil || transfer == nil || uow == nil {
@@ -329,7 +320,7 @@ func (resolver *ManualResolver) Resolve(
 				outcomeCode = subject.MemberOutcomeCode
 				nmID = subject.MemberNMID
 			}
-			return resolver.transfer.CorrectWithin(
+			return resolver.transfer.CorrectPublicationItemResult(
 				ctx,
 				tx,
 				transfer_publication.CorrectPublicationItemResultCommand{
@@ -389,7 +380,7 @@ func (resolver *ManualResolver) decide(
 		}
 		return ManualResolutionDecision{
 			Kind:                 command.Kind,
-			OutcomeClass:         transfer_service.ResultRejected,
+			OutcomeClass:         transfer_model.ResultRejected,
 			OutcomeCode:          "MANUAL_ERROR_LIST_REJECTED",
 			EvidenceErrorBatchID: evidence.ID,
 		}, nil
@@ -460,7 +451,7 @@ func decideManualRemotePresent(
 	}
 	return ManualResolutionDecision{
 		Kind:                  ManualMarkRemotePresent,
-		OutcomeClass:          transfer_service.ResultSuccess,
+		OutcomeClass:          transfer_model.ResultSuccess,
 		OutcomeCode:           "MANUAL_REMOTE_PRESENT",
 		NMID:                  card.NMID,
 		IMTID:                 card.IMTID,

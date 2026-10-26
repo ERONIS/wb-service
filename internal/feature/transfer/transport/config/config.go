@@ -2,7 +2,6 @@ package transfer_config_transport
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
@@ -20,7 +19,6 @@ const (
 
 type Config struct {
 	Mode             Mode          `envconfig:"MODE" default:"disabled"`
-	CohortName       string        `envconfig:"COHORT_NAME" default:"production"`
 	PollInterval     time.Duration `envconfig:"POLL_INTERVAL" default:"3s"`
 	AuthorizationTTL time.Duration `envconfig:"AUTHORIZATION_TTL" default:"1h"`
 	MaxItems         int64         `envconfig:"MAX_ITEMS" default:"50000"`
@@ -35,7 +33,6 @@ func New() (Config, error) {
 	if err := envconfig.Process("TRANSFER", &config); err != nil {
 		return Config{}, fmt.Errorf("process transfer config: %w", err)
 	}
-	config.CohortName = strings.TrimSpace(config.CohortName)
 	if err := config.Validate(); err != nil {
 		return Config{}, fmt.Errorf("validate transfer config: %w", err)
 	}
@@ -55,10 +52,6 @@ func (config Config) Validate() error {
 	case ModeDisabled, ModeDryRun, ModeLive:
 	default:
 		return fmt.Errorf("unsupported mode %q", config.Mode)
-	}
-	if strings.TrimSpace(config.CohortName) != config.CohortName ||
-		config.CohortName == "" || len(config.CohortName) > 128 {
-		return fmt.Errorf("cohort name is invalid")
 	}
 	if config.PollInterval <= 0 {
 		return fmt.Errorf("poll interval must be positive")

@@ -3,6 +3,7 @@ package core_postgres_pool
 import (
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/kelseyhightower/envconfig"
@@ -27,7 +28,7 @@ type Config struct {
 	SSLMode string `envconfig:"SSLMODE" default:"disable"`
 
 	// Timeout — максимальное время выполнения одного запроса к базе данных по умолчанию.
-	// Используется репозиториями через Pool.OperationContext().
+	// Применяется через Pool.OperationContext() и серверный statement_timeout.
 	Timeout time.Duration `envconfig:"TIMEOUT" required:"true"`
 
 	// MaxConns — максимальное количество соединений в пуле (по умолчанию 25).
@@ -89,6 +90,9 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxConns <= 0 {
 		c.MaxConns = 25
+	}
+	if c.MaxConns > math.MaxInt32 {
+		return errors.New("максимальное число соединений PostgreSQL превышает int32")
 	}
 	if c.MinConns < 0 {
 		return errors.New("минимальное число соединений PostgreSQL не может быть отрицательным")

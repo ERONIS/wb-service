@@ -7,7 +7,6 @@ import (
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
 	cardimport_postgres_repository "github.com/ERONIS/wb-service/internal/feature/cardimport/repository/postgres"
-	cardimport_contract "github.com/ERONIS/wb-service/internal/feature/cardimport/service/contract"
 	cardimport_workflow "github.com/ERONIS/wb-service/internal/feature/cardimport/service/workflow"
 	cardimport_telegram_transport "github.com/ERONIS/wb-service/internal/feature/cardimport/transport/telegram"
 	cardimport_xlsx_transport "github.com/ERONIS/wb-service/internal/feature/cardimport/transport/xlsx"
@@ -43,10 +42,6 @@ func (f *Feature) AttachTelegram(ctx context.Context, bot *tele.Bot, loggers ...
 }
 
 func (f *Feature) Service() *cardimport_workflow.Service {
-	return f.service
-}
-
-func (f *Feature) BatchReader() cardimport_contract.BatchReader {
 	return f.service
 }
 

@@ -59,27 +59,6 @@ func (repository *memoryTestRepository) GetBatch(_ context.Context, id cardpipel
 	return repository.batches[id], nil
 }
 
-func (repository *memoryTestRepository) ListFinalizedBatches(context.Context, *cardpipeline.BatchCursor, int) ([]cardimport_model.BatchHeader, error) {
-	return nil, nil
-}
-
-func (repository *memoryTestRepository) ListBatchItems(_ context.Context, batchID cardpipeline.BatchID, afterPosition int, limit int) ([]cardimport_model.BatchItem, error) {
-	items := repository.finalized[int(batchID)-1].Items
-	page := make([]cardimport_model.BatchItem, 0, limit)
-	for index, item := range items {
-		if item.Position <= afterPosition {
-			continue
-		}
-		item.ID = cardpipeline.BatchItemID(index + 1)
-		item.BatchID = batchID
-		page = append(page, item)
-		if len(page) == limit {
-			break
-		}
-	}
-	return page, nil
-}
-
 func (uow *memoryTestUOW) WithinTransaction(
 	ctx context.Context, fn func(context.Context, core_postgres_transaction.DBTX) error,
 ) error {
@@ -120,7 +99,7 @@ func TestImportStaysInMemoryUntilFinalize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(repository.finalized) != 1 || repository.finalized[0].Items[0].VendorCode != "sku-1" {
+	if len(repository.finalized) != 1 || repository.finalized[0].Items[0].Payload.Variant.VendorCode != "sku-1" {
 		t.Fatalf("неверный пакет после финализации: %+v", repository.finalized)
 	}
 	previous, err := service.Finalize(ctx, user, command)
@@ -135,14 +114,42 @@ func TestImportStaysInMemoryUntilFinalize(t *testing.T) {
 	if err != nil || stored.ID != header.ID {
 		t.Fatalf("готовый пакет недоступен после перезапуска: %+v %v", stored, err)
 	}
-	items, err := restarted.ListBatchItems(ctx, header.ID, 0, cardimport_model.MaxBatchPageSize)
-	if err != nil || len(items) != 1 || items[0].Payload.Variant.VendorCode != "sku-1" {
-		t.Fatalf("карточки пачки недоступны после перезапуска: %+v %v", items, err)
+}
+
+func TestFinalizeNumbersGroupsWithinBatch(t *testing.T) {
+	ctx := context.Background()
+	repository := &memoryTestRepository{batches: make(map[cardpipeline.BatchID]cardimport_model.BatchHeader)}
+	service := New(repository, memoryTestParser{}, &memoryTestUOW{})
+	user := domain.CreateUser(12346, "Тест Пользователь")
+	session, err := service.Begin(ctx, cardimport_contract.BeginCommand{AuthorTelegramID: user.TelegramID})
+	if err != nil {
+		t.Fatal(err)
 	}
-	repository.finalized[0].Items[0].Payload.Variant.VendorCode = "changed"
-	items, err = restarted.ListBatchItems(ctx, header.ID, 0, cardimport_model.MaxBatchPageSize)
-	if err != nil || len(items) != 1 || items[0].Validate() == nil {
-		t.Fatalf("изменённая карточка пачки не обнаружена: %+v %v", items, err)
+	first := memoryTestCard("sku-1", "barcode-1", 2)
+	second := memoryTestCard("sku-2", "barcode-2", 3)
+	third := memoryTestCard("sku-3", "barcode-3", 4)
+	third.Group = "2"
+	addMemoryTestFile(t, service, session, 1, first, second, third)
+	addMemoryTestFile(t, service, session, 2, memoryTestCard("sku-4", "barcode-4", 2))
+	view, err := service.GetView(ctx, cardimport_contract.SessionCommand{AuthorTelegramID: user.TelegramID, SessionID: session.ID})
+	if err != nil || !view.Ready {
+		t.Fatalf("сессия не готова: view=%+v err=%v", view, err)
+	}
+	_, err = service.Finalize(ctx, user, cardimport_contract.FinalizeCommand{
+		SessionID: session.ID, ExpectedRevision: view.Revision, IdempotencyKey: "number-groups",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalized := repository.finalized[0]
+	if finalized.GroupsCount != 3 || len(finalized.Items) != 4 {
+		t.Fatalf("неверное число групп или карточек: groups=%d items=%d", finalized.GroupsCount, len(finalized.Items))
+	}
+	want := []int{1, 1, 2, 3}
+	for index, item := range finalized.Items {
+		if item.SourceGroupNumber != want[index] {
+			t.Fatalf("карточка %d получила группу %d вместо %d", index+1, item.SourceGroupNumber, want[index])
+		}
 	}
 }
 
@@ -165,7 +172,7 @@ func TestFinalizeSkipsDuplicateBarcodeAndKeepsIssueVisible(t *testing.T) {
 		SessionID: session.ID, ExpectedRevision: view.Revision, IdempotencyKey: "duplicate-barcode",
 	})
 	if err != nil || header.ItemsCount != 1 || len(repository.finalized) != 1 ||
-		len(repository.finalized[0].Files) != 1 || repository.finalized[0].Items[0].VendorCode != "sku-1" {
+		len(repository.finalized[0].SourceFiles) != 1 || repository.finalized[0].Items[0].Payload.Variant.VendorCode != "sku-1" {
 		t.Fatalf("в пачке должна остаться первая карточка: header=%+v finalized=%+v err=%v", header, repository.finalized, err)
 	}
 }
@@ -207,14 +214,16 @@ func TestFinalizeSkipsCardWithRowError(t *testing.T) {
 		t.Fatal(err)
 	}
 	view, err := service.GetView(ctx, cardimport_contract.SessionCommand{AuthorTelegramID: user.TelegramID, SessionID: session.ID})
-	if err != nil || !view.Ready || view.CardsCount != 2 || view.ReadyCardsCount != 1 || view.ErrorsCount != 1 {
-		t.Fatalf("корректная карточка должна быть доступна для сохранения: view=%+v err=%v", view, err)
+	if err != nil || !view.Ready || view.CardsCount != 2 || view.ReadyCardsCount != 1 || view.ErrorsCount != 1 ||
+		len(view.Files) != 1 || view.Files[0].Status != cardimport_model.FileStatusInvalid {
+		t.Fatalf("корректная карточка из файла с ошибкой должна быть доступна для сохранения: view=%+v err=%v", view, err)
 	}
 	_, err = service.Finalize(ctx, user, cardimport_contract.FinalizeCommand{
 		SessionID: session.ID, ExpectedRevision: view.Revision, IdempotencyKey: "row-error",
 	})
 	if err != nil || len(repository.finalized) != 1 || len(repository.finalized[0].Items) != 1 ||
-		repository.finalized[0].Items[0].VendorCode != "good" {
+		len(repository.finalized[0].SourceFiles) != 1 || repository.finalized[0].SourceFiles[0].ID != file.ID || repository.finalized[0].SourceFiles[0].SessionID != session.ID ||
+		repository.finalized[0].Items[0].Payload.Variant.VendorCode != "good" {
 		t.Fatalf("ошибочная строка попала в пачку: finalized=%+v err=%v", repository.finalized, err)
 	}
 }
@@ -271,7 +280,7 @@ func TestConcurrentFilesKeepSessionRevision(t *testing.T) {
 	}
 }
 
-func addMemoryTestFile(t *testing.T, service *Service, session cardimport_model.Session, position int, card cardpipeline.Card) {
+func addMemoryTestFile(t *testing.T, service *Service, session cardimport_model.Session, position int, cards ...cardpipeline.Card) {
 	t.Helper()
 	ctx := context.Background()
 	file, err := service.ReserveFile(ctx, cardimport_contract.ReserveFileCommand{
@@ -293,7 +302,7 @@ func addMemoryTestFile(t *testing.T, service *Service, session cardimport_model.
 	if _, err := service.sessions.Claim(ctx, command); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.sessions.SaveParsed(ctx, command, cardimport_model.AggregatedFile{FileID: file.ID, Cards: []cardpipeline.Card{card}}); err != nil {
+	if _, err := service.sessions.SaveParsed(ctx, command, cardimport_model.AggregatedFile{FileID: file.ID, Cards: cards}); err != nil {
 		t.Fatal(err)
 	}
 }

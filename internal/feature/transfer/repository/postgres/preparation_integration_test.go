@@ -2,6 +2,7 @@ package transfer_postgres_repository_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,8 +13,9 @@ import (
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
+	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
+	cardprepare_model "github.com/ERONIS/wb-service/internal/feature/cardprepare/service/model"
 	transfer_postgres_repository "github.com/ERONIS/wb-service/internal/feature/transfer/repository/postgres"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 	transfer_preparation "github.com/ERONIS/wb-service/internal/feature/transfer/service/preparation"
 
@@ -23,6 +25,21 @@ import (
 
 type integrationPool struct {
 	*pgxpool.Pool
+}
+
+func preparationSnapshot(t *testing.T, observedAt time.Time, free, paid int64) []byte {
+	t.Helper()
+	payload, err := json.Marshal(cardprepare_model.CatalogSnapshot{
+		ObservedAt: observedAt,
+		Limits: contentapi.CardsLimits{
+			FreeLimits: free,
+			PaidLimits: paid,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return payload
 }
 
 func (pool *integrationPool) OperationContext(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -87,9 +104,9 @@ func setupTestTransferData(
 	err = pool.QueryRow(ctx, `
 		INSERT INTO wb.transfers (
 			batch_id, phase, outcome, items_count, groups_count,
-			cohort_name, targets_count, item_targets_count, group_targets_count
+			targets_count, item_targets_count, group_targets_count
 		)
-		VALUES ($1, 'initializing', 'running', 1, 1, 'default', 2, 2, 2)
+		VALUES ($1, 'initializing', 'running', 1, 1, 2, 2, 2)
 		RETURNING id;
 	`, batchID).Scan(&tid)
 	if err != nil {
@@ -129,16 +146,14 @@ func setupTestTransferData(
 	}
 
 	// 5. Создаем transfer_groups
-	groupKey := make([]byte, 32)
-	copy(groupKey, []byte("group_key_"+prefix))
 	var groupID int64
 	err = pool.QueryRow(ctx, `
 		INSERT INTO wb.transfer_groups (
-			transfer_id, source_group_key, source_group_name
+			transfer_id, source_group_number, source_group_name
 		)
 		VALUES ($1, $2, 'Группа 1')
 		RETURNING id;
-	`, transferID, groupKey).Scan(&groupID)
+	`, transferID, 1).Scan(&groupID)
 	if err != nil {
 		t.Fatalf("создание transfer group: %v", err)
 	}
@@ -191,14 +206,14 @@ func setupTestTransferData(
 	if err != nil {
 		t.Fatalf("создание item targets: %v", err)
 	}
-	// 9. Переводим transfer в фазу preparing
+	// Переводим перенос в активную фазу.
 	_, err = pool.Exec(ctx, `
 		UPDATE wb.transfers
-		SET phase = 'preparing', updated_at = CURRENT_TIMESTAMP
+		SET phase = 'active', updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1;
 	`, transferID)
 	if err != nil {
-		t.Fatalf("перевод переноса в preparing: %v", err)
+		t.Fatalf("перевод переноса в active: %v", err)
 	}
 
 	return transferID, groupTargetID1, groupTargetID2, targetID1, targetID2
@@ -228,19 +243,18 @@ func TestPostgres_PreparationResult_DiagnosticsAndIdempotency(t *testing.T) {
 	successCmd := transfer_preparation.ApplyPreparationResultCommand{
 		TransferID:    transferID,
 		GroupTargetID: groupTarget1,
-		Status:        transfer_service.PreparationResultSucceeded,
+		Status:        transfer_preparation.PreparationResultSucceeded,
 		OutcomeCode:   "prepared",
 		StartedAt:     startedAt,
 		FinishedAt:    finishedAt,
 		Artifact: &transfer_preparation.PreparationArtifact{
 			SubjectID:        12345,
-			RequestPayload:   []byte(`{"cards": [{"vendorCode": "ART-1"}]}`),
-			MetadataSnapshot: []byte(`{"version": 1}`),
+			RequestPayload:   []byte(`[{"subjectID":12345,"variants":[{"vendorCode":"ART-1"}]}]`),
+			MetadataSnapshot: preparationSnapshot(t, startedAt, 100, 0),
 			LimitsFree:       100,
 			LimitsPaid:       0,
 			LimitsObservedAt: startedAt,
 		},
-		Revision: 1,
 	}
 
 	err := uow.WithinTransaction(ctx, func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
@@ -261,7 +275,7 @@ func TestPostgres_PreparationResult_DiagnosticsAndIdempotency(t *testing.T) {
 		dbFinAt     *time.Time
 	)
 	err = pool.QueryRow(ctx, `
-		SELECT preparation_status, preparation_result_revision, preparation_result_code,
+		SELECT preparation_status, revision, preparation_result_code,
 		       preparation_item_position, preparation_field,
 		       preparation_started_at, preparation_finished_at
 		FROM wb.transfer_group_targets
@@ -301,14 +315,14 @@ func TestPostgres_PreparationResult_DiagnosticsAndIdempotency(t *testing.T) {
 
 	// 3. Конфликт: повторный вызов с другим результатом должен вернуть ErrPreparationResultConflict.
 	conflictCmd := successCmd
-	conflictCmd.Status = transfer_service.PreparationResultRejected
+	conflictCmd.Status = transfer_preparation.PreparationResultRejected
 	conflictCmd.OutcomeCode = "different_result"
 	conflictCmd.Artifact = nil
 
 	err = uow.WithinTransaction(ctx, func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
 		return repo.ApplyPreparationResult(ctx, tx, conflictCmd)
 	})
-	if !errors.Is(err, transfer_service.ErrPreparationResultConflict) {
+	if !errors.Is(err, transfer_preparation.ErrPreparationResultConflict) {
 		t.Errorf("ожидалась ошибка ErrPreparationResultConflict при конфликте, получено: %v", err)
 	}
 
@@ -316,13 +330,12 @@ func TestPostgres_PreparationResult_DiagnosticsAndIdempotency(t *testing.T) {
 	rejectCmd := transfer_preparation.ApplyPreparationResultCommand{
 		TransferID:    transferID,
 		GroupTargetID: groupTarget2,
-		Status:        transfer_service.PreparationResultRejected,
+		Status:        transfer_preparation.PreparationResultRejected,
 		OutcomeCode:   "characteristic_missing",
 		ItemPosition:  1,
 		Field:         "Цвет",
 		StartedAt:     startedAt,
 		FinishedAt:    finishedAt,
-		Revision:      1,
 	}
 
 	err = uow.WithinTransaction(ctx, func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
@@ -334,7 +347,7 @@ func TestPostgres_PreparationResult_DiagnosticsAndIdempotency(t *testing.T) {
 
 	// Проверяем сохранение диагностики ошибки в БД
 	err = pool.QueryRow(ctx, `
-		SELECT preparation_status, preparation_result_revision, preparation_result_code,
+		SELECT preparation_status, revision, preparation_result_code,
 		       preparation_item_position, preparation_field
 		FROM wb.transfer_group_targets
 		WHERE id = $1;
@@ -370,13 +383,13 @@ func TestPostgres_PreparationArtifactAndProjectionRollbackTogether(t *testing.T)
 	transferID, groupTargetID, _, _, _ := setupTestTransferData(t, ctx, pool, fmt.Sprintf("rollback_%d", time.Now().UnixNano()))
 	repository := transfer_postgres_repository.New(pool)
 
-	metadata := []byte(`{}`)
-	payload := []byte(`{"cards":[]}`)
 	startedAt := time.Now().UTC()
+	metadata := preparationSnapshot(t, startedAt, 1, 0)
+	payload := []byte(`[{"subjectID":12345,"variants":[{"vendorCode":"ART-1"}]}]`)
 	command := transfer_preparation.ApplyPreparationResultCommand{
 		TransferID:    transferID,
 		GroupTargetID: groupTargetID,
-		Status:        transfer_service.PreparationResultSucceeded,
+		Status:        transfer_preparation.PreparationResultSucceeded,
 		OutcomeCode:   "prepared",
 		StartedAt:     startedAt,
 		FinishedAt:    startedAt.Add(time.Millisecond),
@@ -387,7 +400,6 @@ func TestPostgres_PreparationArtifactAndProjectionRollbackTogether(t *testing.T)
 			LimitsFree:       1,
 			LimitsObservedAt: startedAt,
 		},
-		Revision: 1,
 	}
 	if err := command.Validate(); err != nil {
 		t.Fatalf("тестовая команда подготовки некорректна: %v", err)
@@ -406,7 +418,7 @@ func TestPostgres_PreparationArtifactAndProjectionRollbackTogether(t *testing.T)
 	var status string
 	var revision int64
 	if err := pool.QueryRow(ctx, `
-		SELECT preparation_status, preparation_result_revision
+		SELECT preparation_status, revision
 		FROM wb.transfer_group_targets WHERE id = $1
 	`, groupTargetID).Scan(&status, &revision); err != nil {
 		t.Fatalf("прочитать проекцию после отката: %v", err)
@@ -443,19 +455,18 @@ func TestPostgres_ConcurrentWorkersOnSameBatch(t *testing.T) {
 	cmd := transfer_preparation.ApplyPreparationResultCommand{
 		TransferID:    transferID,
 		GroupTargetID: groupTarget1,
-		Status:        transfer_service.PreparationResultSucceeded,
+		Status:        transfer_preparation.PreparationResultSucceeded,
 		OutcomeCode:   "prepared",
 		StartedAt:     startedAt,
 		FinishedAt:    finishedAt,
 		Artifact: &transfer_preparation.PreparationArtifact{
 			SubjectID:        12345,
-			RequestPayload:   []byte(`{"cards": []}`),
-			MetadataSnapshot: []byte(`{}`),
+			RequestPayload:   []byte(`[{"subjectID":12345,"variants":[{"vendorCode":"ART-1"}]}]`),
+			MetadataSnapshot: preparationSnapshot(t, startedAt, 10, 0),
 			LimitsFree:       10,
 			LimitsPaid:       0,
 			LimitsObservedAt: startedAt,
 		},
-		Revision: 1,
 	}
 
 	const workerCount = 10
@@ -505,9 +516,55 @@ func TestPostgres_FairWindowPartitioning(t *testing.T) {
 		t.Fatalf("ожидалось 2 группы, получено %d", len(groups))
 	}
 
-	// Проверяем, что группы принадлежат разным кабинетам (справедливое чередование)
-	if groups[0].SellerID == groups[1].SellerID {
-		t.Errorf("группы должны быть от разных кабинетов, получено: %s и %s",
-			groups[0].SellerID, groups[1].SellerID)
+	// Проверяем, что группы принадлежат разным целевым кабинетам.
+	if groups[0].TargetID == groups[1].TargetID {
+		t.Errorf("группы должны быть от разных кабинетов, получен target_id=%d",
+			groups[0].TargetID)
+	}
+}
+
+func TestPostgres_PreparationRejectsMismatchedRequestItems(t *testing.T) {
+	pool, uow := getTestPool(t)
+	defer pool.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	transferID, groupTargetID, _, _, _ := setupTestTransferData(
+		t, ctx, pool, fmt.Sprintf("mismatch_%d", time.Now().UnixNano()),
+	)
+	repository := transfer_postgres_repository.New(pool)
+	now := time.Now().UTC()
+	command := transfer_preparation.ApplyPreparationResultCommand{
+		TransferID:    transferID,
+		GroupTargetID: groupTargetID,
+		Status:        transfer_preparation.PreparationResultSucceeded,
+		OutcomeCode:   "prepared",
+		StartedAt:     now,
+		FinishedAt:    now,
+		Artifact: &transfer_preparation.PreparationArtifact{
+			SubjectID:        12345,
+			RequestPayload:   []byte(`[{"subjectID":12345,"variants":[{"vendorCode":"OTHER"}]}]`),
+			MetadataSnapshot: preparationSnapshot(t, now, 0, 0),
+			LimitsObservedAt: now,
+		},
+	}
+	if err := command.Validate(); err != nil {
+		t.Fatalf("тестовая команда должна проходить структурную проверку: %v", err)
+	}
+	err := uow.WithinTransaction(ctx, func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
+		return repository.ApplyPreparationResult(ctx, tx, command)
+	})
+	if !errors.Is(err, transfer_preparation.ErrPreparationResultConflict) {
+		t.Fatalf("несовпадение карточек должно вызвать конфликт: %v", err)
+	}
+	var status string
+	var artifactCount int
+	if err := pool.QueryRow(ctx, `SELECT preparation_status FROM wb.transfer_group_targets WHERE id = $1`, groupTargetID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM wb.card_preparation_artifacts WHERE group_target_id = $1`, groupTargetID).Scan(&artifactCount); err != nil {
+		t.Fatal(err)
+	}
+	if status != "running" || artifactCount != 0 {
+		t.Fatalf("несогласованный результат сохранился: status=%s artifacts=%d", status, artifactCount)
 	}
 }

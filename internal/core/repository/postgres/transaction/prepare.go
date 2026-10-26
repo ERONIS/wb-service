@@ -14,56 +14,7 @@ type preparedTransaction struct {
 	parent context.Context
 }
 
-// PrepareTx открывает транзакцию и возвращает явные операции commit и rollback.
-func PrepareTx(
-	ctx context.Context,
-	beginner Beginner,
-) (pgx.Tx, func(context.Context) error, func() error, error) {
-	return PrepareTxWithStatementTimeout(ctx, beginner, 0)
-}
-
-// PrepareTxWithStatementTimeout открывает транзакцию с локальным ограничением SQL-запросов.
-func PrepareTxWithStatementTimeout(
-	ctx context.Context,
-	beginner Beginner,
-	timeoutMs int,
-	opts ...pgx.TxOptions,
-) (pgx.Tx, func(context.Context) error, func() error, error) {
-	if ctx == nil {
-		return nil, nil, nil, errors.New("PostgreSQL transaction context is nil")
-	}
-	if beginner == nil {
-		return nil, nil, nil, errors.New("PostgreSQL transaction beginner is nil")
-	}
-	if ctx.Value(transactionContextKey{}) != nil {
-		return nil, nil, nil, ErrNestedTransaction
-	}
-	if timeoutMs < 0 || int64(timeoutMs) > int64(^uint64(0)>>1)/int64(time.Millisecond) {
-		return nil, nil, nil, errors.New("PostgreSQL statement timeout is out of range")
-	}
-	if len(opts) > 1 {
-		return nil, nil, nil, errors.New("multiple PostgreSQL transaction options")
-	}
-
-	var options pgx.TxOptions
-	if len(opts) == 1 {
-		options = opts[0]
-	}
-	prepared, err := beginPreparedTransaction(ctx, func(ctx context.Context, options pgx.TxOptions) (transaction, error) {
-		return beginner.BeginTx(ctx, options)
-	}, options)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	if err := prepared.Configure(ctx, time.Duration(timeoutMs)*time.Millisecond, 0); err != nil {
-		return nil, nil, nil, errors.Join(err, prepared.Rollback())
-	}
-
-	return prepared.tx.(pgx.Tx), prepared.Commit, prepared.Rollback, nil
-}
-
-// beginPreparedTransaction создаёт общий транзакционный исполнитель для двух публичных API.
+// beginPreparedTransaction открывает транзакцию для callback UoW.
 func beginPreparedTransaction(
 	ctx context.Context,
 	begin beginFunc,
@@ -100,11 +51,11 @@ func (p *preparedTransaction) Commit(ctx context.Context) error {
 
 // Rollback откатывает транзакцию с отдельным ограниченным бюджетом времени.
 func (p *preparedTransaction) Rollback() error {
-	return DeferRollback(p.parent, p.tx.Rollback)
+	return rollbackDetached(p.parent, p.tx.Rollback)
 }
 
-// DeferRollback выполняет откат в отдельном ограниченном контексте.
-func DeferRollback(parent context.Context, rollback func(context.Context) error) error {
+// rollbackDetached выполняет откат в отдельном ограниченном контексте.
+func rollbackDetached(parent context.Context, rollback func(context.Context) error) error {
 	if parent == nil {
 		return errors.New("PostgreSQL rollback context is nil")
 	}

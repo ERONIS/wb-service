@@ -12,16 +12,9 @@ import (
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
 	cardpublication_model "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/model"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
-	transfer_preparation "github.com/ERONIS/wb-service/internal/feature/transfer/service/preparation"
 	transfer_publication "github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
 )
-
-type loadedPlanningGroup struct {
-	Source   transfer_publication.PublicationPlanningGroup
-	Proposal transfer_preparation.StoredProposal
-}
 
 type Planner struct{}
 
@@ -43,12 +36,12 @@ func NewPlanner() *Planner {
 
 func (planner *Planner) Build(
 	transfer transfer_model.Transfer,
-	groups []loadedPlanningGroup,
+	groups []transfer_publication.PublicationPlanningGroup,
 	observations map[int64]cardpublication_catalog.CatalogObservation,
 ) (cardpublication_model.PlanDraft, error) {
 	if err := transfer.Validate(); err != nil ||
-		!planningMayContinue(transfer.Phase) ||
-		transfer.Outcome != transfer_service.OutcomeRunning {
+		!transfer.Phase.AllowsGroupWork() ||
+		transfer.Outcome != transfer_model.OutcomeRunning {
 		return cardpublication_model.PlanDraft{}, errors.New("transfer is not ready for publication planning")
 	}
 	draft := cardpublication_model.PlanDraft{
@@ -66,30 +59,27 @@ func (planner *Planner) Build(
 	})
 	desiredIdentityCounts := make(map[string]int)
 	for _, group := range groups {
-		for _, member := range group.Source.Members {
-			key := string(group.Source.SellerID) + "\x00" + member.VendorCode
+		for _, member := range group.Members {
+			key := string(group.SellerID) + "\x00" + member.VendorCode
 			desiredIdentityCounts[key]++
 		}
 	}
 
 	for _, group := range groups {
-		observation, exists := observations[group.Source.TargetID]
+		observation, exists := observations[group.TargetID]
 		if !exists {
 			return cardpublication_model.PlanDraft{}, errors.New("publication group has no target observation")
 		}
-		if err := validateLoadedGroup(group); err != nil {
-			return cardpublication_model.PlanDraft{}, err
-		}
 		duplicateDesired := false
-		for _, member := range group.Source.Members {
-			key := string(group.Source.SellerID) + "\x00" + member.VendorCode
+		for _, member := range group.Members {
+			key := string(group.SellerID) + "\x00" + member.VendorCode
 			if desiredIdentityCounts[key] > 1 {
 				duplicateDesired = true
 				break
 			}
 		}
 		decision := conflictDecision(
-			len(group.Source.Members),
+			len(group.Members),
 			cardpublication_model.DecisionRemoteIdentityConflict,
 		)
 		var err error
@@ -137,24 +127,11 @@ func (planner *Planner) Build(
 	return draft, nil
 }
 
-func planningMayContinue(phase transfer_model.Phase) bool {
-	switch phase {
-	case transfer_service.PhasePreparing,
-		transfer_service.PhaseAwaitingAuthorization,
-		transfer_service.PhasePublishing,
-		transfer_service.PhaseReconciling,
-		transfer_service.PhaseMedia:
-		return true
-	default:
-		return false
-	}
-}
-
 func decideGroup(
-	group loadedPlanningGroup,
+	group transfer_publication.PublicationPlanningGroup,
 	observation cardpublication_catalog.CatalogObservation,
 ) (groupDecision, error) {
-	variants := group.Proposal.Proposal.Request[0].Variants
+	variants := group.Proposal.Request[0].Variants
 	normalByVendor := make(map[string][]contentapi.Card)
 	for _, card := range observation.Normal {
 		normalByVendor[card.VendorCode] = append(normalByVendor[card.VendorCode], card)
@@ -196,14 +173,14 @@ func decideGroup(
 		decision.actionMembers = allIndexes(len(variants))
 		decision.productPayload = append(
 			[]byte(nil),
-			group.Proposal.Proposal.EncodedRequest...,
+			group.Proposal.EncodedRequest...,
 		)
 		return decision, nil
 	}
 
 	var remoteIMTID int64
 	for _, card := range existing {
-		if card.SubjectID != group.Proposal.Proposal.SubjectID {
+		if card.SubjectID != group.Proposal.SubjectID {
 			return conflictDecision(len(variants), cardpublication_model.DecisionSubjectConflict), nil
 		}
 		if card.IMTID <= 0 || (remoteIMTID != 0 && remoteIMTID != card.IMTID) {
@@ -265,30 +242,30 @@ func decideGroup(
 
 func appendDecision(
 	draft *cardpublication_model.PlanDraft,
-	group loadedPlanningGroup,
+	group transfer_publication.PublicationPlanningGroup,
 	decision groupDecision,
 ) error {
 	if decision.conflict {
 		draft.Groups = append(draft.Groups, cardpublication_model.PlannedGroupDraft{
-			GroupTargetID: group.Source.GroupTargetID,
-			Status:        transfer_service.PublicationProjectionRejected,
-			OutcomeClass:  transfer_service.ResultRejected,
+			GroupTargetID: group.GroupTargetID,
+			Status:        transfer_publication.PublicationProjectionRejected,
+			OutcomeClass:  transfer_model.ResultRejected,
 			OutcomeCode:   decision.code,
 		})
-		for index, member := range group.Source.Members {
+		for index, member := range group.Members {
 			draft.Items = append(draft.Items, cardpublication_model.PlannedItemDraft{
-				GroupTargetID:        group.Source.GroupTargetID,
+				GroupTargetID:        group.GroupTargetID,
 				TransferItemTargetID: member.TransferItemTargetID,
-				OutcomeClass:         transfer_service.ResultRejected,
+				OutcomeClass:         transfer_model.ResultRejected,
 				OutcomeCode:          decision.code,
 			})
 			draft.Identities = append(draft.Identities, cardpublication_model.IdentityDraft{
-				SellerID:   core_domain.SellerID(group.Source.SellerID),
+				SellerID:   core_domain.SellerID(group.SellerID),
 				VendorCode: member.VendorCode,
 				State:      cardpublication_model.IdentityRemoteConflict,
 				NMID:       decision.itemNMIDs[index],
 				IMTID:      decision.itemIMTIDs[index],
-				SubjectID:  group.Proposal.Proposal.SubjectID,
+				SubjectID:  group.Proposal.SubjectID,
 			})
 		}
 		return nil
@@ -296,7 +273,7 @@ func appendDecision(
 
 	if decision.productKind == "" {
 		hasMedia := false
-		for index, member := range group.Source.Members {
+		for index, member := range group.Members {
 			card, exists := decision.existingCards[index]
 			if exists && len(card.Photos) == 0 {
 				links := mediaLinks(member)
@@ -312,27 +289,27 @@ func appendDecision(
 			}
 		}
 		draft.Groups = append(draft.Groups, cardpublication_model.PlannedGroupDraft{
-			GroupTargetID:  group.Source.GroupTargetID,
-			Status:         transfer_service.PublicationProjectionSkipped,
-			OutcomeClass:   transfer_service.ResultSkipped,
+			GroupTargetID:  group.GroupTargetID,
+			Status:         transfer_publication.PublicationProjectionSkipped,
+			OutcomeClass:   transfer_model.ResultSkipped,
 			OutcomeCode:    decision.code,
 			HasMediaAction: hasMedia,
 		})
-		for index, member := range group.Source.Members {
+		for index, member := range group.Members {
 			draft.Items = append(draft.Items, cardpublication_model.PlannedItemDraft{
-				GroupTargetID:        group.Source.GroupTargetID,
+				GroupTargetID:        group.GroupTargetID,
 				TransferItemTargetID: member.TransferItemTargetID,
-				OutcomeClass:         transfer_service.ResultSkipped,
+				OutcomeClass:         transfer_model.ResultSkipped,
 				OutcomeCode:          decision.itemCodes[index],
 				NMID:                 decision.itemNMIDs[index],
 			})
 			draft.Identities = append(draft.Identities, cardpublication_model.IdentityDraft{
-				SellerID:   core_domain.SellerID(group.Source.SellerID),
+				SellerID:   core_domain.SellerID(group.SellerID),
 				VendorCode: member.VendorCode,
 				State:      cardpublication_model.IdentityRemotePresent,
 				NMID:       decision.itemNMIDs[index],
 				IMTID:      decision.itemIMTIDs[index],
-				SubjectID:  group.Proposal.Proposal.SubjectID,
+				SubjectID:  group.Proposal.SubjectID,
 			})
 		}
 		return nil
@@ -349,18 +326,18 @@ func appendDecision(
 	for _, index := range decision.actionMembers {
 		actionMemberSet[index] = struct{}{}
 	}
-	for index, member := range group.Source.Members {
+	for index, member := range group.Members {
 		if _, mutating := actionMemberSet[index]; mutating {
 			draft.Items = append(draft.Items, cardpublication_model.PlannedItemDraft{
-				GroupTargetID:        group.Source.GroupTargetID,
+				GroupTargetID:        group.GroupTargetID,
 				TransferItemTargetID: member.TransferItemTargetID,
 				ActionPosition:       productAction.Position,
 			})
 			draft.Identities = append(draft.Identities, cardpublication_model.IdentityDraft{
-				SellerID:   core_domain.SellerID(group.Source.SellerID),
+				SellerID:   core_domain.SellerID(group.SellerID),
 				VendorCode: member.VendorCode,
 				State:      cardpublication_model.IdentityRemoteMissing,
-				SubjectID:  group.Proposal.Proposal.SubjectID,
+				SubjectID:  group.Proposal.SubjectID,
 			})
 			links := mediaLinks(member)
 			if len(links) > 0 {
@@ -375,19 +352,19 @@ func appendDecision(
 			continue
 		}
 		draft.Items = append(draft.Items, cardpublication_model.PlannedItemDraft{
-			GroupTargetID:        group.Source.GroupTargetID,
+			GroupTargetID:        group.GroupTargetID,
 			TransferItemTargetID: member.TransferItemTargetID,
-			OutcomeClass:         transfer_service.ResultSkipped,
+			OutcomeClass:         transfer_model.ResultSkipped,
 			OutcomeCode:          decision.itemCodes[index],
 			NMID:                 decision.itemNMIDs[index],
 		})
 		draft.Identities = append(draft.Identities, cardpublication_model.IdentityDraft{
-			SellerID:   core_domain.SellerID(group.Source.SellerID),
+			SellerID:   core_domain.SellerID(group.SellerID),
 			VendorCode: member.VendorCode,
 			State:      cardpublication_model.IdentityRemotePresent,
 			NMID:       decision.itemNMIDs[index],
 			IMTID:      decision.itemIMTIDs[index],
-			SubjectID:  group.Proposal.Proposal.SubjectID,
+			SubjectID:  group.Proposal.SubjectID,
 		})
 		card, exists := decision.existingCards[index]
 		if exists && len(card.Photos) == 0 {
@@ -404,8 +381,8 @@ func appendDecision(
 		}
 	}
 	draft.Groups = append(draft.Groups, cardpublication_model.PlannedGroupDraft{
-		GroupTargetID:  group.Source.GroupTargetID,
-		Status:         transfer_service.PublicationProjectionRunning,
+		GroupTargetID:  group.GroupTargetID,
+		Status:         transfer_publication.PublicationProjectionRunning,
 		OutcomeCode:    decision.code,
 		HasMediaAction: hasMedia,
 	})
@@ -413,14 +390,14 @@ func appendDecision(
 }
 
 func buildProductAction(
-	group loadedPlanningGroup,
+	group transfer_publication.PublicationPlanningGroup,
 	decision groupDecision,
 ) (cardpublication_model.ActionDraft, error) {
 	members := make([]cardpublication_model.ActionMemberDraft, 0, len(decision.actionMembers))
 	for requestIndex, sourceIndex := range decision.actionMembers {
-		member := group.Source.Members[sourceIndex]
+		member := group.Members[sourceIndex]
 		members = append(members, cardpublication_model.ActionMemberDraft{
-			GroupTargetID:        group.Source.GroupTargetID,
+			GroupTargetID:        group.GroupTargetID,
 			TransferItemTargetID: member.TransferItemTargetID,
 			RequestMemberIndex:   requestIndex,
 			VendorCode:           member.VendorCode,
@@ -428,7 +405,7 @@ func buildProductAction(
 	}
 	return cardpublication_model.ActionDraft{
 		Kind:           decision.productKind,
-		TargetID:       group.Source.TargetID,
+		TargetID:       group.TargetID,
 		RequestPayload: append([]byte(nil), decision.productPayload...),
 		Members:        members,
 	}, nil
@@ -555,7 +532,7 @@ func batchTargetCreateActions(
 }
 
 func buildMediaAction(
-	group loadedPlanningGroup,
+	group transfer_publication.PublicationPlanningGroup,
 	member transfer_publication.PublicationPlanningMember,
 	links []string,
 ) (cardpublication_model.ActionDraft, error) {
@@ -566,35 +543,17 @@ func buildMediaAction(
 		return cardpublication_model.ActionDraft{}, fmt.Errorf("encode media link plan: %w", err)
 	}
 	actionMember := cardpublication_model.ActionMemberDraft{
-		GroupTargetID:        group.Source.GroupTargetID,
+		GroupTargetID:        group.GroupTargetID,
 		TransferItemTargetID: member.TransferItemTargetID,
 		RequestMemberIndex:   0,
 		VendorCode:           member.VendorCode,
 	}
 	return cardpublication_model.ActionDraft{
 		Kind:           cardpublication_model.ActionUploadMedia,
-		TargetID:       group.Source.TargetID,
+		TargetID:       group.TargetID,
 		RequestPayload: payload,
 		Members:        []cardpublication_model.ActionMemberDraft{actionMember},
 	}, nil
-}
-
-func validateLoadedGroup(group loadedPlanningGroup) error {
-	if group.Proposal.GroupTargetID != group.Source.GroupTargetID ||
-		group.Proposal.SourceGroupID != group.Source.SourceGroupID ||
-		group.Proposal.TargetID != group.Source.TargetID ||
-		core_domain.SellerID(group.Proposal.SellerID) != core_domain.SellerID(group.Source.SellerID) ||
-		len(group.Proposal.Members) != len(group.Source.Members) {
-		return errors.New("prepared proposal differs from publication planning source")
-	}
-	for index, member := range group.Source.Members {
-		prepared := group.Proposal.Members[index]
-		if member.TransferItemID != prepared.TransferItemID ||
-			member.Position != prepared.ItemPosition || member.VendorCode != prepared.VendorCode {
-			return errors.New("prepared proposal member differs from publication source")
-		}
-	}
-	return nil
 }
 
 func compatibleVariant(desired contentapi.UploadCard, existing contentapi.Card) bool {

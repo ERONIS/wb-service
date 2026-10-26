@@ -1,17 +1,15 @@
 package cardpipeline
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"strings"
 	"time"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 )
 
 type (
-	BatchID        int64
-	BatchItemID    int64
-	SourceGroupKey [sha256.Size]byte
+	BatchID     int64
+	BatchItemID int64
 )
 
 type BatchCursor struct {
@@ -33,12 +31,11 @@ type ReadyBatchHeader struct {
 }
 
 type ReadyBatchItem struct {
-	ID             BatchItemID
-	BatchID        BatchID
-	Position       int
-	SourceGroupKey SourceGroupKey
-	VendorCode     string
-	Payload        Card
+	ID                BatchItemID
+	BatchID           BatchID
+	Position          int
+	SourceGroupNumber int
+	Payload           Card
 }
 
 func (cursor BatchCursor) Validate() error {
@@ -61,15 +58,18 @@ func (header ReadyBatchHeader) Validate() error {
 
 func (item ReadyBatchItem) Validate() error {
 	if item.ID <= 0 || item.BatchID <= 0 || item.Position <= 0 ||
-		item.SourceGroupKey == (SourceGroupKey{}) ||
-		item.VendorCode == "" || item.Payload.Variant.VendorCode != item.VendorCode {
+		item.SourceGroupNumber <= 0 ||
+		strings.TrimSpace(item.Payload.Group) == "" ||
+		strings.TrimSpace(item.Payload.Variant.VendorCode) == "" ||
+		len(item.Payload.SourceRows) == 0 {
 		return invalidBatch("ready batch item is invalid")
 	}
+	for index, row := range item.Payload.SourceRows {
+		if row <= 0 || index > 0 && row <= item.Payload.SourceRows[index-1] {
+			return invalidBatch("ready batch source rows are invalid")
+		}
+	}
 	return nil
-}
-
-func (key SourceGroupKey) String() string {
-	return hex.EncodeToString(key[:])
 }
 
 func invalidBatch(message string) error {

@@ -166,16 +166,6 @@ func (service *Service) Delete(
 	return nil
 }
 
-func (service *Service) Targets(
-	ctx context.Context,
-	ownerTelegramID int64,
-) ([]domain.CabinetAccess, error) {
-	if ownerTelegramID <= 0 {
-		return nil, core_errors.ErrInvalidArgument
-	}
-	return service.repository.ListTargets(ctx, ownerTelegramID)
-}
-
 func (service *Service) TargetsByOwnerRole(
 	ctx context.Context,
 	role domain.UserRole,

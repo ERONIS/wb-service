@@ -11,6 +11,11 @@ import (
 	tele_middleware "gopkg.in/telebot.v3/middleware"
 )
 
+type textFlowOwner struct {
+	key string
+	id  uint64
+}
+
 type Handler struct {
 	bot        *tele.Bot
 	roleAccess *core_tg_middleware.RoleAccess
@@ -19,21 +24,18 @@ type Handler struct {
 
 	textMu       sync.RWMutex
 	textHandlers map[string]inputFlow
-	textOwners   map[int64]string
+	textOwners   map[int64]textFlowOwner
+	nextFlowID   uint64
 
-	documentHandlers map[string]inputFlow
 	documentFallback *inputFlow
 	flowCleanups     map[string]func(int64)
 }
 
-type FlowHandler func(tele.Context) (handled bool, err error)
-
-type TextFlowHandler = FlowHandler
-type DocumentFlowHandler = FlowHandler
+type TextFlowHandler func(tele.Context) (handled bool, err error)
 
 type inputFlow struct {
 	minimumRole domain.UserRole
-	handler     FlowHandler
+	handler     TextFlowHandler
 }
 
 // Register создаёт Telegram-обработчик и регистрирует главное меню.
@@ -43,12 +45,12 @@ func Register(
 	roleProvider core_tg_middleware.RoleProvider,
 	menuStore MenuStore,
 ) *Handler {
-	menuHost := newMenuHost(ctx, bot, menuStore)
-	bot.Use(menuHost.Middleware())
 	roleAccess := core_tg_middleware.NewRoleAccess(
 		ctx,
 		roleProvider,
 	)
+	menuHost := newMenuHost(ctx, bot, menuStore)
+	bot.Use(roleAccess.IgnoreWithoutRole(), menuHost.Middleware())
 	handler := NewHandler(bot, roleAccess)
 	handler.menuHost = menuHost
 	handler.RegisterMainMenu()
@@ -101,20 +103,19 @@ func NewHandler(
 	}
 
 	handler := &Handler{
-		bot:              bot,
-		roleAccess:       roleAccess,
-		menuItems:        make([]menuItem, 0),
-		textHandlers:     make(map[string]inputFlow),
-		textOwners:       make(map[int64]string),
-		documentHandlers: make(map[string]inputFlow),
-		flowCleanups:     make(map[string]func(int64)),
+		bot:          bot,
+		roleAccess:   roleAccess,
+		menuItems:    make([]menuItem, 0),
+		textHandlers: make(map[string]inputFlow),
+		textOwners:   make(map[int64]textFlowOwner),
+		flowCleanups: make(map[string]func(int64)),
 	}
 	bot.Handle(tele.OnText, handler.handleTextFlow)
 	bot.Handle(tele.OnDocument, handler.handleDocumentFlow)
 	return handler
 }
 
-// RegisterCallback регистрирует нативный callback endpoint Telebot.
+// RegisterCallback регистрирует callback с проверкой роли и завершением текстового ввода.
 func (h *Handler) RegisterCallback(
 	button tele.Btn,
 	minimumRole domain.UserRole,
@@ -127,5 +128,10 @@ func (h *Handler) RegisterCallback(
 		h.roleAccess.Require(minimumRole),
 		tele_middleware.AutoRespond(),
 	)
-	h.bot.Handle(&button, handler, chain...)
+	h.bot.Handle(&button, func(ctx tele.Context) error {
+		if sender := ctx.Sender(); sender != nil {
+			h.EndTextFlows(sender.ID)
+		}
+		return handler(ctx)
+	}, chain...)
 }

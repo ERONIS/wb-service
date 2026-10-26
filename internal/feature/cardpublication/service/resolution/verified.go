@@ -38,13 +38,13 @@ type VerifiedCardRepository interface {
 
 type VerifiedCardResolver struct {
 	repository VerifiedCardRepository
-	transfer   ManualTransferResultCorrector
+	transfer   transfer_publication.PublicationExecutionResultRepository
 	uow        core_postgres_transaction.UnitOfWork
 }
 
 func NewVerifiedCardResolver(
 	repository VerifiedCardRepository,
-	transfer ManualTransferResultCorrector,
+	transfer transfer_publication.PublicationExecutionResultRepository,
 	uow core_postgres_transaction.UnitOfWork,
 ) *VerifiedCardResolver {
 	if repository == nil || transfer == nil || uow == nil {
@@ -119,7 +119,7 @@ func (resolver *VerifiedCardResolver) Resolve(
 		if err := resolver.repository.ApplyVerifiedCardResult(ctx, tx, subject, decision); err != nil {
 			return err
 		}
-		if err := resolver.transfer.CorrectWithin(ctx, tx, transfer_publication.CorrectPublicationItemResultCommand{
+		if err := resolver.transfer.CorrectPublicationItemResult(ctx, tx, transfer_publication.CorrectPublicationItemResultCommand{
 			TransferID:              subject.TransferID,
 			ActionID:                subject.ActionID,
 			GroupTargetID:           subject.GroupTargetID,

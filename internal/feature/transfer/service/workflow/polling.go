@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
-	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
 
@@ -23,108 +22,97 @@ func (service *Service) ProcessPendingWithNotify(ctx context.Context, onProgress
 	service.processMu.Lock()
 	defer service.processMu.Unlock()
 
-	if err := service.resumeInitializing(ctx, onProgress); err != nil {
-		return err
+	resumeError := service.resumeInitializing(ctx, onProgress)
+	if ctx.Err() != nil {
+		return errors.Join(resumeError, ctx.Err())
 	}
-	if err := service.discoverFinalizedBatches(ctx, onProgress); err != nil {
-		return err
-	}
-	return nil
+	discoveryError := service.discoverFinalizedBatches(ctx, onProgress)
+	return errors.Join(resumeError, discoveryError)
 }
 
 func (service *Service) resumeInitializing(ctx context.Context, onProgress func()) error {
 	var afterID transfer_model.TransferID
+	var firstError error
+	failed := 0
 	for {
-		transfers, err := service.repository.ListInitializing(
-			ctx,
-			afterID,
-			pollingPageSize,
-		)
+		transfers, err := service.repository.ListInitializing(ctx, afterID, pollingPageSize)
 		if err != nil {
-			return fmt.Errorf("list initializing transfers: %w", err)
+			return errors.Join(firstError, fmt.Errorf("list initializing transfers: %w", err))
 		}
 		for _, transfer := range transfers {
+			afterID = transfer.ID
 			progress, err := service.Initialize(ctx, transfer.ID)
 			if err != nil {
-				return fmt.Errorf(
-					"resume transfer ID='%d' initialization: %w",
-					transfer.ID,
-					err,
-				)
+				if ctx.Err() != nil {
+					return errors.Join(firstError, ctx.Err())
+				}
+				failed++
+				if firstError == nil {
+					firstError = fmt.Errorf("resume transfer ID='%d' initialization: %w", transfer.ID, err)
+				}
+				continue
 			}
 			if progress && onProgress != nil {
 				onProgress()
 			}
-			afterID = transfer.ID
 		}
 		if len(transfers) < pollingPageSize {
-			return nil
+			break
 		}
 	}
+	if failed > 1 {
+		return fmt.Errorf("%d transfer initializations failed in this scan; first: %w", failed, firstError)
+	}
+	return firstError
 }
 
 func (service *Service) discoverFinalizedBatches(ctx context.Context, onProgress func()) error {
+	var after *cardpipeline.BatchCursor
+	var firstError error
+	failed := 0
+	recordError := func(err error) {
+		failed++
+		if firstError == nil {
+			firstError = err
+		}
+	}
+
 	for {
-		batches, err := service.batchReader.ListReadyBatches(
-			ctx,
-			cloneBatchCursor(service.batchCursor),
-			pollingPageSize,
-		)
+		batches, err := service.batchReader.ListReadyBatches(ctx, after, pollingPageSize)
 		if err != nil {
-			return fmt.Errorf("list finalized transfer batches: %w", err)
+			return errors.Join(firstError, fmt.Errorf("list finalized transfer batches: %w", err))
 		}
 		for _, batch := range batches {
-			transferID, err := service.Start(ctx, batch.ID)
+			after = &cardpipeline.BatchCursor{
+				FinalizedAt: batch.FinalizedAt,
+				BatchID:     batch.ID,
+			}
+			transferID, err := service.startReadyBatch(ctx, batch)
 			if err != nil {
-				if isDeterministicStartRejection(err) {
-					service.advanceBatchCursor(batch)
+				if ctx.Err() != nil {
+					return errors.Join(firstError, ctx.Err())
 				}
-				return fmt.Errorf(
-					"start transfer for batch ID='%d': %w",
-					batch.ID,
-					err,
-				)
+				recordError(fmt.Errorf("start transfer for batch ID='%d': %w", batch.ID, err))
+				continue
 			}
 			progress, err := service.Initialize(ctx, transferID)
 			if err != nil {
-				return fmt.Errorf(
-					"initialize transfer ID='%d': %w",
-					transferID,
-					err,
-				)
+				if ctx.Err() != nil {
+					return errors.Join(firstError, ctx.Err())
+				}
+				recordError(fmt.Errorf("initialize transfer ID='%d': %w", transferID, err))
+				continue
 			}
 			if progress && onProgress != nil {
 				onProgress()
 			}
-			service.advanceBatchCursor(batch)
 		}
 		if len(batches) < pollingPageSize {
-			return nil
+			break
 		}
 	}
-}
-
-func (service *Service) advanceBatchCursor(
-	batch cardpipeline.ReadyBatchHeader,
-) {
-	service.batchCursor = &cardpipeline.BatchCursor{
-		FinalizedAt: batch.FinalizedAt,
-		BatchID:     batch.ID,
+	if failed > 1 {
+		return fmt.Errorf("%d transfer batches failed in this scan; first: %w", failed, firstError)
 	}
-}
-
-func isDeterministicStartRejection(err error) bool {
-	return errors.Is(err, ErrCapacityExceeded) ||
-		errors.Is(err, core_errors.ErrConflict) ||
-		errors.Is(err, core_errors.ErrInvalidArgument)
-}
-
-func cloneBatchCursor(
-	cursor *cardpipeline.BatchCursor,
-) *cardpipeline.BatchCursor {
-	if cursor == nil {
-		return nil
-	}
-	clone := *cursor
-	return &clone
+	return firstError
 }

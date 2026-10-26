@@ -26,33 +26,16 @@ func (h *Handler) RegisterTextFlow(
 	minimumRole domain.UserRole,
 	handler TextFlowHandler,
 ) {
-	h.registerFlow(h.textHandlers, "text", key, minimumRole, handler)
-}
-
-func (h *Handler) RegisterDocumentFlow(
-	key string,
-	minimumRole domain.UserRole,
-	handler DocumentFlowHandler,
-) {
-	h.registerFlow(h.documentHandlers, "document", key, minimumRole, handler)
-}
-
-func (h *Handler) registerFlow(
-	flows map[string]inputFlow,
-	kind, key string,
-	minimumRole domain.UserRole,
-	handler FlowHandler,
-) {
 	key = strings.TrimSpace(key)
 	if key == "" || !minimumRole.IsValid() || handler == nil {
-		panic("Telegram " + kind + " flow registration is invalid")
+		panic("Telegram text flow registration is invalid")
 	}
 	h.textMu.Lock()
 	defer h.textMu.Unlock()
-	if _, exists := flows[key]; exists {
-		panic("Telegram " + kind + " flow is already registered: " + key)
+	if _, exists := h.textHandlers[key]; exists {
+		panic("Telegram text flow is already registered: " + key)
 	}
-	flows[key] = inputFlow{minimumRole: minimumRole, handler: handler}
+	h.textHandlers[key] = inputFlow{minimumRole: minimumRole, handler: handler}
 }
 
 func (h *Handler) RegisterDocumentFallback(
@@ -86,10 +69,14 @@ func (h *Handler) BeginTextFlow(telegramID int64, key string) {
 		panic("Telegram text flow is not registered: " + key)
 	}
 	previous := h.textOwners[telegramID]
-	h.textOwners[telegramID] = key
-	cleanup := h.flowCleanups[previous]
+	h.nextFlowID++
+	if h.nextFlowID == 0 {
+		h.nextFlowID++
+	}
+	h.textOwners[telegramID] = textFlowOwner{key: key, id: h.nextFlowID}
+	cleanup := h.flowCleanups[previous.key]
 	h.textMu.Unlock()
-	if previous != "" && previous != key && cleanup != nil {
+	if previous.key != "" && previous.key != key && cleanup != nil {
 		cleanup(telegramID)
 	}
 }
@@ -100,7 +87,7 @@ func (h *Handler) EndTextFlow(telegramID int64, key string) {
 	}
 	h.textMu.Lock()
 	defer h.textMu.Unlock()
-	if current := h.textOwners[telegramID]; current == strings.TrimSpace(key) {
+	if current := h.textOwners[telegramID]; current.key == strings.TrimSpace(key) {
 		delete(h.textOwners, telegramID)
 	}
 }
@@ -110,9 +97,9 @@ func (h *Handler) EndTextFlows(telegramID int64) {
 		return
 	}
 	h.textMu.Lock()
-	key := h.textOwners[telegramID]
+	owner := h.textOwners[telegramID]
 	delete(h.textOwners, telegramID)
-	cleanup := h.flowCleanups[key]
+	cleanup := h.flowCleanups[owner.key]
 	h.textMu.Unlock()
 	if cleanup != nil {
 		cleanup(telegramID)
@@ -124,17 +111,14 @@ func (h *Handler) handleTextFlow(ctx tele.Context) error {
 	if sender == nil || sender.ID <= 0 {
 		return nil
 	}
-	if strings.TrimSpace(ctx.Text()) == mainMenuReplyText {
-		return h.roleAccess.Require(domain.RoleUser)(h.handleMainMenuReply)(ctx)
-	}
 	h.textMu.RLock()
-	key := h.textOwners[sender.ID]
-	flow := h.textHandlers[key]
+	owner := h.textOwners[sender.ID]
+	flow := h.textHandlers[owner.key]
 	h.textMu.RUnlock()
-	if key == "" || flow.handler == nil {
+	if owner.key == "" || flow.handler == nil {
 		return nil
 	}
-	return h.executeFlow(ctx, sender.ID, key, flow)
+	return h.executeFlow(ctx, sender.ID, owner, flow)
 }
 
 func (h *Handler) handleDocumentFlow(ctx tele.Context) error {
@@ -143,26 +127,19 @@ func (h *Handler) handleDocumentFlow(ctx tele.Context) error {
 		return nil
 	}
 	h.textMu.RLock()
-	key := h.textOwners[sender.ID]
-	flow, found := h.documentHandlers[key]
+	activeTextFlow := h.textOwners[sender.ID].key != ""
 	fallback := h.documentFallback
 	h.textMu.RUnlock()
-	if key != "" {
-		if !found || flow.handler == nil {
-			return nil
-		}
-		return h.executeFlow(ctx, sender.ID, key, flow)
-	}
-	if fallback == nil || fallback.handler == nil {
+	if activeTextFlow || fallback == nil {
 		return nil
 	}
-	return h.executeFlow(ctx, sender.ID, "", *fallback)
+	return h.executeFlow(ctx, sender.ID, textFlowOwner{}, *fallback)
 }
 
 func (h *Handler) executeFlow(
 	ctx tele.Context,
 	telegramID int64,
-	key string,
+	owner textFlowOwner,
 	flow inputFlow,
 ) error {
 	return h.roleAccess.Require(flow.minimumRole)(func(ctx tele.Context) error {
@@ -170,27 +147,24 @@ func (h *Handler) executeFlow(
 		if err != nil {
 			return err
 		}
-		if key != "" && !handled {
-			h.EndTextFlow(telegramID, key)
-			if cleanup := h.flowCleanup(key); cleanup != nil {
-				cleanup(telegramID)
-			}
+		if owner.id != 0 && !handled {
+			h.finishTextFlow(telegramID, owner)
 		}
 		return nil
 	})(ctx)
 }
 
-func (h *Handler) flowCleanup(key string) func(int64) {
-	h.textMu.RLock()
-	defer h.textMu.RUnlock()
-	return h.flowCleanups[strings.TrimSpace(key)]
-}
-
-func (h *Handler) HasTextFlow(telegramID int64, key string) bool {
-	if h == nil || telegramID <= 0 {
-		return false
+// finishTextFlow завершает только ту сессию, которая получила сообщение.
+func (h *Handler) finishTextFlow(telegramID int64, owner textFlowOwner) {
+	h.textMu.Lock()
+	if h.textOwners[telegramID] != owner {
+		h.textMu.Unlock()
+		return
 	}
-	h.textMu.RLock()
-	defer h.textMu.RUnlock()
-	return h.textOwners[telegramID] == strings.TrimSpace(key)
+	delete(h.textOwners, telegramID)
+	cleanup := h.flowCleanups[owner.key]
+	h.textMu.Unlock()
+	if cleanup != nil {
+		cleanup(telegramID)
+	}
 }

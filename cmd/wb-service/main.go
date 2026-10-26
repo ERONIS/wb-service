@@ -25,7 +25,6 @@ import (
 	statistics "github.com/ERONIS/wb-service/internal/feature/statistics"
 	statistics_wb_transport "github.com/ERONIS/wb-service/internal/feature/statistics/transport/wb"
 	transfer "github.com/ERONIS/wb-service/internal/feature/transfer"
-	transfer_wb_transport "github.com/ERONIS/wb-service/internal/feature/transfer/transport/wb"
 	users "github.com/ERONIS/wb-service/internal/feature/users"
 	wbcabinet "github.com/ERONIS/wb-service/internal/feature/wbcabinet"
 
@@ -109,7 +108,7 @@ func main() {
 		ctx,
 		postgresPool,
 		uow,
-		transfer_wb_transport.NewTargetTransport(wbCabinetFeature.Service()),
+		wbCabinetFeature.Service(),
 		transfer.NewConfigMust(),
 		logger.Logger,
 	)
@@ -124,10 +123,10 @@ func main() {
 		postgresPool,
 		uow,
 		cardpublication_wb_transport.NewCatalogTransport(wbClientset),
-		transferFeature.Service(),
-		transferFeature.PublicationResultApplier(),
-		transferFeature.PublicationExecutionResultApplier(),
-		transferFeature.ProposalReader(),
+		transferFeature.PublicationSource(),
+		wbCabinetFeature.Service(),
+		transferFeature.PublicationSource(),
+		transferFeature.PublicationExecutionResults(),
 		cardpublication.NewConfigMust(),
 		logger.Logger,
 	)

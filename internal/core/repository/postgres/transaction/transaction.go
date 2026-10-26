@@ -73,16 +73,6 @@ type UnitOfWork interface {
 	) error
 }
 
-// ConfigurableUnitOfWork позволяет выбрать ограничения для отдельной составной операции.
-type ConfigurableUnitOfWork interface {
-	UnitOfWork
-	WithinTransactionWithSettings(
-		ctx context.Context,
-		settings Settings,
-		fn func(context.Context, DBTX) error,
-	) error
-}
-
 type Beginner interface {
 	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
 }

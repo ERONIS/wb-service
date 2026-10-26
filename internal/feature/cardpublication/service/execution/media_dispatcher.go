@@ -19,7 +19,6 @@ import (
 	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
 	cardpublication_model "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/model"
 	cardpublication_monitoring "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/monitoring"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
 	transfer_authorization "github.com/ERONIS/wb-service/internal/feature/transfer/service/authorization"
 	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 	transfer_publication "github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
@@ -94,9 +93,9 @@ type MediaJournalRepository interface {
 	ScheduleMediaVisibility(context.Context, core_postgres_transaction.DBTX, MediaAction, MediaAttempt, MediaMutationResult, time.Duration, time.Duration) error
 	ClaimMediaVisibility(context.Context, int, time.Duration) ([]MediaVisibilityJob, error)
 	UpdateMediaVisibility(context.Context, core_postgres_transaction.DBTX, MediaAction, MediaVisibilityJob, MediaVisibilityUpdate) (MediaGroupResult, error)
-	ListDispatchableMediaActions(context.Context, int) ([]ProductActionCandidate, error)
-	ListPendingMediaActions(context.Context, int) ([]ProductActionCandidate, error)
-	ListInterruptedMediaActions(context.Context, int) ([]ProductActionCandidate, error)
+	ListDispatchableMediaActions(context.Context, int64, int) ([]ProductActionCandidate, error)
+	ListPendingMediaActions(context.Context, int64, int) ([]ProductActionCandidate, error)
+	ListInterruptedMediaActions(context.Context, int64, int) ([]ProductActionCandidate, error)
 	LockMediaAction(
 		context.Context,
 		core_postgres_transaction.DBTX,
@@ -141,7 +140,7 @@ type MediaDispatcher struct {
 	catalogReader      *cardpublication_catalog.CatalogReader
 	errorFeed          *cardpublication_monitoring.ErrorFeed
 	authorization      LiveAuthorizationVerifier
-	transferResults    PublicationExecutionResultApplier
+	transferResults    transfer_publication.PublicationExecutionResultRepository
 	uow                core_postgres_transaction.UnitOfWork
 	enabled            bool
 	mediaCheckInterval time.Duration
@@ -154,6 +153,9 @@ type MediaDispatcher struct {
 	inFlightWait       sync.WaitGroup
 	asyncErrors        chan error
 	logger             *zap.Logger
+	dispatchAfterID    int64
+	pendingAfterID     int64
+	interruptedAfterID int64
 }
 
 type mediaActionKey struct {
@@ -227,13 +229,13 @@ func (action MediaAction) FinalRequest() (
 func (result MediaMutationResult) Validate() error {
 	if result.ClassifierVersion <= 0 || result.OutcomeCode == "" ||
 		len(result.OutcomeCode) > 128 || result.UnmatchedCount < 0 ||
-		!result.OutcomeClass.IsValid() || result.OutcomeClass == transfer_service.ResultPartial {
+		!result.OutcomeClass.IsValid() || result.OutcomeClass == transfer_model.ResultPartial {
 		return errors.New("publication media mutation result is invalid")
 	}
 	switch result.Delivery {
 	case SubmissionNotDispatched:
 		if result.HTTPStatus != 0 || result.Disposition != SubmissionRejectedProven ||
-			result.OutcomeClass != transfer_service.ResultInternalError {
+			result.OutcomeClass != transfer_model.ResultInternalError {
 			return errors.New("not-dispatched media result is invalid")
 		}
 	case SubmissionResponseReceived:
@@ -242,7 +244,7 @@ func (result MediaMutationResult) Validate() error {
 		}
 	case SubmissionUnknownDelivery:
 		if result.HTTPStatus != 0 || result.Disposition != SubmissionUncertain ||
-			result.OutcomeClass != transfer_service.ResultUnresolved {
+			result.OutcomeClass != transfer_model.ResultUnresolved {
 			return errors.New("unknown-delivery media result is invalid")
 		}
 	default:
@@ -250,17 +252,17 @@ func (result MediaMutationResult) Validate() error {
 	}
 	switch result.Disposition {
 	case SubmissionAccepted:
-		if result.OutcomeClass != transfer_service.ResultSuccess || result.UnmatchedCount != 0 {
+		if result.OutcomeClass != transfer_model.ResultSuccess || result.UnmatchedCount != 0 {
 			return errors.New("accepted publication media result is invalid")
 		}
 	case SubmissionRejectedProven:
-		if (result.OutcomeClass != transfer_service.ResultRejected &&
-			result.OutcomeClass != transfer_service.ResultInternalError) ||
+		if (result.OutcomeClass != transfer_model.ResultRejected &&
+			result.OutcomeClass != transfer_model.ResultInternalError) ||
 			result.UnmatchedCount != 0 {
 			return errors.New("rejected publication media result is invalid")
 		}
 	case SubmissionUncertain:
-		if result.OutcomeClass != transfer_service.ResultUnresolved ||
+		if result.OutcomeClass != transfer_model.ResultUnresolved ||
 			result.UnmatchedCount != 1 {
 			return errors.New("uncertain publication media result is invalid")
 		}
@@ -280,7 +282,7 @@ func (result MediaGroupResult) Validate() error {
 		}
 		return nil
 	}
-	if !result.OutcomeClass.IsValid() || result.OutcomeClass == transfer_service.ResultPartial ||
+	if !result.OutcomeClass.IsValid() || result.OutcomeClass == transfer_model.ResultPartial ||
 		result.OutcomeCode == "" || len(result.OutcomeCode) > 128 {
 		return errors.New("terminal publication media group result is invalid")
 	}
@@ -293,7 +295,7 @@ func NewMediaDispatcher(
 	catalogReader *cardpublication_catalog.CatalogReader,
 	errorFeed *cardpublication_monitoring.ErrorFeed,
 	authorization LiveAuthorizationVerifier,
-	transferResults PublicationExecutionResultApplier,
+	transferResults transfer_publication.PublicationExecutionResultRepository,
 	uow core_postgres_transaction.UnitOfWork,
 	enabled bool,
 	mediaCheckInterval time.Duration,
@@ -335,10 +337,14 @@ func (dispatcher *MediaDispatcher) ProcessPending(ctx context.Context) (err erro
 	firstErr := dispatcher.drainAsyncErrors()
 	interrupted, err := dispatcher.repository.ListInterruptedMediaActions(
 		ctx,
+		dispatcher.interruptedAfterID,
 		productDispatchPageSize,
 	)
 	if err != nil {
 		return err
+	}
+	if len(interrupted) > 0 {
+		dispatcher.interruptedAfterID = interrupted[len(interrupted)-1].ActionID
 	}
 	for _, candidate := range interrupted {
 		if dispatcher.mediaActionInFlight(candidate) {
@@ -357,16 +363,25 @@ func (dispatcher *MediaDispatcher) ProcessPending(ctx context.Context) (err erro
 	if dispatcher.enabled {
 		candidates, err = dispatcher.repository.ListDispatchableMediaActions(
 			ctx,
+			dispatcher.dispatchAfterID,
 			productDispatchPageSize,
 		)
 	} else {
 		candidates, err = dispatcher.repository.ListPendingMediaActions(
 			ctx,
+			dispatcher.pendingAfterID,
 			productDispatchPageSize,
 		)
 	}
 	if err != nil {
 		return errors.Join(firstErr, err)
+	}
+	if len(candidates) > 0 {
+		if dispatcher.enabled {
+			dispatcher.dispatchAfterID = candidates[len(candidates)-1].ActionID
+		} else {
+			dispatcher.pendingAfterID = candidates[len(candidates)-1].ActionID
+		}
 	}
 	for _, candidate := range candidates {
 		if !dispatcher.reserveMediaAction(candidate) {
@@ -524,14 +539,7 @@ func (dispatcher *MediaDispatcher) dispatch(
 				if err != nil {
 					return err
 				}
-				if err := dispatcher.transferResults.BeginMediaWithin(
-					ctx,
-					tx,
-					locked.TransferID,
-				); err != nil {
-					return err
-				}
-				if err := dispatcher.applyGroupResult(ctx, tx, locked.TransferID, group); err != nil {
+				if err := dispatcher.applyGroupResult(ctx, tx, locked, group); err != nil {
 					return err
 				}
 				if err := dispatcher.closeAuthorizationIfPlanTerminal(ctx, tx, locked); err != nil {
@@ -583,11 +591,7 @@ func (dispatcher *MediaDispatcher) dispatch(
 			if err != nil {
 				return err
 			}
-			return dispatcher.transferResults.BeginMediaWithin(
-				ctx,
-				tx,
-				locked.TransferID,
-			)
+			return nil
 		},
 	)
 	if err != nil {
@@ -634,14 +638,7 @@ func (dispatcher *MediaDispatcher) skip(
 			if err != nil {
 				return err
 			}
-			if err := dispatcher.transferResults.BeginMediaWithin(
-				ctx,
-				tx,
-				action.TransferID,
-			); err != nil {
-				return err
-			}
-			if err := dispatcher.applyGroupResult(ctx, tx, action.TransferID, group); err != nil {
+			if err := dispatcher.applyGroupResult(ctx, tx, action, group); err != nil {
 				return err
 			}
 			return dispatcher.closeAuthorizationIfPlanTerminal(ctx, tx, action)
@@ -668,7 +665,7 @@ func (dispatcher *MediaDispatcher) recordInterrupted(
 			Delivery:          SubmissionUnknownDelivery,
 			ClassifierVersion: mediaClassifierVersion,
 			Disposition:       SubmissionUncertain,
-			OutcomeClass:      transfer_service.ResultUnresolved,
+			OutcomeClass:      transfer_model.ResultUnresolved,
 			OutcomeCode:       "MEDIA_PROCESS_INTERRUPTED_AFTER_ATTEMPT_COMMIT",
 			UnmatchedCount:    1,
 		},
@@ -706,7 +703,7 @@ func (dispatcher *MediaDispatcher) recordResult(
 			if err != nil {
 				return err
 			}
-			if err := dispatcher.applyGroupResult(ctx, tx, action.TransferID, group); err != nil {
+			if err := dispatcher.applyGroupResult(ctx, tx, action, group); err != nil {
 				return err
 			}
 			return dispatcher.closeAuthorizationIfPlanTerminal(ctx, tx, action)
@@ -717,7 +714,7 @@ func (dispatcher *MediaDispatcher) recordResult(
 func (dispatcher *MediaDispatcher) applyGroupResult(
 	ctx context.Context,
 	tx core_postgres_transaction.DBTX,
-	transferID transfer_model.TransferID,
+	action MediaAction,
 	group MediaGroupResult,
 ) error {
 	if err := group.Validate(); err != nil {
@@ -726,11 +723,13 @@ func (dispatcher *MediaDispatcher) applyGroupResult(
 	if !group.Terminal {
 		return nil
 	}
-	return dispatcher.transferResults.ApplyMediaWithin(
+	return dispatcher.transferResults.ApplyPublicationMediaResult(
 		ctx,
 		tx,
 		transfer_publication.ApplyPublicationMediaResultCommand{
-			TransferID:    transferID,
+			TransferID:    action.TransferID,
+			PlanID:        action.PlanID,
+			ActionID:      action.ActionID,
 			GroupTargetID: group.GroupTargetID,
 			OutcomeClass:  group.OutcomeClass,
 			OutcomeCode:   group.OutcomeCode,
@@ -823,7 +822,7 @@ func executeMediaMutation(
 			HTTPStatus:        200,
 			ClassifierVersion: mediaClassifierVersion,
 			Disposition:       SubmissionRejectedProven,
-			OutcomeClass:      transfer_service.ResultRejected,
+			OutcomeClass:      transfer_model.ResultRejected,
 			OutcomeCode:       "WB_MEDIA_ENVELOPE_REJECTED",
 		}
 	}
@@ -832,7 +831,7 @@ func executeMediaMutation(
 		HTTPStatus:        200,
 		ClassifierVersion: mediaClassifierVersion,
 		Disposition:       SubmissionAccepted,
-		OutcomeClass:      transfer_service.ResultSuccess,
+		OutcomeClass:      transfer_model.ResultSuccess,
 		OutcomeCode:       "WB_MEDIA_REQUEST_ACCEPTED",
 	}
 }
@@ -846,7 +845,7 @@ func classifyMediaError(err error) MediaMutationResult {
 			Delivery:          SubmissionNotDispatched,
 			ClassifierVersion: mediaClassifierVersion,
 			Disposition:       SubmissionRejectedProven,
-			OutcomeClass:      transfer_service.ResultInternalError,
+			OutcomeClass:      transfer_model.ResultInternalError,
 			OutcomeCode:       "WB_MEDIA_CALL_NOT_DISPATCHED",
 		}
 	}
@@ -857,7 +856,7 @@ func classifyMediaError(err error) MediaMutationResult {
 			Delivery:          SubmissionNotDispatched,
 			ClassifierVersion: mediaClassifierVersion,
 			Disposition:       SubmissionRejectedProven,
-			OutcomeClass:      transfer_service.ResultInternalError,
+			OutcomeClass:      transfer_model.ResultInternalError,
 			OutcomeCode:       safeCode,
 		}
 	case core_wb.ResponseReceived:
@@ -866,7 +865,7 @@ func classifyMediaError(err error) MediaMutationResult {
 			HTTPStatus:        classified.HTTPStatus(),
 			ClassifierVersion: mediaClassifierVersion,
 			Disposition:       SubmissionUncertain,
-			OutcomeClass:      transfer_service.ResultUnresolved,
+			OutcomeClass:      transfer_model.ResultUnresolved,
 			OutcomeCode:       safeCode,
 			UnmatchedCount:    1,
 		}
@@ -875,7 +874,7 @@ func classifyMediaError(err error) MediaMutationResult {
 			Delivery:          SubmissionUnknownDelivery,
 			ClassifierVersion: mediaClassifierVersion,
 			Disposition:       SubmissionUncertain,
-			OutcomeClass:      transfer_service.ResultUnresolved,
+			OutcomeClass:      transfer_model.ResultUnresolved,
 			OutcomeCode:       safeCode,
 			UnmatchedCount:    1,
 		}
@@ -884,7 +883,7 @@ func classifyMediaError(err error) MediaMutationResult {
 			Delivery:          SubmissionNotDispatched,
 			ClassifierVersion: mediaClassifierVersion,
 			Disposition:       SubmissionRejectedProven,
-			OutcomeClass:      transfer_service.ResultInternalError,
+			OutcomeClass:      transfer_model.ResultInternalError,
 			OutcomeCode:       "WB_MEDIA_DELIVERY_STATE_INVALID",
 		}
 	}

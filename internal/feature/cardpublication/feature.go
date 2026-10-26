@@ -18,6 +18,7 @@ import (
 	cardpublication_resolution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/resolution"
 	cardpublication_config_transport "github.com/ERONIS/wb-service/internal/feature/cardpublication/transport/config"
 	transfer_authorization "github.com/ERONIS/wb-service/internal/feature/transfer/service/authorization"
+	transfer_publication "github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
 
 	"go.uber.org/zap"
 )
@@ -33,7 +34,7 @@ type Feature struct {
 	repository               *cardpublication_postgres_repository.Repository
 	transport                cardpublication_catalog.CatalogTransport
 	catalogReader            *cardpublication_catalog.CatalogReader
-	transferExecutionResults cardpublication_execution.PublicationExecutionResultApplier
+	transferExecutionResults transfer_publication.PublicationExecutionResultRepository
 	uow                      core_postgres_transaction.UnitOfWork
 	config                   cardpublication_config_transport.Config
 	logger                   *zap.Logger
@@ -52,17 +53,17 @@ func New(
 	uow core_postgres_transaction.UnitOfWork,
 	catalogTransport cardpublication_catalog.CatalogTransport,
 	transferSource cardpublication_planning.TransferSource,
-	resultApplier cardpublication_planning.TransferResultApplier,
-	executionResultApplier cardpublication_execution.PublicationExecutionResultApplier,
-	proposalReader cardpublication_planning.ProposalReader,
+	errorTargets cardpublication_monitoring.ErrorTargetSource,
+	resultRepository cardpublication_planning.TransferResultRepository,
+	executionResults transfer_publication.PublicationExecutionResultRepository,
 	config cardpublication_config_transport.Config,
 	loggers ...*zap.Logger,
 ) *Feature {
 	if postgresPool == nil {
 		panic("cardpublication PostgreSQL pool is nil")
 	}
-	if executionResultApplier == nil {
-		panic("cardpublication execution result applier is nil")
+	if executionResults == nil {
+		panic("cardpublication execution result repository is nil")
 	}
 	if err := config.Validate(); err != nil {
 		panic(fmt.Sprintf("invalid cardpublication config: %v", err))
@@ -71,11 +72,11 @@ func New(
 	repository := cardpublication_postgres_repository.New(postgresPool)
 	catalogReader := cardpublication_catalog.NewCatalogReader(catalogTransport, logger)
 	planner := cardpublication_planning.NewPlanner()
-	saver := cardpublication_planning.NewSaver(repository, resultApplier, uow)
+	saver := cardpublication_planning.NewSaver(repository, resultRepository, uow)
 	errorFeed := cardpublication_monitoring.NewErrorFeed(
 		catalogTransport,
 		repository,
-		transferSource,
+		errorTargets,
 		uow,
 		logger,
 	)
@@ -83,7 +84,6 @@ func New(
 		processor: cardpublication_planning.NewProcessor(
 			repository,
 			transferSource,
-			proposalReader,
 			catalogReader,
 			planner,
 			saver,
@@ -93,18 +93,18 @@ func New(
 		livePlanSource: repository,
 		manualResolver: cardpublication_resolution.NewManualResolver(
 			repository,
-			executionResultApplier,
+			executionResults,
 			uow,
 		),
 		verifiedCardResolver: cardpublication_resolution.NewVerifiedCardResolver(
 			repository,
-			executionResultApplier,
+			executionResults,
 			uow,
 		),
 		repository:               repository,
 		transport:                catalogTransport,
 		catalogReader:            catalogReader,
-		transferExecutionResults: executionResultApplier,
+		transferExecutionResults: executionResults,
 		uow:                      uow,
 		config:                   config,
 		logger:                   logger,

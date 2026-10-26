@@ -64,28 +64,6 @@ func (s *Service) Finalize(
 	return batch, nil
 }
 
-// ListFinalizedBatches выдаёт страницу завершённых пачек.
-func (s *Service) ListFinalizedBatches(
-	ctx context.Context,
-	after *cardpipeline.BatchCursor,
-	limit int,
-) ([]cardimport_model.BatchHeader, error) {
-	if after != nil {
-		if err := after.Validate(); err != nil {
-			return nil, err
-		}
-	}
-	if limit <= 0 || limit > cardimport_model.MaxBatchPageSize {
-		return nil, fmt.Errorf(
-			"invalid finalized batch page limit '%d': %w",
-			limit,
-			core_errors.ErrInvalidArgument,
-		)
-	}
-
-	return s.repository.ListFinalizedBatches(ctx, after, limit)
-}
-
 // GetBatch возвращает заголовок завершённой пачки.
 func (s *Service) GetBatch(
 	ctx context.Context,
@@ -100,40 +78,4 @@ func (s *Service) GetBatch(
 	}
 
 	return s.repository.GetBatch(ctx, batchID)
-}
-
-// ListBatchItems выдаёт страницу карточек указанной пачки.
-func (s *Service) ListBatchItems(
-	ctx context.Context,
-	batchID cardpipeline.BatchID,
-	afterPosition int,
-	limit int,
-) ([]cardimport_model.BatchItem, error) {
-	switch {
-	case batchID <= 0:
-		return nil, fmt.Errorf(
-			"invalid cardimport batch ID '%d': %w",
-			batchID,
-			core_errors.ErrInvalidArgument,
-		)
-	case afterPosition < 0:
-		return nil, fmt.Errorf(
-			"invalid cardimport batch cursor '%d': %w",
-			afterPosition,
-			core_errors.ErrInvalidArgument,
-		)
-	case limit <= 0 || limit > cardimport_model.MaxBatchPageSize:
-		return nil, fmt.Errorf(
-			"invalid cardimport batch page limit '%d': %w",
-			limit,
-			core_errors.ErrInvalidArgument,
-		)
-	}
-
-	return s.repository.ListBatchItems(
-		ctx,
-		batchID,
-		afterPosition,
-		limit,
-	)
 }
