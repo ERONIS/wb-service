@@ -37,10 +37,9 @@ func ScanCabinet(row pgx.Row) (wbcabinet_service.Cabinet, error) {
 
 func scanCabinetRow(row pgx.Row, withToken bool) (wbcabinet_service.Cabinet, string, error) {
 	var (
-		cabinet          wbcabinet_service.Cabinet
-		clientGeneration []byte
-		token            string
-		tokenProperties  int64
+		cabinet         wbcabinet_service.Cabinet
+		token           string
+		tokenProperties int64
 	)
 	fields := []any{
 		&cabinet.ID,
@@ -52,7 +51,7 @@ func scanCabinetRow(row pgx.Row, withToken bool) (wbcabinet_service.Cabinet, str
 		&cabinet.ContentWrite,
 		&tokenProperties,
 		&cabinet.CredentialExpiresAt,
-		&clientGeneration,
+		&cabinet.ClientGeneration,
 		&cabinet.VerifiedAt,
 		&cabinet.Status,
 		&cabinet.CreatedAt,
@@ -68,19 +67,8 @@ func scanCabinetRow(row pgx.Row, withToken bool) (wbcabinet_service.Cabinet, str
 		return wbcabinet_service.Cabinet{}, "", errors.New("stored WB token properties are negative")
 	}
 	cabinet.TokenProperties = core_credentials.TokenProperties(tokenProperties)
-	if err := setClientGeneration(&cabinet, clientGeneration); err != nil {
-		return wbcabinet_service.Cabinet{}, "", err
+	if cabinet.ID.Validate() != nil || cabinet.ClientGeneration <= 0 {
+		return wbcabinet_service.Cabinet{}, "", errors.New("stored WB cabinet generation is invalid")
 	}
 	return cabinet, token, nil
-}
-
-func setClientGeneration(
-	cabinet *wbcabinet_service.Cabinet,
-	clientGeneration []byte,
-) error {
-	if cabinet.ID.Validate() != nil || len(clientGeneration) != len(cabinet.ClientGeneration) {
-		return errors.New("stored WB cabinet digest has invalid length")
-	}
-	copy(cabinet.ClientGeneration[:], clientGeneration)
-	return nil
 }

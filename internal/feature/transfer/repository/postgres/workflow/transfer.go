@@ -235,7 +235,7 @@ func copyTargets(
 				transferID,
 				target.Position,
 				string(target.SellerID),
-				target.ClientGeneration[:],
+				int64(target.ClientGeneration),
 				target.CredentialExpiresAt.UTC(),
 				target.BindingRevision,
 				target.CapabilityRevision,

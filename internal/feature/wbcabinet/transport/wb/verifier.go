@@ -17,13 +17,21 @@ import (
 
 type Runtime interface {
 	NewCandidate(domain.SellerID, string, string) (*core_wb.CredentialCandidate, error)
-	ActivateCandidate(*core_wb.CredentialCandidate) error
+	ActivateCandidate(*core_wb.CredentialCandidate, domain.ClientGeneration) error
 	RemoveCabinet(domain.SellerID)
 }
 
 type Verifier struct {
 	runtime Runtime
 }
+
+type preparedCredential struct {
+	runtime   Runtime
+	candidate *core_wb.CredentialCandidate
+}
+
+var _ wbcabinet_service.Verifier = (*Verifier)(nil)
+var _ wbcabinet_service.PreparedCredential = (*preparedCredential)(nil)
 
 func NewVerifier(runtime Runtime) *Verifier {
 	if runtime == nil {
@@ -101,24 +109,9 @@ func (verifier *Verifier) Remove(sellerID domain.SellerID) {
 	verifier.runtime.RemoveCabinet(sellerID)
 }
 
-type preparedCredential struct {
-	runtime   Runtime
-	candidate *core_wb.CredentialCandidate
-}
-
-func (credential *preparedCredential) Generation() domain.ClientGeneration {
-	if credential == nil || credential.candidate == nil {
-		return domain.ClientGeneration{}
-	}
-	return credential.candidate.Generation()
-}
-
-func (credential *preparedCredential) Activate() error {
+func (credential *preparedCredential) Activate(generation domain.ClientGeneration) error {
 	if credential == nil || credential.runtime == nil || credential.candidate == nil {
 		return errors.New("activate WB credential: prepared credential is invalid")
 	}
-	return credential.runtime.ActivateCandidate(credential.candidate)
+	return credential.runtime.ActivateCandidate(credential.candidate, generation)
 }
-
-var _ wbcabinet_service.Verifier = (*Verifier)(nil)
-var _ wbcabinet_service.PreparedCredential = (*preparedCredential)(nil)

@@ -33,7 +33,7 @@ func (transport *uncertainMediaTransport) SaveMediaByLinks(context.Context, doma
 func TestMediaMutationsPreserveUnknownDeliveryWithoutRetry(t *testing.T) {
 	request := contentapi.SaveMediaByLinksRequest{NMID: 1, Data: []string{"https://example.test/photo.jpg"}}
 	links := &uncertainMediaTransport{}
-	result := executeMediaMutation(context.Background(), links, "cabinet", domain.NewClientGeneration("token"), request)
+	result := executeMediaMutation(context.Background(), links, "cabinet", domain.ClientGeneration(1), request)
 	if links.uploads != 1 || result.Disposition != SubmissionUncertain || result.Delivery != SubmissionUnknownDelivery {
 		t.Fatalf("повтор или потеря неопределённости: uploads=%d result=%+v", links.uploads, result)
 	}

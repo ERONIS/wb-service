@@ -82,9 +82,8 @@ func (clientset *Clientset) NewCandidate(
 	}
 	name = strings.TrimSpace(name)
 	candidate := &CredentialCandidate{
-		ID:         id,
-		Name:       name,
-		generation: domain.NewClientGeneration(token),
+		ID:   id,
+		Name: name,
 	}
 	executor, err := client.NewAPIClient(
 		id,
@@ -103,17 +102,24 @@ func (clientset *Clientset) NewCandidate(
 
 // ActivateCandidate добавляет подготовленный кабинет в реестр.
 func (clientset *Clientset) ActivateCandidate(
-	candidate *CredentialCandidate) error {
+	candidate *CredentialCandidate,
+	generation domain.ClientGeneration,
+) error {
 	if clientset == nil {
 		return errors.New("WB clientset is required")
 	}
 	if candidate == nil || candidate.ID == "" || candidate.Name == "" ||
-		candidate.generation.IsZero() || candidate.executor == nil {
+		generation.IsZero() || candidate.executor == nil {
 		return errors.New("WB credential candidate is invalid")
 	}
+	active := *candidate
+	active.generation = generation
 	clientset.mu.Lock()
 	defer clientset.mu.Unlock()
-	clientset.cabinets[candidate.ID] = *candidate
+	if current, exists := clientset.cabinets[candidate.ID]; exists && current.generation > generation {
+		return ErrClientGenerationChanged
+	}
+	clientset.cabinets[candidate.ID] = active
 	return nil
 }
 
@@ -160,14 +166,6 @@ func (clientset *Clientset) CloseIdleConnections() {
 		return
 	}
 	clientset.sharedTransport.CloseIdleConnections()
-}
-
-// Generation возвращает поколение токена кандидата.
-func (candidate *CredentialCandidate) Generation() domain.ClientGeneration {
-	if candidate == nil {
-		return domain.ClientGeneration{}
-	}
-	return candidate.generation
 }
 
 // Executor возвращает клиент подготовленного кандидата.

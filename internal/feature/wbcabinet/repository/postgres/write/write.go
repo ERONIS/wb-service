@@ -76,12 +76,11 @@ func insertVerified(
 			content_read,
 			content_write,
 			token_properties,
-			client_generation,
 			credential_expires_at,
 			verified_at,
 			status
 		)
-		VALUES ($1, $2, btrim($3), lower(btrim($3)), $4, $5, $6, $7, $8, $9, $10, 'active')
+		VALUES ($1, $2, btrim($3), lower(btrim($3)), $4, $5, $6, $7, $8, $9, 'active')
 		RETURNING ` + wbcabinet_postgres_row.Columns + `;
 	`
 	cabinet, err := wbcabinet_postgres_row.ScanCabinet(tx.QueryRow(
@@ -94,7 +93,6 @@ func insertVerified(
 		credential.ContentRead,
 		credential.ContentWrite,
 		int64(credential.TokenProperties),
-		credential.ClientGeneration[:],
 		credential.CredentialExpiresAt.UTC(),
 		credential.VerifiedAt.UTC(),
 	))
@@ -126,9 +124,12 @@ func updateVerified(
 			content_read = $5,
 			content_write = $6,
 			token_properties = $7,
-			client_generation = $8,
-			credential_expires_at = $9,
-			verified_at = $10,
+			client_generation = CASE
+				WHEN token IS DISTINCT FROM $3 THEN nextval('wb.client_generation_seq')
+				ELSE client_generation
+			END,
+			credential_expires_at = $8,
+			verified_at = $9,
 			status = 'active',
 			updated_at = CURRENT_TIMESTAMP
 		WHERE seller_id = $1
@@ -144,7 +145,6 @@ func updateVerified(
 		credential.ContentRead,
 		credential.ContentWrite,
 		int64(credential.TokenProperties),
-		credential.ClientGeneration[:],
 		credential.CredentialExpiresAt.UTC(),
 		credential.VerifiedAt.UTC(),
 	))

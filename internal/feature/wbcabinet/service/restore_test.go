@@ -16,11 +16,6 @@ import (
 
 const testSeller = "a723f78d-4d8f-45eb-a40b-3d46841d1688"
 
-func testToken(expiry time.Time, suffix string) string {
-	payload := fmt.Sprintf(`{"id":%q,"sid":%q,"s":2,"exp":%d}`, testSeller, testSeller, expiry.Unix())
-	return "header." + base64.RawURLEncoding.EncodeToString([]byte(payload)) + "." + suffix
-}
-
 type restoreRepository struct {
 	Repository
 	stored *StoredCabinet
@@ -29,6 +24,20 @@ type restoreRepository struct {
 
 type restoreUnitOfWork struct {
 	commitErr error
+}
+
+type restoreVerifier struct {
+	failures, calls, removed, activated int
+	activatedGeneration                 domain.ClientGeneration
+}
+
+type restorePrepared struct {
+	verifier *restoreVerifier
+}
+
+func testToken(expiry time.Time, suffix string) string {
+	payload := fmt.Sprintf(`{"id":%q,"sid":%q,"s":2,"exp":%d}`, testSeller, testSeller, expiry.Unix())
+	return "header." + base64.RawURLEncoding.EncodeToString([]byte(payload)) + "." + suffix
 }
 
 func (u restoreUnitOfWork) WithinTransaction(ctx context.Context, fn func(context.Context, core_postgres_transaction.DBTX) error) error {
@@ -62,8 +71,10 @@ func (r *restoreRepository) FindByOwnerAndName(context.Context, int64, string) (
 }
 func (r *restoreRepository) UpsertVerified(_ context.Context, _ core_postgres_transaction.DBTX, credential VerifiedCredential) (Cabinet, error) {
 	r.writes++
+	if r.stored.Token != credential.Token {
+		r.stored.ClientGeneration++
+	}
 	r.stored.Token = credential.Token
-	r.stored.ClientGeneration = credential.ClientGeneration
 	r.stored.CredentialExpiresAt = credential.CredentialExpiresAt
 	r.stored.Status = StatusActive
 	return r.stored.Cabinet, nil
@@ -77,31 +88,27 @@ func (r *restoreRepository) DeleteByOwner(context.Context, int64, domain.SellerI
 	return nil
 }
 
-type restoreVerifier struct{ failures, calls, removed, activated int }
-
-func (v *restoreVerifier) Prepare(_ context.Context, _ domain.SellerID, _ string, token string) (PreparedCredential, error) {
+func (v *restoreVerifier) Prepare(_ context.Context, _ domain.SellerID, _ string, _ string) (PreparedCredential, error) {
 	v.calls++
 	if v.failures > 0 {
 		v.failures--
 		return nil, ErrVerificationTransient
 	}
-	return &restorePrepared{generation: domain.NewClientGeneration(token), verifier: v}, nil
+	return &restorePrepared{verifier: v}, nil
 }
 func (v *restoreVerifier) Remove(domain.SellerID) { v.removed++ }
 
-type restorePrepared struct {
-	generation domain.ClientGeneration
-	verifier   *restoreVerifier
+func (p *restorePrepared) Activate(generation domain.ClientGeneration) error {
+	p.verifier.activated++
+	p.verifier.activatedGeneration = generation
+	return nil
 }
-
-func (p *restorePrepared) Generation() domain.ClientGeneration { return p.generation }
-func (p *restorePrepared) Activate() error                     { p.verifier.activated++; return nil }
 
 func newRestoreTestService() (*Service, *restoreRepository, *restoreVerifier, time.Time) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	expiry := now.Add(time.Hour)
 	token := testToken(expiry, "first")
-	repository := &restoreRepository{stored: &StoredCabinet{Cabinet: Cabinet{ID: domain.SellerID(testSeller), Name: "Кабинет", OwnerTelegramID: 1, Status: StatusActive, ClientGeneration: domain.NewClientGeneration(token), CredentialExpiresAt: expiry}, Token: token}}
+	repository := &restoreRepository{stored: &StoredCabinet{Cabinet: Cabinet{ID: domain.SellerID(testSeller), Name: "Кабинет", OwnerTelegramID: 1, Status: StatusActive, ClientGeneration: 1, CredentialExpiresAt: expiry}, Token: token}}
 	verifier := &restoreVerifier{}
 	service := New(repository, verifier, restoreUnitOfWork{})
 	service.now = func() time.Time { return now }
@@ -123,6 +130,29 @@ func TestAddActivatesOnlyAfterCommit(t *testing.T) {
 	}
 	if verifier.activated != 0 {
 		t.Fatalf("клиент активирован до commit: %d", verifier.activated)
+	}
+}
+
+func TestAddActivatesPersistedGeneration(t *testing.T) {
+	service, repository, verifier, now := newRestoreTestService()
+	initialToken := repository.stored.Token
+	command := AddCommand{OwnerTelegramID: 1, Name: repository.stored.Name, Token: initialToken}
+
+	cabinet, err := service.Add(context.Background(), command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cabinet.ClientGeneration != 1 || verifier.activatedGeneration != 1 {
+		t.Fatalf("повторная проверка токена изменила поколение: %d, %d", cabinet.ClientGeneration, verifier.activatedGeneration)
+	}
+
+	command.Token = testToken(now.Add(time.Hour), "second")
+	cabinet, err = service.Add(context.Background(), command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cabinet.ClientGeneration != 2 || verifier.activatedGeneration != 2 {
+		t.Fatalf("смена токена не активировала новое поколение: %d, %d", cabinet.ClientGeneration, verifier.activatedGeneration)
 	}
 }
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"sync"
 	"testing"
@@ -76,7 +75,6 @@ func setupTestTransferData(
 	t *testing.T,
 	ctx context.Context,
 	pool core_postgres_pool.Pool,
-	prefix string,
 ) (transferID transfer_model.TransferID, groupTargetID1 int64, groupTargetID2 int64, targetID1 int64, targetID2 int64) {
 	t.Helper()
 
@@ -115,8 +113,7 @@ func setupTestTransferData(
 	transferID = transfer_model.TransferID(tid)
 
 	// 4. Создаем 2 цели (target cabinets)
-	clientGen := make([]byte, 32)
-	copy(clientGen, []byte("client_gen_"+prefix))
+	clientGen := int64(1)
 
 	sellerID1 := domain.SellerID("00000000-0000-0000-0000-000000000001")
 	sellerID2 := domain.SellerID("00000000-0000-0000-0000-000000000002")
@@ -231,8 +228,7 @@ func TestPostgres_PreparationResult_DiagnosticsAndIdempotency(t *testing.T) {
 	defer pool.Close()
 
 	ctx := context.Background()
-	prefix := fmt.Sprintf("%d", time.Now().UnixNano()%1000000)
-	transferID, groupTarget1, groupTarget2, _, _ := setupTestTransferData(t, ctx, pool, prefix)
+	transferID, groupTarget1, groupTarget2, _, _ := setupTestTransferData(t, ctx, pool)
 
 	repo := transfer_postgres_repository.New(pool)
 
@@ -380,7 +376,7 @@ func TestPostgres_PreparationArtifactAndProjectionRollbackTogether(t *testing.T)
 	defer pool.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	transferID, groupTargetID, _, _, _ := setupTestTransferData(t, ctx, pool, fmt.Sprintf("rollback_%d", time.Now().UnixNano()))
+	transferID, groupTargetID, _, _, _ := setupTestTransferData(t, ctx, pool)
 	repository := transfer_postgres_repository.New(pool)
 
 	startedAt := time.Now().UTC()
@@ -444,8 +440,7 @@ func TestPostgres_ConcurrentWorkersOnSameBatch(t *testing.T) {
 	defer pool.Close()
 
 	ctx := context.Background()
-	prefix := fmt.Sprintf("conc_%d", time.Now().UnixNano()%1000000)
-	transferID, groupTarget1, _, _, _ := setupTestTransferData(t, ctx, pool, prefix)
+	transferID, groupTarget1, _, _, _ := setupTestTransferData(t, ctx, pool)
 
 	repo := transfer_postgres_repository.New(pool)
 
@@ -502,8 +497,7 @@ func TestPostgres_FairWindowPartitioning(t *testing.T) {
 	defer pool.Close()
 
 	ctx := context.Background()
-	prefix := fmt.Sprintf("win_%d", time.Now().UnixNano()%1000000)
-	transferID, _, _, _, _ := setupTestTransferData(t, ctx, pool, prefix)
+	transferID, _, _, _, _ := setupTestTransferData(t, ctx, pool)
 
 	repo := transfer_postgres_repository.New(pool)
 
@@ -528,9 +522,7 @@ func TestPostgres_PreparationRejectsMismatchedRequestItems(t *testing.T) {
 	defer pool.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	transferID, groupTargetID, _, _, _ := setupTestTransferData(
-		t, ctx, pool, fmt.Sprintf("mismatch_%d", time.Now().UnixNano()),
-	)
+	transferID, groupTargetID, _, _, _ := setupTestTransferData(t, ctx, pool)
 	repository := transfer_postgres_repository.New(pool)
 	now := time.Now().UTC()
 	command := transfer_preparation.ApplyPreparationResultCommand{

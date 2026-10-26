@@ -83,8 +83,8 @@ CREATE TABLE wb.transfer_targets (
                             CHECK (position > 0),
     seller_id          VARCHAR(36) NOT NULL
                             CHECK (seller_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
-    client_generation       BYTEA NOT NULL
-                            CHECK (octet_length(client_generation) = 32),
+    client_generation       BIGINT NOT NULL
+                            CHECK (client_generation > 0),
     credential_expires_at   TIMESTAMPTZ NOT NULL,
     binding_revision        BIGINT NOT NULL
                             CHECK (binding_revision > 0),

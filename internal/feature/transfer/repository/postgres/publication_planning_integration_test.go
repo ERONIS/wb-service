@@ -3,7 +3,6 @@ package transfer_postgres_repository_test
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"testing"
 	"time"
 
@@ -19,8 +18,7 @@ func TestPostgres_LoadPublicationPlanningSourceIncludesProposal(t *testing.T) {
 	defer pool.Close()
 
 	ctx := context.Background()
-	prefix := fmt.Sprintf("%d", time.Now().UnixNano())
-	transferID, groupTargetID, _, targetID, _ := setupTestTransferData(t, ctx, pool, prefix)
+	transferID, groupTargetID, _, targetID, _ := setupTestTransferData(t, ctx, pool)
 	repository := transfer_postgres_repository.New(pool)
 
 	const subjectID int64 = 12345

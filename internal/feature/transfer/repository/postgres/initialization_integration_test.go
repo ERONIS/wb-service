@@ -80,8 +80,7 @@ func TestPostgres_InitializeStartsPreparationBeforeFirstPoll(t *testing.T) {
 	`, batchID).Scan(&transferID); err != nil {
 		t.Fatalf("создание переноса: %v", err)
 	}
-	clientGeneration := make([]byte, 32)
-	clientGeneration[0] = 1
+	clientGeneration := int64(1)
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO wb.transfer_targets (
 			transfer_id, position, seller_id, client_generation,

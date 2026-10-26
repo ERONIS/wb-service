@@ -1,7 +1,6 @@
 package transfer_postgres_authorization
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -105,13 +104,13 @@ func (repository *AuthorizationRepository) lockValidLive(
 	`
 	var (
 		sellerID                  string
-		clientGeneration          []byte
+		clientGeneration          int64
 		expiresAt                 time.Time
 		bindingRevision           int64
 		capabilityRevision        int64
 		contentRead               bool
 		contentWrite              bool
-		currentGeneration         []byte
+		currentGeneration         int64
 		currentExpiresAt          time.Time
 		currentBindingRevision    int64
 		currentCapabilityRevision int64
@@ -163,10 +162,10 @@ func (repository *AuthorizationRepository) lockValidLive(
 		)
 	}
 	if sellerID != string(check.SellerID) ||
-		!bytes.Equal(clientGeneration, check.ClientGeneration[:]) ||
+		clientGeneration != int64(check.ClientGeneration) ||
 		!expiresAt.After(now) || !contentRead || !contentWrite ||
 		cabinetStatus != "active" ||
-		!bytes.Equal(currentGeneration, clientGeneration) ||
+		currentGeneration != clientGeneration ||
 		!currentExpiresAt.After(now) ||
 		currentBindingRevision != bindingRevision ||
 		currentCapabilityRevision != capabilityRevision ||

@@ -69,7 +69,6 @@ func TestPostgresVerifiedCabinetRollbackAndRestore(t *testing.T) {
 		ContentRead:         true,
 		ContentWrite:        true,
 		CredentialExpiresAt: time.Now().Add(time.Hour),
-		ClientGeneration:    domain.NewClientGeneration(token),
 		VerifiedAt:          time.Now(),
 		Token:               token,
 	}
@@ -79,9 +78,13 @@ func TestPostgresVerifiedCabinetRollbackAndRestore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repository.UpsertVerified(ctx, tx, credential); err != nil {
+	rolledBack, err := repository.UpsertVerified(ctx, tx, credential)
+	if err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatal(err)
+	}
+	if rolledBack.ClientGeneration <= 0 {
+		t.Fatal("новый кабинет получил недопустимую версию токена")
 	}
 	if err := tx.Rollback(ctx); err != nil {
 		t.Fatal(err)
@@ -94,28 +97,64 @@ func TestPostgresVerifiedCabinetRollbackAndRestore(t *testing.T) {
 		t.Fatal("отменённая транзакция оставила кабинет")
 	}
 
-	tx, err = connection.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
+	commit := func() wbcabinet_service.Cabinet {
+		t.Helper()
+		transaction, err := connection.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cabinet, err := repository.UpsertVerified(ctx, transaction, credential)
+		if err != nil {
+			_ = transaction.Rollback(ctx)
+			t.Fatal(err)
+		}
+		if err := transaction.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return cabinet
 	}
-	if _, err := repository.UpsertVerified(ctx, tx, credential); err != nil {
-		_ = tx.Rollback(ctx)
-		t.Fatal(err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatal(err)
+
+	created := commit()
+	if created.ClientGeneration <= rolledBack.ClientGeneration {
+		t.Fatal("после отката новая запись должна получить следующую версию")
 	}
 	stored, err := repository.ListStored(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
+	found := false
 	for _, cabinet := range stored {
 		if cabinet.ID == sellerID {
-			if cabinet.Token != credential.Token || cabinet.OwnerTelegramID != ownerID {
+			found = true
+			if cabinet.Token != credential.Token || cabinet.OwnerTelegramID != ownerID || cabinet.ClientGeneration != created.ClientGeneration {
 				t.Fatal("восстановленный кабинет не соответствует сохранённым данным")
 			}
-			return
+			break
 		}
 	}
-	t.Fatal("зафиксированный кабинет отсутствует в ListStored")
+	if !found {
+		t.Fatal("зафиксированный кабинет отсутствует в ListStored")
+	}
+
+	unchanged := commit()
+	if unchanged.ClientGeneration != created.ClientGeneration {
+		t.Fatal("повторная проверка того же токена изменила его версию")
+	}
+	credential.Token = token + "-rotated"
+	rotated := commit()
+	if rotated.ClientGeneration <= created.ClientGeneration {
+		t.Fatal("смена токена не увеличила его версию")
+	}
+	unchanged = commit()
+	if unchanged.ClientGeneration != rotated.ClientGeneration {
+		t.Fatal("повторная проверка нового токена изменила его версию")
+	}
+
+	if err := repository.DeleteByOwner(ctx, ownerID, sellerID); err != nil {
+		t.Fatal(err)
+	}
+	recreated := commit()
+	if recreated.ClientGeneration <= rotated.ClientGeneration {
+		t.Fatal("повторно созданный кабинет получил старую версию токена")
+	}
 }

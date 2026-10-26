@@ -53,7 +53,7 @@ func setupRetryAuthorizationFixture(
 	`, batchID).Scan(&transferID); err != nil {
 		t.Fatalf("создать перенос: %v", err)
 	}
-	generation := domain.NewClientGeneration(fmt.Sprintf("retry-token-%d", unique))
+	generation := domain.ClientGeneration(1)
 	var targetID int64
 	if err := pool.QueryRow(ctx, `
 		INSERT INTO wb.transfer_targets (
@@ -64,7 +64,7 @@ func setupRetryAuthorizationFixture(
 			$1, 1, $2, $3, CURRENT_TIMESTAMP + INTERVAL '1 day',
 			1, 1, TRUE, TRUE
 		) RETURNING id;
-	`, transferID, seller, generation[:]).Scan(&targetID); err != nil {
+	`, transferID, seller, int64(generation)).Scan(&targetID); err != nil {
 		t.Fatalf("создать цель переноса: %v", err)
 	}
 	var groupID int64
@@ -119,7 +119,7 @@ func setupRetryAuthorizationFixture(
 			'test-token', TRUE, TRUE, $3,
 			CURRENT_TIMESTAMP + INTERVAL '1 day', CURRENT_TIMESTAMP
 		);
-	`, seller, ownerID, generation[:]); err != nil {
+	`, seller, ownerID, int64(generation)); err != nil {
 		t.Fatalf("создать кабинет: %v", err)
 	}
 	var planID int64
@@ -248,7 +248,7 @@ func TestPostgres_ProductRetryRejectsChangedCabinet(t *testing.T) {
 		{
 			name: "сменилось поколение токена",
 			change: `UPDATE wb.api_cabinets
-				SET client_generation = decode(repeat('ab', 32), 'hex')
+				SET client_generation = client_generation + 1
 				WHERE seller_id = $1;`,
 			identity: func(fixture retryAuthorizationFixture) any { return fixture.seller },
 		},

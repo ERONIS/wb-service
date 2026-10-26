@@ -8,8 +8,7 @@ import (
 )
 
 type PreparedCredential interface {
-	Generation() domain.ClientGeneration
-	Activate() error
+	Activate(domain.ClientGeneration) error
 }
 
 type Verifier interface {

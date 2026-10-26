@@ -89,10 +89,6 @@ func (service *Service) add(ctx context.Context, command AddCommand) (Cabinet, e
 	if err != nil {
 		return Cabinet{}, fmt.Errorf("prepare and verify WB credential: %w", err)
 	}
-	generation := domain.NewClientGeneration(command.Token)
-	if generation != prepared.Generation() {
-		return Cabinet{}, fmt.Errorf("WB credential generation differs from prepared client: %w", ErrIdentityMismatch)
-	}
 	verified := VerifiedCredential{
 		SellerID:            sellerID,
 		OwnerTelegramID:     command.OwnerTelegramID,
@@ -101,7 +97,6 @@ func (service *Service) add(ctx context.Context, command AddCommand) (Cabinet, e
 		ContentWrite:        contentWrite,
 		TokenProperties:     claims.Properties,
 		CredentialExpiresAt: claims.ExpiresAt,
-		ClientGeneration:    generation,
 		VerifiedAt:          now,
 		Token:               command.Token,
 	}
@@ -119,7 +114,10 @@ func (service *Service) add(ctx context.Context, command AddCommand) (Cabinet, e
 	if cabinet.ID != sellerID {
 		return Cabinet{}, core_errors.Conflict("persisted WB seller ID differs from verified candidate")
 	}
-	if err := prepared.Activate(); err != nil {
+	if cabinet.ClientGeneration.IsZero() {
+		return Cabinet{}, core_errors.Conflict("persisted WB client generation is invalid")
+	}
+	if err := prepared.Activate(cabinet.ClientGeneration); err != nil {
 		return Cabinet{}, fmt.Errorf("activate verified WB cabinet: %w", err)
 	}
 	delete(service.restorePending, cabinet.ID)

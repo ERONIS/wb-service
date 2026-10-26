@@ -23,9 +23,7 @@ func TestPostgres_ActiveTransferWaitsForEveryCabinetGroupTarget(t *testing.T) {
 	defer pool.Close()
 
 	ctx := context.Background()
-	transferID, firstGroupTargetID, secondGroupTargetID, _, _ := setupTestTransferData(
-		t, ctx, pool, "phase_terminal",
-	)
+	transferID, firstGroupTargetID, secondGroupTargetID, _, _ := setupTestTransferData(t, ctx, pool)
 	repository := transfer_postgres_repository.New(pool)
 
 	applyRejection := func(groupTargetID int64) {
@@ -107,9 +105,7 @@ func testPostgresMediaPlanFinishesTransfer(t *testing.T, withProductAction bool)
 	defer pool.Close()
 
 	ctx := context.Background()
-	transferID, firstGroupTargetID, secondGroupTargetID, firstTargetID, secondTargetID := setupTestTransferData(
-		t, ctx, pool, "phase_media_plan",
-	)
+	transferID, firstGroupTargetID, secondGroupTargetID, firstTargetID, secondTargetID := setupTestTransferData(t, ctx, pool)
 	mediaGroupTargetID, rejectedGroupTargetID := firstGroupTargetID, secondGroupTargetID
 	mediaTargetID := firstTargetID
 	if withProductAction {

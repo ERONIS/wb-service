@@ -88,7 +88,7 @@ func (repository *ExecutionRepository) LockProductAction(
 	`
 	action := cardpublication_execution.ProductAction{ProductActionCandidate: candidate}
 	var (
-		generation                   []byte
+		generation                   int64
 		sellerID                     core_domain.SellerID
 		preflightID                  pgtype.Int8
 		attemptID, recheckID         pgtype.Int8
@@ -156,11 +156,11 @@ func (repository *ExecutionRepository) LockProductAction(
 		)
 	}
 	if sellerID.Validate() != nil ||
-		len(generation) != len(action.ClientGeneration) || !preflightID.Valid {
+		generation <= 0 || !preflightID.Valid {
 		return cardpublication_execution.ProductAction{}, cardpublication_execution.ErrProductActionConflict
 	}
 	action.SellerID = sellerID
-	copy(action.ClientGeneration[:], generation)
+	action.ClientGeneration = core_domain.ClientGeneration(generation)
 	action.PreflightObservationID = preflightID.Int64
 	action.AuthorizationRevision = currentAuthorizationRevision
 	if attemptID.Valid {

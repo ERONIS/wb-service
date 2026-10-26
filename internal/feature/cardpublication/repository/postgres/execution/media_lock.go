@@ -158,7 +158,7 @@ func (repository *ExecutionRepository) LockMediaAction(
 	`
 	action := cardpublication_execution.MediaAction{ProductActionCandidate: candidate}
 	var (
-		generation                    []byte
+		generation                    int64
 		sellerID                      core_domain.SellerID
 		preflightID                   pgtype.Int8
 		attemptID, recheckID          pgtype.Int8
@@ -213,7 +213,7 @@ func (repository *ExecutionRepository) LockMediaAction(
 			fmt.Errorf("lock publication media action: %w", err)
 	}
 	if sellerID.Validate() != nil ||
-		len(generation) != len(action.ClientGeneration) || !preflightID.Valid ||
+		generation <= 0 || !preflightID.Valid ||
 		memberCount != 1 || (hasProductAction && attributionCount != 1) || (!hasProductAction && attributionCount != 0) {
 		return cardpublication_execution.MediaAction{},
 			cardpublication_execution.ErrMediaActionConflict
@@ -222,7 +222,7 @@ func (repository *ExecutionRepository) LockMediaAction(
 		action.AttributionID = attributionID.Int64
 	}
 	action.SellerID = sellerID
-	copy(action.ClientGeneration[:], generation)
+	action.ClientGeneration = core_domain.ClientGeneration(generation)
 	action.PreflightObservationID = preflightID.Int64
 	action.AuthorizationRevision = currentAuthorizationRevision
 	if attemptID.Valid {

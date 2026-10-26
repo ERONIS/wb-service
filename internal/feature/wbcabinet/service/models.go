@@ -20,15 +20,6 @@ const (
 	StatusIdentityMismatch   Status = "identity_mismatch"
 )
 
-func (status Status) IsValid() bool {
-	switch status {
-	case StatusActive, StatusExpired, StatusVerificationFailed, StatusIdentityMismatch:
-		return true
-	default:
-		return false
-	}
-}
-
 type Cabinet struct {
 	ID                  domain.SellerID
 	OwnerTelegramID     int64
@@ -44,6 +35,39 @@ type Cabinet struct {
 	Status              Status
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
+}
+
+type StoredCabinet struct {
+	Cabinet
+	Token string
+}
+
+type VerifiedCredential struct {
+	SellerID            domain.SellerID
+	OwnerTelegramID     int64
+	Name                string
+	ContentRead         bool
+	ContentWrite        bool
+	TokenProperties     credentials.TokenProperties
+	CredentialExpiresAt time.Time
+	VerifiedAt          time.Time
+	Token               string
+}
+
+type AddCommand struct {
+	OwnerTelegramID int64
+	Name            string
+	Token           string
+	SellerID        domain.SellerID
+}
+
+func (status Status) IsValid() bool {
+	switch status {
+	case StatusActive, StatusExpired, StatusVerificationFailed, StatusIdentityMismatch:
+		return true
+	default:
+		return false
+	}
 }
 
 func (cabinet Cabinet) Validate() error {
@@ -65,29 +89,4 @@ func (cabinet Cabinet) Validate() error {
 		return core_errors.InvalidArgument("invalid cabinet status")
 	}
 	return nil
-}
-
-type StoredCabinet struct {
-	Cabinet
-	Token string
-}
-
-type VerifiedCredential struct {
-	SellerID            domain.SellerID
-	OwnerTelegramID     int64
-	Name                string
-	ContentRead         bool
-	ContentWrite        bool
-	TokenProperties     credentials.TokenProperties
-	CredentialExpiresAt time.Time
-	ClientGeneration    domain.ClientGeneration
-	VerifiedAt          time.Time
-	Token               string
-}
-
-type AddCommand struct {
-	OwnerTelegramID int64
-	Name            string
-	Token           string
-	SellerID        domain.SellerID
 }

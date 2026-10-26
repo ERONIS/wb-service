@@ -1,19 +1,17 @@
 package domain
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"strconv"
 	"time"
 
-	"github.com/ERONIS/wb-service/internal/core/canonicalhash"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 )
 
 // SellerID представляет исходный идентификатор продавца WB из поля sid токена.
 type SellerID string
 
-// ClientGeneration представляет отпечаток конкретного API-токена кабинета WB.
-type ClientGeneration [sha256.Size]byte
+// ClientGeneration представляет версию проверенного API-токена кабинета WB.
+type ClientGeneration int64
 
 // CabinetAccess содержит снимок доступа без токена и правил конкретного переноса.
 type CabinetAccess struct {
@@ -47,19 +45,12 @@ func (id SellerID) Validate() error {
 	return nil
 }
 
-// NewClientGeneration вычисляет детерминированный канонический хэш поколения клиента по токену.
-func NewClientGeneration(token string) ClientGeneration {
-	builder := canonicalhash.NewSHA256("wb-client-generation:v1")
-	builder.String(token)
-	return ClientGeneration(builder.Sum())
-}
-
-// IsZero возвращает true, если поколение клиента не инициализировано.
+// IsZero возвращает true, если поколение клиента не назначено.
 func (g ClientGeneration) IsZero() bool {
-	return g == ClientGeneration{}
+	return g <= 0
 }
 
-// String возвращает шестнадцатеричное представление поколения клиента.
+// String возвращает десятичное представление поколения клиента.
 func (g ClientGeneration) String() string {
-	return hex.EncodeToString(g[:])
+	return strconv.FormatInt(int64(g), 10)
 }
