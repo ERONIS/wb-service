@@ -2,10 +2,9 @@ package transfer_config_transport
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 
 	"github.com/kelseyhightower/envconfig"
 )
@@ -20,7 +19,6 @@ const (
 
 type Config struct {
 	Mode             Mode          `envconfig:"MODE" default:"disabled"`
-	CohortName       string        `envconfig:"COHORT_NAME" default:"production"`
 	PollInterval     time.Duration `envconfig:"POLL_INTERVAL" default:"3s"`
 	AuthorizationTTL time.Duration `envconfig:"AUTHORIZATION_TTL" default:"1h"`
 	MaxItems         int64         `envconfig:"MAX_ITEMS" default:"50000"`
@@ -35,7 +33,6 @@ func New() (Config, error) {
 	if err := envconfig.Process("TRANSFER", &config); err != nil {
 		return Config{}, fmt.Errorf("process transfer config: %w", err)
 	}
-	config.CohortName = strings.TrimSpace(config.CohortName)
 	if err := config.Validate(); err != nil {
 		return Config{}, fmt.Errorf("validate transfer config: %w", err)
 	}
@@ -56,10 +53,6 @@ func (config Config) Validate() error {
 	default:
 		return fmt.Errorf("unsupported mode %q", config.Mode)
 	}
-	if strings.TrimSpace(config.CohortName) != config.CohortName ||
-		config.CohortName == "" || len(config.CohortName) > 128 {
-		return fmt.Errorf("cohort name is invalid")
-	}
 	if config.PollInterval <= 0 {
 		return fmt.Errorf("poll interval must be positive")
 	}
@@ -69,8 +62,8 @@ func (config Config) Validate() error {
 	return config.CapacityPolicy().Validate()
 }
 
-func (config Config) CapacityPolicy() transfer_service.CapacityPolicy {
-	return transfer_service.CapacityPolicy{
+func (config Config) CapacityPolicy() transfer_model.CapacityPolicy {
+	return transfer_model.CapacityPolicy{
 		MaxItems:        config.MaxItems,
 		MaxGroups:       config.MaxGroups,
 		MaxTargets:      config.MaxTargets,

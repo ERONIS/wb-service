@@ -6,20 +6,18 @@ import (
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_wb "github.com/ERONIS/wb-service/internal/core/transport/wb"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
-	core_wb_request "github.com/ERONIS/wb-service/internal/core/transport/wb/client/request"
-	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
+	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
 )
 
 type CatalogTransport struct {
 	executors core_wb.PinnedExecutorRegistry
-	*MediaDownloader
 }
 
 func NewCatalogTransport(executors core_wb.PinnedExecutorRegistry) *CatalogTransport {
 	if executors == nil {
 		panic("cardpublication WB executor registry is nil")
 	}
-	return &CatalogTransport{executors: executors, MediaDownloader: NewMediaDownloader()}
+	return &CatalogTransport{executors: executors}
 }
 
 func (transport *CatalogTransport) CardsList(
@@ -88,20 +86,4 @@ func (transport *CatalogTransport) SaveMediaByLinks(
 	)
 }
 
-func (transport *CatalogTransport) UploadMediaFile(
-	ctx context.Context,
-	sellerID domain.SellerID,
-	generation domain.ClientGeneration,
-	request contentapi.UploadMediaFileRequest,
-) (contentapi.UploadMediaFileResponse, error) {
-	operation, err := contentapi.UploadMediaFileOperation(request.NMID, request.MediaNumber)
-	if err != nil {
-		return contentapi.UploadMediaFileResponse{}, err
-	}
-	return core_wb.ExecutePinnedForCabinet[contentapi.UploadMediaFileResponse](
-		ctx, transport.executors, sellerID, generation, operation, nil,
-		core_wb_request.MultipartFile{FieldName: "uploadfile", FileName: request.FileName, Data: request.Data},
-	)
-}
-
-var _ cardpublication_service.CatalogTransport = (*CatalogTransport)(nil)
+var _ cardpublication_catalog.CatalogTransport = (*CatalogTransport)(nil)

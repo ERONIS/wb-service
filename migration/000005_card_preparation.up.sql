@@ -3,12 +3,6 @@ CREATE TABLE wb.card_preparation_artifacts (
     transfer_id             BIGINT NOT NULL,
     subject_id              BIGINT NOT NULL
                             CHECK (subject_id > 0),
-    semantic_digest         BYTEA NOT NULL
-                            CHECK (octet_length(semantic_digest) = 32),
-    metadata_digest         BYTEA NOT NULL
-                            CHECK (octet_length(metadata_digest) = 32),
-    proposal_root           BYTEA NOT NULL
-                            CHECK (octet_length(proposal_root) = 32),
     request_payload         BYTEA NOT NULL
                             CHECK (
                                 octet_length(request_payload) > 0
@@ -25,7 +19,6 @@ CREATE TABLE wb.card_preparation_artifacts (
     created_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     PRIMARY KEY (transfer_id, group_target_id),
-    UNIQUE (transfer_id, proposal_root),
 
     FOREIGN KEY (transfer_id, group_target_id)
         REFERENCES wb.transfer_group_targets (transfer_id, id)
@@ -44,4 +37,3 @@ $$;
 CREATE TRIGGER card_preparation_artifacts_reject_mutation
 BEFORE UPDATE OR DELETE ON wb.card_preparation_artifacts
 FOR EACH ROW EXECUTE FUNCTION wb.reject_card_preparation_artifact_mutation();
-

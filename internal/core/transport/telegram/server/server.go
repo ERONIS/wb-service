@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 
 	core_tg_middleware "github.com/ERONIS/wb-service/internal/core/transport/telegram/middleware"
 
@@ -35,9 +36,10 @@ func New(
 		Verbose:     cfg.Verbose,
 		Offline:     cfg.Offline,
 		ParseMode:   tele.ModeHTML,
+		OnError:     core_tg_middleware.ErrorHandler(logger, cfg.Token),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("create telegram bot: %w", err)
+		return nil, fmt.Errorf("create telegram bot: %s", redactTelegramError(err, cfg.Token))
 	}
 	bot.Use(core_tg_middleware.Logger(logger))
 
@@ -56,6 +58,9 @@ func (s *Server) Run(ctx context.Context) error {
 	if ctx.Err() != nil {
 		return fmt.Errorf("telegram server context error: %w", ctx.Err())
 	}
+	if err := s.configureMenuButton(); err != nil {
+		return err
+	}
 
 	done := make(chan struct{})
 
@@ -72,5 +77,30 @@ func (s *Server) Run(ctx context.Context) error {
 	case <-done:
 		return nil
 	}
+}
 
+func (s *Server) configureMenuButton() error {
+	commands := []tele.Command{
+		{Text: "start", Description: "Открыть главное меню"},
+	}
+	scope := tele.CommandScope{Type: tele.CommandScopeAllPrivateChats}
+	if err := s.bot.SetCommands(commands, scope); err != nil {
+		return fmt.Errorf("set Telegram commands: %s", redactTelegramError(err, s.bot.Token))
+	}
+
+	_, err := s.bot.Raw("setChatMenuButton", map[string]any{
+		"menu_button": tele.MenuButton{Type: tele.MenuButtonCommands},
+	})
+	if err != nil {
+		return fmt.Errorf("set Telegram menu button: %s", redactTelegramError(err, s.bot.Token))
+	}
+	return nil
+}
+
+func redactTelegramError(err error, token string) string {
+	message := core_tg_middleware.RedactTelegramBotTokens(err.Error())
+	if token != "" {
+		message = strings.ReplaceAll(message, token, "<redacted>")
+	}
+	return message
 }

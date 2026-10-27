@@ -19,7 +19,7 @@ func (s *UsersService) GetRole(
 			core_errors.ErrInvalidArgument,
 		)
 	}
-	user, err := s.usersRepository.GetUserByTelegramID(
+	user, err := s.usersRepository.FindByTelegramID(
 		ctx,
 		telegramID,
 	)

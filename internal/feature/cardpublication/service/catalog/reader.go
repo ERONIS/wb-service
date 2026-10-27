@@ -9,9 +9,12 @@ import (
 	"strings"
 	"time"
 
+	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 	wb_catalog "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1/catalog"
+	cardpublication_model "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/model"
+
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
@@ -27,7 +30,7 @@ var ErrCatalogChangedDuringScan = wb_catalog.ErrCursorStalled
 
 type CatalogObservation struct {
 	TargetID   int64
-	SellerID   SellerID
+	SellerID   core_domain.SellerID
 	Normal     []contentapi.Card
 	Trash      []contentapi.TrashCard
 	ObservedAt time.Time
@@ -57,7 +60,7 @@ func NewCatalogReader(transport CatalogTransport, loggers ...*zap.Logger) *Catal
 
 func (reader *CatalogReader) WaitForMedia(
 	ctx context.Context,
-	sellerID SellerID,
+	sellerID core_domain.SellerID,
 	vendorCode string,
 	nmID int64,
 	expectedPhotos int,
@@ -129,7 +132,7 @@ func (reader *CatalogReader) WaitForMedia(
 func (reader *CatalogReader) ReadActiveVendorCode(
 	ctx context.Context,
 	targetID int64,
-	sellerID SellerID,
+	sellerID core_domain.SellerID,
 	vendorCode string,
 ) (observation CatalogObservation, err error) {
 	vendorCode = normalizeCatalogVendorCode(vendorCode)
@@ -160,13 +163,13 @@ func (reader *CatalogReader) ReadActiveVendorCode(
 func (reader *CatalogReader) ReadVendorCodes(
 	ctx context.Context,
 	targetID int64,
-	sellerID SellerID,
+	sellerID core_domain.SellerID,
 	vendorCodes []string,
 ) (observation CatalogObservation, err error) {
 	if ctx == nil || targetID <= 0 || sellerID == "" {
 		return CatalogObservation{}, errors.New("publication catalog query is invalid")
 	}
-	vendorCodes = normalizedUniqueStrings(vendorCodes)
+	vendorCodes = cardpublication_model.NormalizeUniqueStrings(vendorCodes)
 	if len(vendorCodes) == 0 {
 		return CatalogObservation{}, errors.New("publication vendor-code query is empty")
 	}
@@ -227,7 +230,7 @@ func (reader *CatalogReader) ReadVendorCodes(
 
 func (reader *CatalogReader) readNormalVendorCodes(
 	ctx context.Context,
-	sellerID SellerID,
+	sellerID core_domain.SellerID,
 	vendorCodes []string,
 ) ([]contentapi.Card, int, bool, error) {
 	if len(vendorCodes) >= bulkVendorCodeScanThreshold {
@@ -255,7 +258,7 @@ func (reader *CatalogReader) readNormalVendorCodes(
 
 func (reader *CatalogReader) readTrashVendorCodes(
 	ctx context.Context,
-	sellerID SellerID,
+	sellerID core_domain.SellerID,
 	vendorCodes []string,
 ) ([]contentapi.TrashCard, int, bool, error) {
 	if len(vendorCodes) >= bulkVendorCodeScanThreshold {
@@ -283,7 +286,7 @@ func (reader *CatalogReader) readTrashVendorCodes(
 
 func (reader *CatalogReader) searchNormalVendorCodes(
 	ctx context.Context,
-	sellerID SellerID,
+	sellerID core_domain.SellerID,
 	vendorCodes []string,
 ) ([]contentapi.Card, int, error) {
 	result := make(map[int64]contentapi.Card)
@@ -303,7 +306,7 @@ func (reader *CatalogReader) searchNormalVendorCodes(
 
 func (reader *CatalogReader) searchTrashVendorCodes(
 	ctx context.Context,
-	sellerID SellerID,
+	sellerID core_domain.SellerID,
 	vendorCodes []string,
 ) ([]contentapi.TrashCard, int, error) {
 	result := make(map[int64]contentapi.TrashCard)
@@ -321,7 +324,7 @@ func (reader *CatalogReader) searchTrashVendorCodes(
 	return sortedTrashCards(result), requests, nil
 }
 
-func (reader *CatalogReader) scanNormalVendorCodes(ctx context.Context, sellerID SellerID, vendorCodes []string) ([]contentapi.Card, int, bool, error) {
+func (reader *CatalogReader) scanNormalVendorCodes(ctx context.Context, sellerID core_domain.SellerID, vendorCodes []string) ([]contentapi.Card, int, bool, error) {
 	wanted := stringSet(vendorCodes)
 	result := make(map[int64]contentapi.Card)
 	pages, err := wb_catalog.WalkCards(ctx, reader.transport, sellerID, contentapi.CardsListQuery{}, contentapi.CardsListRequest{Settings: contentapi.CardsListSettings{Sort: contentapi.CardsSort{Ascending: true}}}, normalCatalogProbePages, func(card contentapi.Card) bool {
@@ -339,7 +342,7 @@ func (reader *CatalogReader) scanNormalVendorCodes(ctx context.Context, sellerID
 	return sortedNormalCards(result), pages, true, nil
 }
 
-func (reader *CatalogReader) scanTrashVendorCodes(ctx context.Context, sellerID SellerID, vendorCodes []string) ([]contentapi.TrashCard, int, bool, error) {
+func (reader *CatalogReader) scanTrashVendorCodes(ctx context.Context, sellerID core_domain.SellerID, vendorCodes []string) ([]contentapi.TrashCard, int, bool, error) {
 	wanted := stringSet(vendorCodes)
 	result := make(map[int64]contentapi.TrashCard)
 	pages, err := wb_catalog.WalkTrashCards(ctx, reader.transport, sellerID, contentapi.TrashCardsListQuery{}, contentapi.TrashCardsListRequest{Settings: contentapi.TrashCardsListSettings{Sort: contentapi.CardsSort{Ascending: true}}}, min(len(vendorCodes), maxVendorSearchPages), func(card contentapi.TrashCard) bool {
@@ -367,14 +370,14 @@ func stringSet(values []string) map[string]struct{} {
 
 func (reader *CatalogReader) readNormalVendorCode(
 	ctx context.Context,
-	sellerID SellerID,
+	sellerID core_domain.SellerID,
 	vendorCode string,
 ) ([]contentapi.Card, error) {
 	cards, _, err := reader.readNormalVendorCodeCount(ctx, sellerID, vendorCode)
 	return cards, err
 }
 
-func (reader *CatalogReader) readNormalVendorCodeCount(ctx context.Context, sellerID SellerID, vendorCode string) ([]contentapi.Card, int, error) {
+func (reader *CatalogReader) readNormalVendorCodeCount(ctx context.Context, sellerID core_domain.SellerID, vendorCode string) ([]contentapi.Card, int, error) {
 	cards, pages, err := wb_catalog.FindByVendorCode(ctx, reader.transport, sellerID, vendorCode, maxVendorSearchPages)
 	if err != nil {
 		return nil, pages, err
@@ -385,14 +388,14 @@ func (reader *CatalogReader) readNormalVendorCodeCount(ctx context.Context, sell
 
 func (reader *CatalogReader) readTrashVendorCode(
 	ctx context.Context,
-	sellerID SellerID,
+	sellerID core_domain.SellerID,
 	vendorCode string,
 ) ([]contentapi.TrashCard, error) {
 	cards, _, err := reader.readTrashVendorCodeCount(ctx, sellerID, vendorCode)
 	return cards, err
 }
 
-func (reader *CatalogReader) readTrashVendorCodeCount(ctx context.Context, sellerID SellerID, vendorCode string) ([]contentapi.TrashCard, int, error) {
+func (reader *CatalogReader) readTrashVendorCodeCount(ctx context.Context, sellerID core_domain.SellerID, vendorCode string) ([]contentapi.TrashCard, int, error) {
 	result := make(map[int64]contentapi.TrashCard)
 	pages, err := wb_catalog.WalkTrashCards(ctx, reader.transport, sellerID, contentapi.TrashCardsListQuery{}, contentapi.TrashCardsListRequest{Settings: contentapi.TrashCardsListSettings{
 		Sort: contentapi.CardsSort{Ascending: true}, Filter: &contentapi.TrashCardsListFilter{TextSearch: vendorCode},
@@ -436,18 +439,17 @@ func sortedTrashCards(cardsByID map[int64]contentapi.TrashCard) []contentapi.Tra
 	return cards
 }
 
-func DraftObservation(observation CatalogObservation) (ObservationDraft, error) {
+func DraftObservation(observation CatalogObservation) (cardpublication_model.ObservationDraft, error) {
 	payload, err := json.Marshal(catalogPayload{
 		Normal: observation.Normal,
 		Trash:  observation.Trash,
 	})
 	if err != nil {
-		return ObservationDraft{}, fmt.Errorf("encode publication observation: %w", err)
+		return cardpublication_model.ObservationDraft{}, fmt.Errorf("encode publication observation: %w", err)
 	}
-	return ObservationDraft{
+	return cardpublication_model.ObservationDraft{
 		TargetID:    observation.TargetID,
 		SellerID:    observation.SellerID,
-		Digest:      digestParts("cardpublication-observation:v1", payload),
 		NormalCount: len(observation.Normal),
 		TrashCount:  len(observation.Trash),
 		Payload:     payload,

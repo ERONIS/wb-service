@@ -9,11 +9,12 @@ import (
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 	"github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
 	"github.com/ERONIS/wb-service/internal/feature/cardpublication/service/model"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+	transfer_publication "github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
 )
 
 type VerifiedCardCommand struct {
-	TransferID             transfer_service.TransferID
+	TransferID             transfer_model.TransferID
 	ActionID               int64
 	ActionMemberID         int64
 	ExpectedActionRevision int64
@@ -30,20 +31,20 @@ type VerifiedCardEvidence struct {
 
 type VerifiedCardRepository interface {
 	LockResolutionSubject(context.Context, core_postgres_transaction.DBTX, ResolutionSubjectKey) (ManualResolutionSubject, error)
-	InsertActionObservation(context.Context, core_postgres_transaction.DBTX, transfer_service.TransferID, string, model.ObservationDraft) (int64, error)
+	InsertActionObservation(context.Context, core_postgres_transaction.DBTX, transfer_model.TransferID, string, model.ObservationDraft) (int64, error)
 	LoadManualObservationEvidence(context.Context, core_postgres_transaction.DBTX, ManualResolutionSubject, int64) (ManualObservationEvidence, error)
 	ApplyVerifiedCardResult(context.Context, core_postgres_transaction.DBTX, ManualResolutionSubject, ManualResolutionDecision) error
 }
 
 type VerifiedCardResolver struct {
 	repository VerifiedCardRepository
-	transfer   ManualTransferResultCorrector
+	transfer   transfer_publication.PublicationExecutionResultRepository
 	uow        core_postgres_transaction.UnitOfWork
 }
 
 func NewVerifiedCardResolver(
 	repository VerifiedCardRepository,
-	transfer ManualTransferResultCorrector,
+	transfer transfer_publication.PublicationExecutionResultRepository,
 	uow core_postgres_transaction.UnitOfWork,
 ) *VerifiedCardResolver {
 	if repository == nil || transfer == nil || uow == nil {
@@ -96,11 +97,6 @@ func (resolver *VerifiedCardResolver) Resolve(
 		if err != nil {
 			return err
 		}
-		observation.Digest = digestParts(
-			"cardpublication-verified-observation:v1",
-			observation.Payload,
-			[]byte(evidence.ObservedAt.UTC().Format(time.RFC3339Nano)),
-		)
 		observationID, err := resolver.repository.InsertActionObservation(
 			ctx, tx, subject.TransferID, "post_submission", observation,
 		)
@@ -123,7 +119,7 @@ func (resolver *VerifiedCardResolver) Resolve(
 		if err := resolver.repository.ApplyVerifiedCardResult(ctx, tx, subject, decision); err != nil {
 			return err
 		}
-		if err := resolver.transfer.CorrectWithin(ctx, tx, transfer_service.CorrectPublicationItemResultCommand{
+		if err := resolver.transfer.CorrectPublicationItemResult(ctx, tx, transfer_publication.CorrectPublicationItemResultCommand{
 			TransferID:              subject.TransferID,
 			ActionID:                subject.ActionID,
 			GroupTargetID:           subject.GroupTargetID,

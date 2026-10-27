@@ -3,13 +3,9 @@ package model
 import (
 	"time"
 
-	"github.com/ERONIS/wb-service/internal/core/domain"
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 )
-
-type Digest = cardpipeline.Digest
-type SellerID = domain.SellerID
 
 type OutcomeCode string
 
@@ -26,25 +22,6 @@ const (
 	OutcomeTargetTemporarilyUnavailable OutcomeCode = "target_temporarily_unavailable"
 	OutcomeCatalogContractError         OutcomeCode = "catalog_contract_error"
 )
-
-func (code OutcomeCode) IsValid() bool {
-	switch code {
-	case OutcomePrepared,
-		OutcomeSubjectNotFound,
-		OutcomeSubjectAmbiguous,
-		OutcomeCharacteristicMissing,
-		OutcomeCharacteristicInvalid,
-		OutcomeBrandNotFound,
-		OutcomeDirectoryValueInvalid,
-		OutcomeCardLimitExceeded,
-		OutcomePayloadTooLarge,
-		OutcomeTargetTemporarilyUnavailable,
-		OutcomeCatalogContractError:
-		return true
-	default:
-		return false
-	}
-}
 
 type Outcome struct {
 	Code         OutcomeCode
@@ -101,9 +78,6 @@ type Proposal struct {
 	Request          contentapi.UploadCardsRequest
 	EncodedRequest   []byte
 	MetadataSnapshot CatalogSnapshot
-	SemanticDigest   Digest
-	MetadataDigest   Digest
-	ProposalRoot     Digest
 	Limits           contentapi.CardsLimits
 	LimitsObservedAt time.Time
 }
@@ -111,4 +85,23 @@ type Proposal struct {
 type Result struct {
 	Outcome  Outcome
 	Proposal *Proposal
+}
+
+func (code OutcomeCode) IsValid() bool {
+	switch code {
+	case OutcomePrepared,
+		OutcomeSubjectNotFound,
+		OutcomeSubjectAmbiguous,
+		OutcomeCharacteristicMissing,
+		OutcomeCharacteristicInvalid,
+		OutcomeBrandNotFound,
+		OutcomeDirectoryValueInvalid,
+		OutcomeCardLimitExceeded,
+		OutcomePayloadTooLarge,
+		OutcomeTargetTemporarilyUnavailable,
+		OutcomeCatalogContractError:
+		return true
+	default:
+		return false
+	}
 }

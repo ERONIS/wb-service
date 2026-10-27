@@ -10,11 +10,10 @@ import (
 )
 
 const (
-	mainMenuText         = "🏠 <b>Главное меню</b>\n\nВыберите действие:"
-	mainMenuReplyText    = "🏠 Главное меню"
-	CallbackMainMenu     = "core_main_menu"
-	mainMenuColumns      = 1
-	replyKeyboardMessage = "Кнопка «Главное меню» добавлена."
+	mainMenuText      = "🏠 <b>Главное меню</b>\n\nВыберите действие:"
+	mainMenuReplyText = "🏠 Главное меню"
+	CallbackMainMenu  = "core_main_menu"
+	mainMenuColumns   = 1
 )
 
 type menuItem struct {
@@ -45,12 +44,21 @@ func (h *Handler) RegisterMainMenu() {
 		domain.RoleUser,
 		h.handleStart,
 	)
+	h.RegisterHandler(
+		mainMenuReplyText,
+		domain.RoleUser,
+		h.handleMainMenuReply,
+	)
+	h.RegisterHandler(
+		tele.OnCallback,
+		domain.RoleUser,
+		h.handleUnknownCallback,
+	)
 }
 
 func (h *Handler) handleStart(ctx tele.Context) error {
 	_ = ctx.Delete()
-	_ = InstallReplyKeyboard(ctx, replyKeyboardMessage, h.mainMenuReplyMarkup())
-	return h.renderMainMenuFresh(ctx)
+	return h.renderMainMenuStored(ctx)
 }
 
 // RegisterMenuItem добавляет кнопку в главное меню
@@ -83,42 +91,39 @@ func (h *Handler) handleMainMenu(
 
 func (h *Handler) handleMainMenuReply(ctx tele.Context) error {
 	_ = ctx.Delete()
-	return h.renderMainMenuFresh(ctx)
+	return h.renderMainMenuStored(ctx)
+}
+
+// handleUnknownCallback отвечает на кнопку, которой больше нет в текущей версии бота.
+func (h *Handler) handleUnknownCallback(ctx tele.Context) error {
+	return ctx.RespondAlert("Кнопка устарела. Откройте меню командой /start.")
 }
 
 func (h *Handler) renderMainMenu(ctx tele.Context) error {
 	return h.renderMainMenuWith(ctx, false)
 }
 
-func (h *Handler) renderMainMenuFresh(ctx tele.Context) error {
+func (h *Handler) renderMainMenuStored(ctx tele.Context) error {
 	return h.renderMainMenuWith(ctx, true)
 }
 
-func (h *Handler) renderMainMenuWith(ctx tele.Context, fresh bool) error {
+func (h *Handler) renderMainMenuWith(ctx tele.Context, keepExisting bool) error {
 	if sender := ctx.Sender(); sender != nil {
 		h.EndTextFlows(sender.ID)
 	}
 	markup, err := h.mainMenuMarkup(ctx)
 	if err != nil {
-		return fmt.Errorf(
-			"build main menu markup: %w",
-			err,
-		)
+		return fmt.Errorf("build main menu markup: %w", err)
 	}
-
-	if fresh {
-		return SendNewMenu(ctx, mainMenuText, markup)
+	if keepExisting {
+		if editor, ok := ctx.(interface {
+			EditStoredMenu(interface{}, ...interface{}) error
+		}); ok {
+			return editor.EditStoredMenu(mainMenuText, markup)
+		}
+		return ctx.Send(mainMenuText, markup)
 	}
 	return ctx.EditOrSend(mainMenuText, markup)
-}
-
-func (h *Handler) mainMenuReplyMarkup() *tele.ReplyMarkup {
-	markup := h.bot.NewMarkup()
-	markup.ResizeKeyboard = true
-	markup.IsPersistent = true
-	markup.Placeholder = "Выберите действие"
-	markup.Reply(markup.Row(markup.Text(mainMenuReplyText)))
-	return markup
 }
 
 // mainMenuMarkup строит меню для пользователя с учётом его роли.

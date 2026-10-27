@@ -8,31 +8,7 @@ import (
 	policy "github.com/ERONIS/wb-service/internal/core/transport/wb/policy"
 )
 
-const (
-	contentAPIHost = "content-api.wildberries.ru"
-
-	operationIDPing                   policy.OperationID = "content.ping"
-	operationIDParentCategories       policy.OperationID = "content.object.parent-all"
-	operationIDSubjects               policy.OperationID = "content.object.all"
-	operationIDSubjectCharacteristics policy.OperationID = "content.object.characteristics"
-	operationIDCardsLimits            policy.OperationID = "content.cards.limits"
-	operationIDTags                   policy.OperationID = "content.tags.list"
-	operationIDBrands                 policy.OperationID = "content.brands"
-	operationIDDirectoryColors        policy.OperationID = "content.directory.colors"
-	operationIDDirectoryKinds         policy.OperationID = "content.directory.kinds"
-	operationIDDirectoryCountries     policy.OperationID = "content.directory.countries"
-	operationIDDirectorySeasons       policy.OperationID = "content.directory.seasons"
-	operationIDDirectoryVAT           policy.OperationID = "content.directory.vat"
-	operationIDDirectoryTNVED         policy.OperationID = "content.directory.tnved"
-	operationIDCardsList              policy.OperationID = "content.cards.list"
-	operationIDTrashCardsList         policy.OperationID = "content.cards.trash-list"
-	operationIDCardsErrorList         policy.OperationID = "content.cards.error-list"
-	operationIDUploadCards            policy.OperationID = "content.cards.upload"
-	operationIDUploadCardsAdd         policy.OperationID = "content.cards.upload-add"
-	operationIDUpdateCards            policy.OperationID = "content.cards.update"
-	operationIDSaveMediaByLinks       policy.OperationID = "content.media.save"
-	operationIDUploadMediaFile        policy.OperationID = "content.media.file"
-)
+const contentAPIHost = "content-api.wildberries.ru"
 
 const (
 	bucketIDContentPing          policy.BucketID = "content_ping"
@@ -43,13 +19,12 @@ const (
 	bucketIDCardsList            policy.BucketID = "content_cards_list"
 	bucketIDCardsUpload          policy.BucketID = "content_cards_upload"
 	bucketIDCardsUploadAdd       policy.BucketID = "content_cards_upload_add"
-	bucketIDCardsUpdate          policy.BucketID = "content_cards_update"
 	bucketIDMediaFiles           policy.BucketID = "content_media_files"
 )
 
 var (
 	pingOperation = mustOperation(policy.OperationSpec{
-		ID:               operationIDPing,
+		ID:               "content.ping",
 		Method:           http.MethodGet,
 		Host:             contentAPIHost,
 		Path:             "/ping",
@@ -63,76 +38,64 @@ var (
 		MaxResponseBytes: 16 * 1024,
 	})
 
-	parentCategoriesOperation = mustOperation(safeGetJSON(
-		operationIDParentCategories, "/content/v2/object/parent/all",
-		bucketIDContentCommon, maxParentCategoriesResponseBytes,
-	))
 	subjectsOperation = mustOperation(safeGetJSON(
-		operationIDSubjects, "/content/v2/object/all",
+		"content.object.all", "/content/v2/object/all",
 		bucketIDContentCommon, maxSubjectsResponseBytes,
 	))
 	cardsLimitsOperation = mustOperation(safeGetJSON(
-		operationIDCardsLimits, "/content/v2/cards/limits",
+		"content.cards.limits", "/content/v2/cards/limits",
 		bucketIDCardsLimitsAndErrors, maxCardsLimitsResponseBytes,
 	))
-	tagsOperation = mustOperation(safeGetJSON(
-		operationIDTags, "/content/v2/tags",
-		bucketIDContentCommon, maxTagsResponseBytes,
-	))
 	brandsOperation = mustOperation(safeGetJSON(
-		operationIDBrands, "/api/content/v1/brands",
+		"content.brands", "/api/content/v1/brands",
 		bucketIDBrands, maxBrandsResponseBytes,
 	))
 	directoryColorsOperation = mustOperation(safeGetJSON(
-		operationIDDirectoryColors, "/content/v2/directory/colors",
+		"content.directory.colors", "/content/v2/directory/colors",
 		bucketIDCharacteristics, maxDirectoryResponseBytes,
 	))
 	directoryKindsOperation = mustOperation(safeGetJSON(
-		operationIDDirectoryKinds, "/content/v2/directory/kinds",
+		"content.directory.kinds", "/content/v2/directory/kinds",
 		bucketIDCharacteristics, maxDirectoryResponseBytes,
 	))
 	directoryCountriesOperation = mustOperation(safeGetJSON(
-		operationIDDirectoryCountries, "/content/v2/directory/countries",
+		"content.directory.countries", "/content/v2/directory/countries",
 		bucketIDCharacteristics, maxDirectoryResponseBytes,
 	))
 	directorySeasonsOperation = mustOperation(safeGetJSON(
-		operationIDDirectorySeasons, "/content/v2/directory/seasons",
+		"content.directory.seasons", "/content/v2/directory/seasons",
 		bucketIDCharacteristics, maxDirectoryResponseBytes,
 	))
 	directoryVATOperation = mustOperation(safeGetJSON(
-		operationIDDirectoryVAT, "/content/v2/directory/vat",
+		"content.directory.vat", "/content/v2/directory/vat",
 		bucketIDCharacteristics, maxDirectoryResponseBytes,
 	))
 	directoryTNVEDOperation = mustOperation(safeGetJSON(
-		operationIDDirectoryTNVED, "/content/v2/directory/tnved",
+		"content.directory.tnved", "/content/v2/directory/tnved",
 		bucketIDCharacteristics, maxDirectoryResponseBytes,
 	))
 	cardsListOperation = mustOperation(safePostJSON(
-		operationIDCardsList, "/content/v2/get/cards/list",
+		"content.cards.list", "/content/v2/get/cards/list",
 		bucketIDCardsList, maxCardsListRequestBytes, maxCardsListResponseBytes,
 	))
 	trashCardsListOperation = mustOperation(safePostJSON(
-		operationIDTrashCardsList, "/content/v2/get/cards/trash",
+		"content.cards.trash-list", "/content/v2/get/cards/trash",
 		bucketIDContentCommon, maxTrashCardsListRequestBytes, maxTrashCardsListResponseBytes,
 	))
 	cardsErrorListOperation = mustOperation(safePostJSON(
-		operationIDCardsErrorList, "/content/v2/cards/error/list",
+		"content.cards.error-list", "/content/v2/cards/error/list",
 		bucketIDCardsLimitsAndErrors, maxCardsErrorListRequestBytes, maxCardsErrorListResponseBytes,
 	))
 	uploadCardsOperation = mustOperation(mutationPostJSON(
-		operationIDUploadCards, "/content/v2/cards/upload",
+		"content.cards.upload", "/content/v2/cards/upload",
 		bucketIDCardsUpload, maxUploadCardsRequestBytes,
 	))
 	uploadCardsAddOperation = mustOperation(mutationPostJSON(
-		operationIDUploadCardsAdd, "/content/v2/cards/upload/add",
+		"content.cards.upload-add", "/content/v2/cards/upload/add",
 		bucketIDCardsUploadAdd, maxUploadCardsAddRequestBytes,
 	))
-	updateCardsOperation = mustOperation(mutationPostJSON(
-		operationIDUpdateCards, "/content/v2/cards/update",
-		bucketIDCardsUpdate, maxUpdateCardsRequestBytes,
-	))
 	saveMediaByLinksOperation = mustOperation(mutationPostJSON(
-		operationIDSaveMediaByLinks, "/content/v3/media/save",
+		"content.media.save", "/content/v3/media/save",
 		bucketIDMediaFiles, maxSaveMediaByLinksRequestBytes,
 	))
 )
@@ -197,10 +160,6 @@ func PingOperation() policy.Operation {
 	return pingOperation
 }
 
-func ParentCategoriesOperation() policy.Operation {
-	return parentCategoriesOperation
-}
-
 func SubjectsOperation() policy.Operation {
 	return subjectsOperation
 }
@@ -213,7 +172,7 @@ func SubjectCharacteristicsOperation(subjectID int64) (policy.Operation, error) 
 		)
 	}
 	return policy.NewOperation(safeGetJSON(
-		operationIDSubjectCharacteristics,
+		"content.object.characteristics",
 		"/content/v2/object/charcs/"+strconv.FormatInt(subjectID, 10),
 		bucketIDContentCommon,
 		maxSubjectCharacteristicsResponseBytes,
@@ -222,10 +181,6 @@ func SubjectCharacteristicsOperation(subjectID int64) (policy.Operation, error) 
 
 func CardsLimitsOperation() policy.Operation {
 	return cardsLimitsOperation
-}
-
-func TagsOperation() policy.Operation {
-	return tagsOperation
 }
 
 func BrandsOperation() policy.Operation {
@@ -276,39 +231,8 @@ func UploadCardsAddOperation() policy.Operation {
 	return uploadCardsAddOperation
 }
 
-func UpdateCardsOperation() policy.Operation {
-	return updateCardsOperation
-}
-
 func SaveMediaByLinksOperation() policy.Operation {
 	return saveMediaByLinksOperation
-}
-
-func UploadMediaFileOperation(nmID int64, mediaNumber int) (policy.Operation, error) {
-	if nmID <= 0 {
-		return policy.Operation{}, fmt.Errorf("media nmID must be positive: %d", nmID)
-	}
-	if mediaNumber <= 0 || mediaNumber > MaxMediaImages {
-		return policy.Operation{}, fmt.Errorf("media number must be between 1 and %d: %d", MaxMediaImages, mediaNumber)
-	}
-	return policy.NewOperation(policy.OperationSpec{
-		ID:               operationIDUploadMediaFile,
-		Method:           http.MethodPost,
-		Host:             contentAPIHost,
-		Path:             "/content/v3/media/file",
-		BucketID:         bucketIDMediaFiles,
-		Kind:             policy.OperationKindMutation,
-		RetryMode:        policy.RetryModeNever,
-		SuccessStatuses:  []int{http.StatusOK},
-		RequestMode:      policy.BodyModeMultipart,
-		ResponseMode:     policy.BodyModeJSON,
-		MaxRequestBytes:  maxUploadMediaFileRequestBytes,
-		MaxResponseBytes: maxMutationResponseBytes,
-		Headers: http.Header{
-			"X-Nm-Id":        []string{strconv.FormatInt(nmID, 10)},
-			"X-Photo-Number": []string{strconv.Itoa(mediaNumber)},
-		},
-	})
 }
 
 func mustOperation(spec policy.OperationSpec) policy.Operation {

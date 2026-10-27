@@ -1,8 +1,7 @@
 package core_postgres_pool
 
 import (
-	"net"
-	"net/url"
+	"math"
 	"testing"
 	"time"
 )
@@ -26,12 +25,23 @@ func TestConfigValidate(t *testing.T) {
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("ожидалась валидная конфигурация, получена ошибка: %v", err)
 	}
+	if valid.ApplicationName != "wb-service" {
+		t.Fatalf("неверное имя приложения по умолчанию: %q", valid.ApplicationName)
+	}
 
 	// Проверка MinConns > MaxConns
 	invalidMinConns := valid
 	invalidMinConns.MinConns = 30
 	if err := invalidMinConns.Validate(); err == nil {
 		t.Fatal("ожидалась ошибка при MinConns > MaxConns, получен nil")
+	}
+	if int64(math.MaxInt) > math.MaxInt32 {
+		tooMany := int64(math.MaxInt32) + 1
+		invalidMaxConns := valid
+		invalidMaxConns.MaxConns = int(tooMany)
+		if err := invalidMaxConns.Validate(); err == nil {
+			t.Fatal("ожидалась ошибка при MaxConns за пределами int32")
+		}
 	}
 
 	// Проверка неверного sslmode
@@ -47,9 +57,15 @@ func TestConfigValidate(t *testing.T) {
 	if err := emptyHost.Validate(); err == nil {
 		t.Fatal("ожидалась ошибка при пустом хосте, получен nil")
 	}
+
+	invalidApplicationName := valid
+	invalidApplicationName.ApplicationName = "name\nsecret"
+	if err := invalidApplicationName.Validate(); err == nil {
+		t.Fatal("ожидалась ошибка при недопустимом имени приложения")
+	}
 }
 
-func TestDSNEscapingSpecialCharacters(t *testing.T) {
+func TestPGXPoolConfig(t *testing.T) {
 	config := Config{
 		Host:     "db.example.com",
 		Port:     "5432",
@@ -58,32 +74,37 @@ func TestDSNEscapingSpecialCharacters(t *testing.T) {
 		Database: "service_db",
 		SSLMode:  "require",
 	}
-
-	u := &url.URL{
-		Scheme: "postgres",
-		User:   url.UserPassword(config.User, config.Password),
-		Host:   net.JoinHostPort(config.Host, config.Port),
-		Path:   config.Database,
-	}
-	query := u.Query()
-	query.Set("sslmode", config.SSLMode)
-	u.RawQuery = query.Encode()
-
-	dsn := u.String()
-
-	parsed, err := url.Parse(dsn)
-	if err != nil {
-		t.Fatalf("ошибка разбора сгенерированного DSN: %v", err)
-	}
-
-	password, ok := parsed.User.Password()
-	if !ok {
-		t.Fatal("пароль отсутствует в разобранном URL")
-	}
-	if password != config.Password {
-		t.Fatalf("пароль не совпадает после декодирования: получено %q, ожидалось %q", password, config.Password)
-	}
-	if parsed.Query().Get("sslmode") != "require" {
-		t.Fatalf("sslmode не совпадает: получено %q, ожидалось require", parsed.Query().Get("sslmode"))
+	for _, test := range []struct {
+		name    string
+		timeout time.Duration
+		want    string
+	}{
+		{name: "округление", timeout: 1500 * time.Microsecond, want: "2ms"},
+		{name: "минимум", timeout: time.Nanosecond, want: "1ms"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config.Timeout = test.timeout
+			if err := config.Validate(); err != nil {
+				t.Fatalf("проверить конфигурацию: %v", err)
+			}
+			pgxconfig, err := newPGXPoolConfig(config)
+			if err != nil {
+				t.Fatalf("собрать конфигурацию пула: %v", err)
+			}
+			if pgxconfig.ConnConfig.Password != config.Password ||
+				pgxconfig.ConnConfig.Host != config.Host ||
+				pgxconfig.ConnConfig.Database != config.Database {
+				t.Fatalf("учётные данные изменились после разбора DSN")
+			}
+			if pgxconfig.ConnConfig.TLSConfig == nil {
+				t.Fatal("режим require не включил TLS")
+			}
+			if got := pgxconfig.ConnConfig.RuntimeParams["statement_timeout"]; got != test.want {
+				t.Fatalf("statement_timeout=%q, ожидалось %q", got, test.want)
+			}
+			if got := pgxconfig.ConnConfig.RuntimeParams["application_name"]; got != config.ApplicationName {
+				t.Fatalf("application_name=%q, ожидалось %q", got, config.ApplicationName)
+			}
+		})
 	}
 }

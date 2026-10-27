@@ -3,6 +3,7 @@ package core_postgres_pool
 import (
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/kelseyhightower/envconfig"
@@ -12,7 +13,7 @@ import (
 // Все поля читаются из переменных окружения с префиксом "POSTGRES_":
 // POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB, POSTGRES_TIMEOUT,
 // POSTGRES_SSLMODE, POSTGRES_MAX_CONNS, POSTGRES_MIN_CONNS, POSTGRES_MAX_CONN_LIFETIME,
-// POSTGRES_MAX_CONN_IDLE_TIME, POSTGRES_HEALTHCHECK_PERIOD.
+// POSTGRES_MAX_CONN_IDLE_TIME, POSTGRES_HEALTHCHECK_PERIOD, POSTGRES_APPLICATION_NAME.
 type Config struct {
 	Host     string `envconfig:"HOST"     required:"true"`
 	Port     string `envconfig:"PORT"     default:"5432"`
@@ -20,11 +21,14 @@ type Config struct {
 	Password string `envconfig:"PASSWORD" required:"true"`
 	Database string `envconfig:"DB"       required:"true"`
 
+	// ApplicationName позволяет отличать соединения сервиса в статистике PostgreSQL.
+	ApplicationName string `envconfig:"APPLICATION_NAME" default:"wb-service"`
+
 	// SSLMode определяет режим TLS соединения (disable, require, verify-ca, verify-full).
 	SSLMode string `envconfig:"SSLMODE" default:"disable"`
 
 	// Timeout — максимальное время выполнения одного запроса к базе данных по умолчанию.
-	// Используется репозиториями через Pool.OperationContext().
+	// Применяется через Pool.OperationContext() и серверный statement_timeout.
 	Timeout time.Duration `envconfig:"TIMEOUT" required:"true"`
 
 	// MaxConns — максимальное количество соединений в пуле (по умолчанию 25).
@@ -60,6 +64,18 @@ func (c *Config) Validate() error {
 	if c.Database == "" {
 		return errors.New("имя базы данных PostgreSQL не может быть пустым")
 	}
+	if c.ApplicationName == "" {
+		c.ApplicationName = "wb-service"
+	}
+	if len(c.ApplicationName) > 63 {
+		return errors.New("имя приложения PostgreSQL длиннее 63 байт")
+	}
+	for _, character := range c.ApplicationName {
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '-' || character == '_' || character == '.' {
+			continue
+		}
+		return errors.New("имя приложения PostgreSQL содержит недопустимые символы")
+	}
 	if c.Timeout <= 0 {
 		return errors.New("таймаут PostgreSQL должен быть положительным")
 	}
@@ -74,6 +90,9 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxConns <= 0 {
 		c.MaxConns = 25
+	}
+	if c.MaxConns > math.MaxInt32 {
+		return errors.New("максимальное число соединений PostgreSQL превышает int32")
 	}
 	if c.MinConns < 0 {
 		return errors.New("минимальное число соединений PostgreSQL не может быть отрицательным")

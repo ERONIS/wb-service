@@ -7,17 +7,18 @@ import (
 	core_tg_callback "github.com/ERONIS/wb-service/internal/core/transport/telegram/callback"
 	core_tg_identity "github.com/ERONIS/wb-service/internal/core/transport/telegram/identity"
 	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
-	cardpublication_service "github.com/ERONIS/wb-service/internal/feature/cardpublication/service"
+	cardpublication_resolution "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/resolution"
 	statistics_service "github.com/ERONIS/wb-service/internal/feature/statistics/service"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 
 	tele "gopkg.in/telebot.v3"
 )
 
 func (handler *Handler) listAttention(ctx tele.Context) error {
 	filter := statistics_service.AttentionFilter{Limit: 20}
-	if len(ctx.Args()) > 0 {
-		transferID, err := parsePositiveInt64(ctx.Args(), 0, 1)
+	arguments := callbackArguments(ctx.Args())
+	if len(arguments) > 0 {
+		transferID, err := parsePositiveInt64(arguments, 0, 1)
 		if err != nil {
 			return staleCallback(ctx)
 		}
@@ -106,23 +107,23 @@ func (handler *Handler) openAttention(ctx tele.Context) error {
 }
 
 func (handler *Handler) markPresent(ctx tele.Context) error {
-	return handler.resolve(ctx, cardpublication_service.ManualMarkRemotePresent)
+	return handler.resolve(ctx, cardpublication_resolution.ManualMarkRemotePresent)
 }
 
 func (handler *Handler) markRejected(ctx tele.Context) error {
-	return handler.resolve(ctx, cardpublication_service.ManualMarkRejected)
+	return handler.resolve(ctx, cardpublication_resolution.ManualMarkRejected)
 }
 
 func (handler *Handler) closeAttention(ctx tele.Context) error {
-	return handler.resolve(ctx, cardpublication_service.ManualCloseUnresolvedNoRetry)
+	return handler.resolve(ctx, cardpublication_resolution.ManualCloseUnresolvedNoRetry)
 }
 
 func (handler *Handler) resolve(
 	ctx tele.Context,
-	kind cardpublication_service.ManualResolutionKind,
+	kind cardpublication_resolution.ManualResolutionKind,
 ) error {
 	expectedArguments := 3
-	if kind == cardpublication_service.ManualCloseUnresolvedNoRetry {
+	if kind == cardpublication_resolution.ManualCloseUnresolvedNoRetry {
 		expectedArguments = 2
 	}
 	itemTargetID, err := parsePositiveInt64(ctx.Args(), 0, expectedArguments)
@@ -157,8 +158,8 @@ func (handler *Handler) resolve(
 	if err != nil {
 		return presentError(ctx, err)
 	}
-	command := cardpublication_service.ManualResolutionCommand{
-		TransferID:             transfer_service.TransferID(item.TransferID),
+	command := cardpublication_resolution.ManualResolutionCommand{
+		TransferID:             transfer_model.TransferID(item.TransferID),
 		ActionID:               item.ActionID,
 		ActionMemberID:         item.ActionMemberID,
 		ExpectedActionRevision: revision,
@@ -169,9 +170,9 @@ func (handler *Handler) resolve(
 		),
 	}
 	switch kind {
-	case cardpublication_service.ManualMarkRemotePresent:
+	case cardpublication_resolution.ManualMarkRemotePresent:
 		command.EvidenceObservationID = evidenceID
-	case cardpublication_service.ManualMarkRejected:
+	case cardpublication_resolution.ManualMarkRejected:
 		command.EvidenceErrorBatchID = evidenceID
 	}
 	resolution, err := handler.manualResolver.Resolve(handler.ctx, actor, command)
@@ -201,12 +202,12 @@ func (handler *Handler) getAttention(itemTargetID int64) (statistics_service.Att
 	return items[0], true, nil
 }
 
-func manualActor(ctx tele.Context) (cardpublication_service.ManualTrustedActor, error) {
+func manualActor(ctx tele.Context) (cardpublication_resolution.ManualTrustedActor, error) {
 	user, err := core_tg_identity.UserFromContext(ctx)
 	if err != nil {
-		return cardpublication_service.ManualTrustedActor{}, err
+		return cardpublication_resolution.ManualTrustedActor{}, err
 	}
-	return cardpublication_service.ManualTrustedActor{
+	return cardpublication_resolution.ManualTrustedActor{
 		ID:          user.TelegramID,
 		DisplayName: user.FullName,
 	}, nil
@@ -223,11 +224,11 @@ func attentionReason(code string) string {
 	}
 }
 
-func resolutionResultText(outcome transfer_service.ResultClass) string {
+func resolutionResultText(outcome transfer_model.ResultClass) string {
 	switch outcome {
-	case transfer_service.ResultSuccess:
+	case transfer_model.ResultSuccess:
 		return "Карточка отмечена как присутствующая в WB."
-	case transfer_service.ResultRejected:
+	case transfer_model.ResultRejected:
 		return "Карточка отмечена как отклонённая."
 	default:
 		return "Карточка оставлена без повторной отправки."

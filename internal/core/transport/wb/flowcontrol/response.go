@@ -1,7 +1,6 @@
 package flowcontrol
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -16,10 +15,7 @@ const (
 	headerRateLimitLimit     = "X-Ratelimit-Limit"
 )
 
-var errRateLimitResponseRequired = errors.New(
-	"rate-limit HTTP response is required",
-)
-
+// responseRateLimits хранит параметры лимита из ответа WB.
 type responseRateLimits struct {
 	statusCode int
 	remaining  *int
@@ -27,6 +23,7 @@ type responseRateLimits struct {
 	limit      *int
 }
 
+// parseResponseRateLimits собирает параметры лимита из ответа WB.
 func parseResponseRateLimits(
 	response *http.Response,
 ) (responseRateLimits, error) {
@@ -67,6 +64,7 @@ func parseResponseRateLimits(
 	}, nil
 }
 
+// parseRetryAfterHeaders выбирает большую задержку из двух заголовков ответа.
 func parseRetryAfterHeaders(
 	header http.Header,
 	now time.Time,
@@ -93,6 +91,7 @@ func parseRetryAfterHeaders(
 	), nil
 }
 
+// parseOptionalIntHeader читает необязательный заголовок с целым числом.
 func parseOptionalIntHeader(
 	header http.Header,
 	name string,
@@ -121,6 +120,7 @@ func parseOptionalIntHeader(
 	return &result, nil
 }
 
+// parseOptionalDurationHeader читает необязательный заголовок с числом секунд.
 func parseOptionalDurationHeader(
 	header http.Header,
 	name string,
@@ -141,6 +141,7 @@ func parseOptionalDurationHeader(
 	return &result, nil
 }
 
+// parseOptionalRetryAfterHeader читает время ожидания в секундах или дату.
 func parseOptionalRetryAfterHeader(
 	header http.Header,
 	now time.Time,
@@ -181,27 +182,7 @@ func parseOptionalRetryAfterHeader(
 	return &result, nil
 }
 
-func parseDurationSeconds(
-	value string,
-	name string,
-) (time.Duration, error) {
-	seconds, err := parseHeaderUint(value, name)
-	if err != nil {
-		return 0, err
-	}
-
-	const maxDuration = time.Duration(1<<63 - 1)
-	maxSeconds := uint64(maxDuration / time.Second)
-	if seconds > maxSeconds {
-		return 0, fmt.Errorf(
-			"WB response header %s exceeds duration range",
-			name,
-		)
-	}
-
-	return time.Duration(seconds) * time.Second, nil
-}
-
+// singleHeaderValue возвращает единственное непустое значение заголовка.
 func singleHeaderValue(
 	header http.Header,
 	name string,
@@ -228,6 +209,29 @@ func singleHeaderValue(
 	return value, true, nil
 }
 
+// parseDurationSeconds переводит секунды в длительность без переполнения.
+func parseDurationSeconds(
+	value string,
+	name string,
+) (time.Duration, error) {
+	seconds, err := parseHeaderUint(value, name)
+	if err != nil {
+		return 0, err
+	}
+
+	const maxDuration = time.Duration(1<<63 - 1)
+	maxSeconds := uint64(maxDuration / time.Second)
+	if seconds > maxSeconds {
+		return 0, fmt.Errorf(
+			"WB response header %s exceeds duration range",
+			name,
+		)
+	}
+
+	return time.Duration(seconds) * time.Second, nil
+}
+
+// parseHeaderUint разбирает неотрицательное десятичное число.
 func parseHeaderUint(
 	value string,
 	name string,
@@ -250,6 +254,7 @@ func parseHeaderUint(
 	return parsed, nil
 }
 
+// containsOnlyDecimalDigits проверяет, что строка состоит только из цифр.
 func containsOnlyDecimalDigits(value string) bool {
 	if value == "" {
 		return false
@@ -264,6 +269,7 @@ func containsOnlyDecimalDigits(value string) bool {
 	return true
 }
 
+// longerDuration выбирает большую из двух необязательных задержек.
 func longerDuration(
 	first *time.Duration,
 	second *time.Duration,
@@ -283,6 +289,7 @@ func longerDuration(
 	return &result
 }
 
+// maxInt возвращает наибольшее значение типа int.
 func maxInt() int {
 	return int(^uint(0) >> 1)
 }

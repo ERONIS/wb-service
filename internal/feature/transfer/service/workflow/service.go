@@ -3,14 +3,12 @@ package workflow
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
-	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	"go.uber.org/zap"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
 
 type Service struct {
@@ -18,10 +16,8 @@ type Service struct {
 	batchReader    BatchReader
 	targetRegistry TargetRegistry
 	uow            core_postgres_transaction.UnitOfWork
-	capacity       CapacityPolicy
-	logger         *zap.Logger
+	capacity       transfer_model.CapacityPolicy
 	processMu      sync.Mutex
-	batchCursor    *cardpipeline.BatchCursor
 }
 
 func New(
@@ -29,8 +25,7 @@ func New(
 	batchReader BatchReader,
 	targetRegistry TargetRegistry,
 	uow core_postgres_transaction.UnitOfWork,
-	capacity CapacityPolicy,
-	loggers ...*zap.Logger,
+	capacity transfer_model.CapacityPolicy,
 ) *Service {
 	if repository == nil {
 		panic("transfer repository is nil")
@@ -54,103 +49,90 @@ func New(
 		targetRegistry: targetRegistry,
 		uow:            uow,
 		capacity:       capacity,
-		logger:         core_logger.Fallback(loggers...),
 	}
 }
-
-func (service *Service) Logger() *zap.Logger { return service.logger }
 
 func (service *Service) Start(
 	ctx context.Context,
 	batchID cardpipeline.BatchID,
-) (TransferID, error) {
-	return service.start(ctx, batchID, nil)
-}
-
-func (service *Service) StartToCabinet(
-	ctx context.Context,
-	batchID cardpipeline.BatchID,
-	sellerID SellerID,
-) (TransferID, error) {
-	if strings.TrimSpace(string(sellerID)) != string(sellerID) || sellerID == "" {
-		return 0, core_errors.InvalidArgument("invalid transfer seller ID %q", sellerID)
-	}
-	return service.start(ctx, batchID, []SellerID{sellerID})
-}
-
-func (service *Service) start(
-	ctx context.Context,
-	batchID cardpipeline.BatchID,
-	targetSellerIDs []SellerID,
-) (TransferID, error) {
+) (transfer_model.TransferID, error) {
 	if batchID <= 0 {
 		return 0, core_errors.InvalidArgument("invalid transfer batch ID '%d'", batchID)
 	}
 
-	existing, err := service.repository.FindByBatch(ctx, batchID)
-	if err == nil {
-		if len(targetSellerIDs) > 0 {
-			if err := service.verifyStoredTargets(ctx, existing.ID, targetSellerIDs); err != nil {
-				return 0, err
-			}
-		}
-		return existing.ID, nil
-	}
-	if !core_errors.IsNotFound(err) {
-		return 0, fmt.Errorf("find existing transfer: %w", err)
+	id, exists, err := service.findExistingTransfer(ctx, batchID)
+	if err != nil || exists {
+		return id, err
 	}
 
-	batch, err := service.batchReader.GetBatch(ctx, batchID)
+	batch, err := service.batchReader.GetReadyBatchHeader(ctx, batchID)
 	if err != nil {
 		return 0, fmt.Errorf("read transfer batch: %w", err)
 	}
-	if err := validateStartBatch(batch); err != nil {
-		return 0, err
+	return service.createFromReadyBatch(ctx, batch)
+}
+
+func (service *Service) startReadyBatch(
+	ctx context.Context,
+	batch cardpipeline.ReadyBatchHeader,
+) (transfer_model.TransferID, error) {
+	id, exists, err := service.findExistingTransfer(ctx, batch.ID)
+	if err != nil || exists {
+		return id, err
+	}
+	return service.createFromReadyBatch(ctx, batch)
+}
+
+func (service *Service) findExistingTransfer(
+	ctx context.Context,
+	batchID cardpipeline.BatchID,
+) (transfer_model.TransferID, bool, error) {
+	existing, err := service.repository.FindByBatch(ctx, batchID)
+	if err == nil {
+		return existing.ID, true, nil
+	}
+	if !core_errors.IsNotFound(err) {
+		return 0, false, fmt.Errorf("find existing transfer: %w", err)
+	}
+	return 0, false, nil
+}
+
+func (service *Service) createFromReadyBatch(
+	ctx context.Context,
+	batch cardpipeline.ReadyBatchHeader,
+) (transfer_model.TransferID, error) {
+	if err := batch.Validate(); err != nil {
+		return 0, fmt.Errorf("validate transfer batch: %w", err)
 	}
 
-	var snapshot MutationTargetSnapshot
-	if len(targetSellerIDs) == 0 {
-		snapshot, err = service.targetRegistry.FanoutMutationSnapshot(ctx)
-	} else {
-		snapshot, err = service.targetRegistry.MutationSnapshotForOwner(
-			ctx,
-			batch.AuthorSnapshot.TelegramUserID,
-			targetSellerIDs,
-		)
-	}
+	targets, err := service.targetRegistry.FanoutTargets(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("read mutation target snapshot: %w", err)
+		return 0, fmt.Errorf("read mutation targets: %w", err)
 	}
 	capacity, err := service.capacity.Check(
 		batch.ItemsCount,
 		batch.GroupsCount,
-		len(snapshot.Targets),
+		len(targets),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("check transfer capacity: %w", err)
 	}
-	root := TargetSetRoot(snapshot)
 
-	var transfer Transfer
+	var transfer transfer_model.Transfer
 	err = service.uow.WithinTransaction(
 		ctx,
 		func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
 			var err error
-			var created bool
-			transfer, created, err = service.repository.Create(
+			transfer, err = service.repository.Create(
 				ctx,
 				tx,
 				CreateTransfer{
-					Batch:         batch,
-					Snapshot:      snapshot,
-					TargetSetRoot: root,
-					Capacity:      capacity,
+					Batch:    batch,
+					Targets:  targets,
+					Capacity: capacity,
 				},
 			)
-			if err != nil || created || len(targetSellerIDs) == 0 {
-				return err
-			}
-			return service.verifyStoredTargets(ctx, transfer.ID, targetSellerIDs)
+			return err
 		},
 	)
 	if err != nil {
@@ -158,55 +140,4 @@ func (service *Service) start(
 	}
 
 	return transfer.ID, nil
-}
-
-func (service *Service) verifyStoredTargets(
-	ctx context.Context,
-	transferID TransferID,
-	expected []SellerID,
-) error {
-	stored, err := service.repository.ListTargetSellerIDs(ctx, transferID)
-	if err != nil {
-		return fmt.Errorf("read stored transfer targets: %w", err)
-	}
-	if len(stored) != len(expected) {
-		return core_errors.Conflict("transfer target set differs from requested target")
-	}
-	wanted := make(map[SellerID]struct{}, len(expected))
-	for _, sellerID := range expected {
-		wanted[sellerID] = struct{}{}
-	}
-	for _, sellerID := range stored {
-		if _, exists := wanted[sellerID]; !exists {
-			return core_errors.Conflict("transfer target set differs from requested target")
-		}
-	}
-	return nil
-}
-
-func validateStartBatch(batch cardpipeline.BatchHeader) error {
-	if err := batch.Validate(); err != nil {
-		return fmt.Errorf("validate transfer batch: %w", err)
-	}
-	if batch.Purpose != cardpipeline.PurposeTransfer {
-		return fmt.Errorf(
-			"cardimport batch purpose '%s' cannot start transfer: %w",
-			batch.Purpose,
-			core_errors.ErrConflict,
-		)
-	}
-	if batch.SchemaVersion != cardpipeline.BatchSchemaVersion ||
-		batch.NormalizationVersion != cardpipeline.BatchNormalizationVersion {
-		return fmt.Errorf(
-			"cardimport batch contract is unsupported: %w",
-			core_errors.ErrConflict,
-		)
-	}
-	if batch.Checksum == (cardpipeline.Digest{}) {
-		return fmt.Errorf(
-			"cardimport batch checksum is empty: %w",
-			core_errors.ErrConflict,
-		)
-	}
-	return nil
 }

@@ -1,229 +1,128 @@
-package workflow
+package cardimport_workflow
 
 import (
 	"context"
 	"fmt"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
+	cardimport_contract "github.com/ERONIS/wb-service/internal/feature/cardimport/service/contract"
+	cardimport_model "github.com/ERONIS/wb-service/internal/feature/cardimport/service/model"
 )
 
-// Begin создаёт collecting-сессию или возвращает уже открытую.
-func (s *Service) Begin(
-	ctx context.Context,
-	command BeginCommand,
-) (Session, error) {
-	if err := command.validate(); err != nil {
-		return Session{}, err
+// Begin начинает сбор карточек или возвращает активную сессию автора.
+func (s *Service) Begin(ctx context.Context, command cardimport_contract.BeginCommand) (cardimport_model.Session, error) {
+	if err := command.Validate(); err != nil {
+		return cardimport_model.Session{}, err
 	}
-
-	session, err := s.repository.GetOrCreateCollectingSession(
-		ctx,
-		command.AuthorTelegramID,
-		command.Purpose,
-	)
+	exists, err := s.repository.HasAuthor(ctx, command.AuthorTelegramID)
 	if err != nil {
-		return Session{}, fmt.Errorf(
-			"get or create collecting cardimport session: %w",
-			err,
-		)
+		return cardimport_model.Session{}, fmt.Errorf("check cardimport author: %w", err)
 	}
-
+	if !exists {
+		return cardimport_model.Session{}, fmt.Errorf("cardimport author Telegram ID=%d: %w", command.AuthorTelegramID, core_errors.ErrNotFound)
+	}
+	session, err := s.sessions.Begin(ctx, command)
+	if err != nil {
+		return cardimport_model.Session{}, err
+	}
 	if err := validateSessionOwner(session, command.AuthorTelegramID); err != nil {
-		return Session{}, err
+		return cardimport_model.Session{}, err
 	}
-	if session.Status != SessionStatusCollecting {
-		return Session{}, fmt.Errorf(
-			"cardimport session is not collecting: %w",
-			core_errors.ErrConflict,
-		)
+	if session.Status != cardimport_model.SessionStatusCollecting {
+		return cardimport_model.Session{}, fmt.Errorf("cardimport session is not collecting: %w", core_errors.ErrConflict)
 	}
-	if session.Purpose != command.Purpose {
-		return Session{}, fmt.Errorf(
-			"another cardimport purpose is already active: %w",
-			core_errors.ErrConflict,
-		)
-	}
-
 	return session, nil
 }
 
-func (s *Service) Get(
-	ctx context.Context,
-	command SessionCommand,
-) (Session, error) {
-	if err := command.validate(); err != nil {
-		return Session{}, err
-	}
-
-	session, err := s.repository.GetSession(
-		ctx,
-		command.AuthorTelegramID,
-		command.SessionID,
-	)
-	if err != nil {
-		return Session{}, fmt.Errorf("get cardimport session: %w", err)
-	}
-	if err := validateSessionOwner(session, command.AuthorTelegramID); err != nil {
-		return Session{}, err
-	}
-
-	return session, nil
-}
-
-func (s *Service) GetActiveView(
-	ctx context.Context,
-	authorTelegramID int64,
-) (SessionView, error) {
-	if authorTelegramID <= 0 {
-		return SessionView{}, invalidTelegramID(authorTelegramID)
-	}
-
-	view, err := s.repository.GetCollectingSessionView(
-		ctx,
-		authorTelegramID,
-	)
-	if err != nil {
-		return SessionView{}, fmt.Errorf(
-			"get collecting cardimport session view: %w",
-			err,
-		)
-	}
-	if err := validateSessionView(view, authorTelegramID); err != nil {
-		return SessionView{}, err
-	}
-
-	return view, nil
-}
-
-func (s *Service) GetView(
-	ctx context.Context,
-	command SessionCommand,
-) (SessionView, error) {
-	if err := command.validate(); err != nil {
-		return SessionView{}, err
-	}
-
-	view, err := s.repository.GetSessionView(
-		ctx,
-		command.AuthorTelegramID,
-		command.SessionID,
-	)
-	if err != nil {
-		return SessionView{}, fmt.Errorf(
-			"get cardimport session view: %w",
-			err,
-		)
-	}
-	if err := validateSessionView(view, command.AuthorTelegramID); err != nil {
-		return SessionView{}, err
-	}
-
-	return view, nil
-}
-
-// Cancel идемпотентно отменяет принадлежащую пользователю сессию.
-func (s *Service) Cancel(
-	ctx context.Context,
-	command SessionCommand,
-) error {
-	if err := command.validate(); err != nil {
+// Cancel отменяет незавершённую сессию автора.
+func (s *Service) Cancel(ctx context.Context, command cardimport_contract.SessionCommand) error {
+	if err := command.Validate(); err != nil {
 		return err
 	}
-
-	session, err := s.repository.CancelSession(
-		ctx,
-		command.AuthorTelegramID,
-		command.SessionID,
-	)
+	session, err := s.sessions.Cancel(ctx, command)
 	if err != nil {
-		return fmt.Errorf("cancel cardimport session: %w", err)
+		return err
 	}
 	if err := validateSessionOwner(session, command.AuthorTelegramID); err != nil {
 		return err
 	}
-	if session.Status != SessionStatusCancelled {
-		return fmt.Errorf(
-			"cardimport session was not cancelled: %w",
-			core_errors.ErrConflict,
-		)
+	if session.Status != cardimport_model.SessionStatusCancelled {
+		return fmt.Errorf("cardimport session was not cancelled: %w", core_errors.ErrConflict)
 	}
-
 	return nil
 }
 
-func (s *Service) Continue(
-	ctx context.Context,
-	command ContinueCommand,
-) (SessionView, error) {
-	if err := command.validate(); err != nil {
-		return SessionView{}, err
+// Get возвращает сессию по автору и ID.
+func (s *Service) Get(ctx context.Context, command cardimport_contract.SessionCommand) (cardimport_model.Session, error) {
+	if err := command.Validate(); err != nil {
+		return cardimport_model.Session{}, err
 	}
-
-	session, err := s.repository.ContinueAfterErrors(ctx, command)
+	session, err := s.sessions.Get(ctx, command)
 	if err != nil {
-		return SessionView{}, fmt.Errorf(
-			"continue cardimport session after errors: %w",
-			err,
-		)
+		return cardimport_model.Session{}, err
 	}
 	if err := validateSessionOwner(session, command.AuthorTelegramID); err != nil {
-		return SessionView{}, err
+		return cardimport_model.Session{}, err
 	}
-	if session.Status != SessionStatusCollecting ||
-		session.Revision != command.ExpectedRevision+1 {
-		return SessionView{}, fmt.Errorf(
-			"cardimport session changed while continuing: %w",
-			core_errors.ErrConflict,
-		)
-	}
-
-	return s.GetView(ctx, SessionCommand{
-		AuthorTelegramID: command.AuthorTelegramID,
-		SessionID:        command.SessionID,
-	})
+	return session, nil
 }
 
-func validateSessionOwner(
-	session Session,
-	authorTelegramID int64,
-) error {
+// GetActiveView возвращает текущую сессию автора вместе с результатами.
+func (s *Service) GetActiveView(ctx context.Context, authorTelegramID int64) (cardimport_model.SessionView, error) {
+	if authorTelegramID <= 0 {
+		return cardimport_model.SessionView{}, cardimport_contract.InvalidTelegramID(authorTelegramID)
+	}
+	view, err := s.sessions.ActiveView(ctx, authorTelegramID)
+	if err != nil {
+		return cardimport_model.SessionView{}, err
+	}
+	if err := validateSessionView(view, authorTelegramID); err != nil {
+		return cardimport_model.SessionView{}, err
+	}
+	return view, nil
+}
+
+// GetView возвращает состояние указанной сессии и её файлов.
+func (s *Service) GetView(ctx context.Context, command cardimport_contract.SessionCommand) (cardimport_model.SessionView, error) {
+	if err := command.Validate(); err != nil {
+		return cardimport_model.SessionView{}, err
+	}
+	view, err := s.sessions.View(ctx, command)
+	if err != nil {
+		return cardimport_model.SessionView{}, err
+	}
+	if err := validateSessionView(view, command.AuthorTelegramID); err != nil {
+		return cardimport_model.SessionView{}, err
+	}
+	return view, nil
+}
+
+// validateSessionOwner проверяет корректность сессии и её владельца.
+func validateSessionOwner(session cardimport_model.Session, authorTelegramID int64) error {
 	if err := session.Validate(); err != nil {
 		return fmt.Errorf("validate cardimport session: %w", err)
 	}
 	if session.AuthorTelegramID != authorTelegramID {
-		return fmt.Errorf(
-			"cardimport session author does not match command: %w",
-			core_errors.ErrConflict,
-		)
+		return fmt.Errorf("cardimport session author does not match command: %w", core_errors.ErrConflict)
 	}
-
 	return nil
 }
 
-func validateSessionView(view SessionView, authorTelegramID int64) error {
+// validateSessionView проверяет счётчики и файлы представления сессии.
+func validateSessionView(view cardimport_model.SessionView, authorTelegramID int64) error {
 	if err := validateSessionOwner(view.Session, authorTelegramID); err != nil {
 		return err
 	}
-	if view.CardsCount < 0 || view.ErrorsCount < 0 {
-		return fmt.Errorf(
-			"invalid cardimport session counters: %w",
-			core_errors.ErrConflict,
-		)
+	if view.CardsCount < 0 || view.ReadyCardsCount < 0 || view.ReadyCardsCount > view.CardsCount || view.ErrorsCount < 0 {
+		return fmt.Errorf("invalid cardimport session counters: %w", core_errors.ErrConflict)
 	}
-
 	for _, fileView := range view.Files {
 		if err := fileView.File.Validate(); err != nil {
 			return fmt.Errorf("validate cardimport file view: %w", err)
 		}
-		if fileView.File.SessionID != view.ID ||
-			fileView.CardsCount < 0 ||
-			fileView.ErrorsCount < 0 {
-			return fmt.Errorf(
-				"invalid cardimport file view: %w",
-				core_errors.ErrConflict,
-			)
+		if fileView.File.SessionID != view.ID || fileView.CardsCount < 0 || fileView.ErrorsCount < 0 {
+			return fmt.Errorf("invalid cardimport file view: %w", core_errors.ErrConflict)
 		}
 	}
-
 	return nil
 }

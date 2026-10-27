@@ -19,7 +19,7 @@ func (s *UsersService) GetProfile(
 			core_errors.ErrInvalidArgument,
 		)
 	}
-	user, err := s.usersRepository.GetUserByTelegramID(ctx, telegramID)
+	user, err := s.usersRepository.FindByTelegramID(ctx, telegramID)
 	if err != nil {
 		return domain.User{}, fmt.Errorf(
 			"get profile with TelegramID='%d': %w",

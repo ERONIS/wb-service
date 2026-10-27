@@ -3,33 +3,24 @@ package transport
 import (
 	"errors"
 	"net/http"
+	"time"
 )
 
-var (
-	errHTTPClientRequired = errors.New(
-		"base HTTP client is required",
-	)
-	errRoundTripperRequired = errors.New(
-		"HTTP round tripper is required",
-	)
-)
+var errRoundTripperRequired = errors.New("HTTP round tripper is required")
 
-// NewHTTPClient создаёт копию базового клиента с общим WB transport.
+// NewHTTPClient создаёт HTTP-клиент с общим транспортом WB.
 func (transport *SharedTransport) NewHTTPClient(
-	baseClient *http.Client,
+	timeout time.Duration,
 ) (*http.Client, error) {
-	if baseClient == nil {
-		return nil, errHTTPClientRequired
-	}
 	if transport == nil || transport.base == nil {
 		return nil, errRoundTripperRequired
 	}
 
-	clientCopy := *baseClient
-	clientCopy.Transport = transport.base
-	clientCopy.CheckRedirect = denyRedirects
-
-	return &clientCopy, nil
+	return &http.Client{
+		Timeout:       timeout,
+		Transport:     transport.base,
+		CheckRedirect: denyRedirects,
+	}, nil
 }
 
 func denyRedirects(

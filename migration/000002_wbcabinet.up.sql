@@ -1,3 +1,5 @@
+CREATE SEQUENCE wb.client_generation_seq START WITH 1;
+
 CREATE TABLE wb.api_cabinets (
     seller_id          VARCHAR(36) PRIMARY KEY
                             CHECK (seller_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
@@ -17,8 +19,8 @@ CREATE TABLE wb.api_cabinets (
                             CHECK (capability_revision > 0),
     content_read            BOOLEAN NOT NULL,
     content_write           BOOLEAN NOT NULL,
-    client_generation       BYTEA NOT NULL
-                            CHECK (octet_length(client_generation) = 32),
+    client_generation       BIGINT NOT NULL DEFAULT nextval('wb.client_generation_seq')
+                            CHECK (client_generation > 0),
     credential_expires_at   TIMESTAMPTZ NOT NULL,
     verified_at             TIMESTAMPTZ NOT NULL,
     status                  TEXT NOT NULL DEFAULT 'active'

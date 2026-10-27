@@ -2,9 +2,6 @@ package monitoring
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -12,10 +9,14 @@ import (
 	"sync"
 	"time"
 
+	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
+	cardpublication_model "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/model"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
@@ -29,7 +30,7 @@ const (
 var ErrErrorFeedEnvelope = errors.New("WB Cards Error List returned an error envelope")
 
 type ErrorCursor struct {
-	SellerID  SellerID
+	SellerID  core_domain.SellerID
 	UpdatedAt time.Time
 	BatchUUID string
 	Revision  int64
@@ -37,17 +38,16 @@ type ErrorCursor struct {
 }
 
 type ErrorBatchEvidence struct {
-	SellerID            SellerID
+	SellerID            core_domain.SellerID
 	BatchUUID           string
 	UpdatedAt           time.Time
-	SourceDigest        Digest
 	VendorCodes         []string
 	RejectedVendorCodes []string
 	ErrorCodes          []string
 }
 
 type SaveErrorFeedCommand struct {
-	SellerID SellerID
+	SellerID core_domain.SellerID
 	Previous ErrorCursor
 	Next     ErrorCursor
 	Batches  []ErrorBatchEvidence
@@ -55,19 +55,30 @@ type SaveErrorFeedCommand struct {
 }
 
 type CaptureErrorBaselineCommand struct {
-	TransferID transfer_service.TransferID
+	TransferID transfer_model.TransferID
 	ActionID   int64
-	SellerID   SellerID
+	SellerID   core_domain.SellerID
 }
 
 type ErrorBaseline struct {
-	TransferID      transfer_service.TransferID
+	TransferID      transfer_model.TransferID
 	ActionID        int64
-	SellerID        SellerID
+	SellerID        core_domain.SellerID
 	CursorRevision  int64
 	CursorUpdatedAt time.Time
 	CursorBatchUUID string
 	CapturedAt      time.Time
+}
+
+type ErrorFeed struct {
+	transport  cardpublication_catalog.CatalogTransport
+	repository ErrorFeedRepository
+	targets    ErrorTargetSource
+	uow        core_postgres_transaction.UnitOfWork
+	now        func() time.Time
+	logger     *zap.Logger
+	mu         sync.Mutex
+	nextPoll   time.Time
 }
 
 func (baseline ErrorBaseline) Validate() error {
@@ -79,19 +90,8 @@ func (baseline ErrorBaseline) Validate() error {
 	return nil
 }
 
-type ErrorFeed struct {
-	transport  CatalogTransport
-	repository ErrorFeedRepository
-	targets    ErrorTargetSource
-	uow        core_postgres_transaction.UnitOfWork
-	now        func() time.Time
-	logger     *zap.Logger
-	mu         sync.Mutex
-	nextPoll   time.Time
-}
-
 func NewErrorFeed(
-	transport CatalogTransport,
+	transport cardpublication_catalog.CatalogTransport,
 	repository ErrorFeedRepository,
 	targets ErrorTargetSource,
 	uow core_postgres_transaction.UnitOfWork,
@@ -121,15 +121,15 @@ func (feed *ErrorFeed) ProcessPending(ctx context.Context) error {
 		return nil
 	}
 	feed.nextPoll = now.Add(errorFeedInterval)
-	targets, err := feed.targets.PublicationTargets(ctx)
+	targets, err := feed.targets.AllTargets(ctx)
 	if err != nil {
 		return err
 	}
-	group, refreshCtx := errgroup.WithContext(ctx)
+	var group errgroup.Group
 	for _, target := range targets {
 		target := target
 		group.Go(func() error {
-			_, err := feed.Refresh(refreshCtx, SellerID(target.SellerID))
+			_, err := feed.Refresh(ctx, target.SellerID)
 			return err
 		})
 	}
@@ -138,7 +138,7 @@ func (feed *ErrorFeed) ProcessPending(ctx context.Context) error {
 
 func (feed *ErrorFeed) Refresh(
 	ctx context.Context,
-	sellerID SellerID,
+	sellerID core_domain.SellerID,
 ) (ErrorCursor, error) {
 	if ctx == nil || strings.TrimSpace(string(sellerID)) != string(sellerID) ||
 		sellerID == "" {
@@ -186,7 +186,7 @@ func (feed *ErrorFeed) Refresh(
 				next.BatchUUID = batch.BatchUUID
 			}
 		}
-		cursorTime, err := parseWBTime(response.Data.Cursor.UpdatedAt)
+		cursorTime, err := cardpublication_model.ParseWBTime(response.Data.Cursor.UpdatedAt)
 		if response.Data.Cursor.UpdatedAt != "" && err != nil {
 			return ErrorCursor{}, fmt.Errorf("parse Cards Error List cursor: %w", err)
 		}
@@ -248,23 +248,19 @@ func (feed *ErrorFeed) CaptureBaseline(
 }
 
 func normalizeErrorBatch(
-	sellerID SellerID,
+	sellerID core_domain.SellerID,
 	raw contentapi.CardsErrorBatch,
 ) (ErrorBatchEvidence, error) {
 	if strings.TrimSpace(raw.BatchUUID) == "" {
 		return ErrorBatchEvidence{}, errors.New("Cards Error List batch UUID is empty")
 	}
-	updatedAt, err := parseWBTime(raw.UpdatedAt)
+	updatedAt, err := cardpublication_model.ParseWBTime(raw.UpdatedAt)
 	if err != nil || updatedAt.IsZero() {
 		return ErrorBatchEvidence{}, errors.New("Cards Error List batch time is invalid")
 	}
-	encoded, err := json.Marshal(raw)
-	if err != nil {
-		return ErrorBatchEvidence{}, fmt.Errorf("encode Cards Error List batch: %w", err)
-	}
-	vendorCodes := normalizedUniqueStrings(raw.VendorCodes)
+	vendorCodes := cardpublication_model.NormalizeUniqueStrings(raw.VendorCodes)
 	rejectedVendorCodes := make([]string, 0, len(raw.Errors))
-	errorCodeSet := make(map[string]struct{})
+	messagesSeen := make(map[string]struct{})
 	for vendorCode, messages := range raw.Errors {
 		rejectedVendorCodes = append(rejectedVendorCodes, vendorCode)
 		for _, message := range messages {
@@ -272,16 +268,19 @@ func normalizeErrorBatch(
 			if message == "" {
 				continue
 			}
-			digest := sha256.Sum256([]byte(message))
-			errorCodeSet["wb_error_"+hex.EncodeToString(digest[:])] = struct{}{}
+			messagesSeen[message] = struct{}{}
 		}
 	}
-	rejectedVendorCodes = normalizedUniqueStrings(rejectedVendorCodes)
-	errorCodes := make([]string, 0, len(errorCodeSet))
-	for code := range errorCodeSet {
-		errorCodes = append(errorCodes, code)
+	rejectedVendorCodes = cardpublication_model.NormalizeUniqueStrings(rejectedVendorCodes)
+	messages := make([]string, 0, len(messagesSeen))
+	for message := range messagesSeen {
+		messages = append(messages, message)
 	}
-	sort.Strings(errorCodes)
+	sort.Strings(messages)
+	errorCodes := make([]string, len(messages))
+	for index := range messages {
+		errorCodes[index] = fmt.Sprintf("wb_error_%d", index+1)
+	}
 	if len(errorCodes) == 0 {
 		errorCodes = []string{"wb_error_unspecified"}
 	}
@@ -289,7 +288,6 @@ func normalizeErrorBatch(
 		SellerID:            sellerID,
 		BatchUUID:           strings.TrimSpace(raw.BatchUUID),
 		UpdatedAt:           updatedAt,
-		SourceDigest:        digestParts("cardpublication-error-batch:v1", encoded),
 		VendorCodes:         vendorCodes,
 		RejectedVendorCodes: rejectedVendorCodes,
 		ErrorCodes:          errorCodes,

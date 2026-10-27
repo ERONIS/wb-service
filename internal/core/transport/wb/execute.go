@@ -10,12 +10,12 @@ import (
 )
 
 type ExecutorRegistry interface {
-	ExecutorForCabinet(domain.SellerID) (client.Executor, error)
+	ExecutorForCabinet(domain.SellerID) (*client.APIClient, error)
 }
 
 type PinnedExecutorRegistry interface {
 	ExecutorRegistry
-	PinnedExecutor(domain.SellerID, ClientGeneration) (client.Executor, error)
+	PinnedExecutor(domain.SellerID, domain.ClientGeneration) (*client.APIClient, error)
 }
 
 func ExecuteForCabinet[Response any](
@@ -28,12 +28,16 @@ func ExecuteForCabinet[Response any](
 ) (Response, error) {
 	if executors == nil {
 		var response Response
-		return response, fmt.Errorf("get WB cabinet executor: registry is nil")
+		return response, client.ExecutorUnavailableError(
+			fmt.Errorf("get WB cabinet executor: registry is nil"),
+		)
 	}
 	executor, err := executors.ExecutorForCabinet(sellerID)
 	if err != nil {
 		var response Response
-		return response, fmt.Errorf("get WB cabinet executor: %w", err)
+		return response, client.ExecutorUnavailableError(
+			fmt.Errorf("get WB cabinet executor: %w", err),
+		)
 	}
 	return client.ExecuteResponse[Response](ctx, executor, operation, query, body)
 }
@@ -42,19 +46,23 @@ func ExecutePinnedForCabinet[Response any](
 	ctx context.Context,
 	executors PinnedExecutorRegistry,
 	sellerID domain.SellerID,
-	generation ClientGeneration,
+	generation domain.ClientGeneration,
 	operation policy.Operation,
 	query any,
 	body any,
 ) (Response, error) {
 	if executors == nil {
 		var response Response
-		return response, fmt.Errorf("get pinned WB cabinet executor: registry is nil")
+		return response, client.ExecutorUnavailableError(
+			fmt.Errorf("get pinned WB cabinet executor: registry is nil"),
+		)
 	}
 	executor, err := executors.PinnedExecutor(sellerID, generation)
 	if err != nil {
 		var response Response
-		return response, fmt.Errorf("get pinned WB cabinet executor: %w", err)
+		return response, client.ExecutorUnavailableError(
+			fmt.Errorf("get pinned WB cabinet executor: %w", err),
+		)
 	}
 	return client.ExecuteResponse[Response](ctx, executor, operation, query, body)
 }

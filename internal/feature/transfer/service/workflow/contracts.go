@@ -5,124 +5,74 @@ import (
 
 	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
 
 type BatchHeaderReader interface {
-	GetBatch(
+	GetReadyBatchHeader(
 		ctx context.Context,
 		batchID cardpipeline.BatchID,
-	) (cardpipeline.BatchHeader, error)
+	) (cardpipeline.ReadyBatchHeader, error)
 }
 
 type BatchReader interface {
 	BatchHeaderReader
 
-	ListFinalizedBatches(
+	ListReadyBatches(
 		ctx context.Context,
 		after *cardpipeline.BatchCursor,
 		limit int,
-	) ([]cardpipeline.BatchHeader, error)
+	) ([]cardpipeline.ReadyBatchHeader, error)
 
-	ListBatchItems(
+	GetReadyBatch(
 		ctx context.Context,
 		batchID cardpipeline.BatchID,
-		afterPosition int,
-		limit int,
-	) ([]cardpipeline.BatchItem, error)
+	) (cardpipeline.ReadyBatch, error)
 }
 
 type TargetRegistry interface {
-	MutationSnapshot(ctx context.Context, ownerTelegramID int64) (MutationTargetSnapshot, error)
-	FanoutMutationSnapshot(context.Context) (MutationTargetSnapshot, error)
-	MutationSnapshotForOwner(
-		ctx context.Context,
-		ownerTelegramID int64,
-		sellerIDs []SellerID,
-	) (MutationTargetSnapshot, error)
-	AllTargets(context.Context) ([]MutationTarget, error)
+	FanoutTargets(context.Context) ([]transfer_model.MutationTarget, error)
 }
 
 type CreateTransfer struct {
-	Batch         cardpipeline.BatchHeader
-	Snapshot      MutationTargetSnapshot
-	TargetSetRoot Digest
-	Capacity      Capacity
+	Batch    cardpipeline.ReadyBatchHeader
+	Targets  []transfer_model.MutationTarget
+	Capacity transfer_model.Capacity
 }
 
 type Repository interface {
 	FindByID(
 		ctx context.Context,
-		transferID TransferID,
-	) (Transfer, error)
+		transferID transfer_model.TransferID,
+	) (transfer_model.Transfer, error)
 
 	FindByBatch(
 		ctx context.Context,
 		batchID cardpipeline.BatchID,
-	) (Transfer, error)
-
-	ListTargetSellerIDs(
-		ctx context.Context,
-		transferID TransferID,
-	) ([]SellerID, error)
+	) (transfer_model.Transfer, error)
 
 	Create(
 		ctx context.Context,
 		tx core_postgres_transaction.DBTX,
 		command CreateTransfer,
-	) (transfer Transfer, created bool, err error)
+	) (transfer_model.Transfer, error)
 
 	ListInitializing(
 		ctx context.Context,
-		afterID TransferID,
+		afterID transfer_model.TransferID,
 		limit int,
-	) ([]Transfer, error)
-
-	ListPreparing(
-		ctx context.Context,
-		afterID TransferID,
-		limit int,
-	) ([]Transfer, error)
-
-	ListAwaitingAuthorization(
-		ctx context.Context,
-		afterID TransferID,
-		limit int,
-	) ([]Transfer, error)
+	) ([]transfer_model.Transfer, error)
 
 	Initialize(
 		ctx context.Context,
 		tx core_postgres_transaction.DBTX,
 		command InitializeTransferCommand,
-	) error
+	) (bool, error)
 
 	MarkInitializationFailed(
 		ctx context.Context,
 		tx core_postgres_transaction.DBTX,
-		transferID TransferID,
+		transferID transfer_model.TransferID,
 		failureCode string,
 	) error
-
-	BeginPreparation(
-		ctx context.Context,
-		tx core_postgres_transaction.DBTX,
-		transferID TransferID,
-	) error
-
-	ListPendingPreparationGroups(
-		ctx context.Context,
-		transferID TransferID,
-		limit int,
-		after PreparationPendingGroup,
-	) ([]PreparationPendingGroup, error)
-
-	LoadPreparationSource(
-		ctx context.Context,
-		transferID TransferID,
-		groupTargetID int64,
-	) (PreparationSource, error)
-
-	LoadPublicationPlanningSource(
-		ctx context.Context,
-		transferID TransferID,
-	) (PublicationPlanningSource, error)
 }

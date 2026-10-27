@@ -1,73 +1,71 @@
-package workflow
+package cardimport_workflow
 
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"io"
 
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
+	cardimport_contract "github.com/ERONIS/wb-service/internal/feature/cardimport/service/contract"
+	cardimport_intake "github.com/ERONIS/wb-service/internal/feature/cardimport/service/intake"
+	cardimport_model "github.com/ERONIS/wb-service/internal/feature/cardimport/service/model"
 )
 
+// ReserveFile добавляет метаданные файла в собираемую сессию.
 func (s *Service) ReserveFile(
 	ctx context.Context,
-	command ReserveFileCommand,
-) (File, error) {
-	command = command.normalized()
-	if err := command.validate(); err != nil {
-		return File{}, err
+	command cardimport_contract.ReserveFileCommand,
+) (cardimport_model.File, error) {
+	command = command.Normalized()
+	if err := command.Validate(); err != nil {
+		return cardimport_model.File{}, err
 	}
 
-	file, err := s.repository.ReserveFile(
-		ctx,
-		command,
-		MaxFilesPerSession,
-	)
+	file, err := s.sessions.Reserve(ctx, command)
 	if err != nil {
-		return File{}, fmt.Errorf("reserve cardimport file: %w", err)
+		return cardimport_model.File{}, fmt.Errorf("reserve cardimport file: %w", err)
 	}
 	if err := validateReservedFile(file, command); err != nil {
-		return File{}, err
+		return cardimport_model.File{}, err
 	}
 
 	return file, nil
 }
 
-// StoreFile ограниченно читает файл и durable сохраняет bytes с SHA-256.
-// Разбор XLSX начинается только на следующем этапе и всегда читает stored blob.
+// StoreFile считывает файл в память и отмечает его сохранённым.
 func (s *Service) StoreFile(
 	ctx context.Context,
-	command StoreFileCommand,
+	command cardimport_contract.StoreFileCommand,
 	source io.Reader,
-) (File, error) {
-	if err := command.validate(); err != nil {
-		return File{}, err
+) (cardimport_model.File, error) {
+	if err := command.Validate(); err != nil {
+		return cardimport_model.File{}, err
 	}
 	if source == nil {
-		return File{}, invalidFileArgument("source reader is nil")
+		return cardimport_model.File{}, cardimport_contract.InvalidFileArgument("source reader is nil")
 	}
 
 	content, err := readStoredContent(source)
 	if err != nil {
-		return File{}, err
+		return cardimport_model.File{}, err
 	}
 
-	file, err := s.repository.StoreFile(ctx, command, content)
+	file, err := s.sessions.StoreFile(ctx, command, content)
 	if err != nil {
-		return File{}, fmt.Errorf("store cardimport file: %w", err)
+		return cardimport_model.File{}, fmt.Errorf("store cardimport file: %w", err)
 	}
 	if err := file.Validate(); err != nil {
-		return File{}, fmt.Errorf("validate stored cardimport file: %w", err)
+		return cardimport_model.File{}, fmt.Errorf("validate stored cardimport file: %w", err)
 	}
 	if file.ID != command.FileID || file.SessionID != command.SessionID {
-		return File{}, fmt.Errorf(
+		return cardimport_model.File{}, fmt.Errorf(
 			"stored cardimport file does not match command: %w",
 			core_errors.ErrConflict,
 		)
 	}
-	if file.Status != FileStatusStored {
-		return File{}, fmt.Errorf(
+	if file.Status != cardimport_model.FileStatusStored {
+		return cardimport_model.File{}, fmt.Errorf(
 			"cardimport file was not stored: %w",
 			core_errors.ErrConflict,
 		)
@@ -76,9 +74,78 @@ func (s *Service) StoreFile(
 	return file, nil
 }
 
+// ParseFile разбирает XLSX и сохраняет карточки с замечаниями.
+func (s *Service) ParseFile(
+	ctx context.Context,
+	command cardimport_contract.ParseFileCommand,
+) (cardimport_model.SessionView, error) {
+	if err := command.Validate(); err != nil {
+		return cardimport_model.SessionView{}, err
+	}
+
+	content, err := s.sessions.Claim(ctx, command)
+	if err != nil {
+		return cardimport_model.SessionView{}, fmt.Errorf(
+			"claim cardimport file for parsing: %w",
+			err,
+		)
+	}
+
+	parsed, parseErr := s.parser.Parse(
+		command.FileID,
+		bytes.NewReader(content),
+	)
+	if parseErr != nil {
+		parsed = cardimport_model.ParsedFile{
+			FileID: command.FileID,
+			Issues: []cardimport_model.ParseIssue{{
+				Severity: cardimport_model.IssueSeverityError,
+				Code:     "xlsx_parse_failed",
+				Message: fmt.Sprintf(
+					"Не удалось разобрать XLSX: %v.",
+					parseErr,
+				),
+			}},
+		}
+	}
+
+	result := cardimport_intake.AggregateParsedFile(parsed)
+	file, err := s.sessions.SaveParsed(ctx, command, result)
+	if err != nil {
+		return cardimport_model.SessionView{}, fmt.Errorf(
+			"save parsed cardimport file: %w",
+			err,
+		)
+	}
+	if err := file.Validate(); err != nil {
+		return cardimport_model.SessionView{}, fmt.Errorf(
+			"validate parsed cardimport file: %w",
+			err,
+		)
+	}
+
+	expectedStatus := cardimport_model.FileStatusValid
+	if result.HasErrors() {
+		expectedStatus = cardimport_model.FileStatusInvalid
+	}
+	if file.Status != expectedStatus {
+		return cardimport_model.SessionView{}, fmt.Errorf(
+			"unexpected parsed file status %q: %w",
+			file.Status,
+			core_errors.ErrConflict,
+		)
+	}
+
+	return s.GetView(ctx, cardimport_contract.SessionCommand{
+		AuthorTelegramID: command.AuthorTelegramID,
+		SessionID:        command.SessionID,
+	})
+}
+
+// validateReservedFile сверяет зарезервированный файл с входной командой.
 func validateReservedFile(
-	file File,
-	command ReserveFileCommand,
+	file cardimport_model.File,
+	command cardimport_contract.ReserveFileCommand,
 ) error {
 	if err := file.Validate(); err != nil {
 		return fmt.Errorf("validate reserved cardimport file: %w", err)
@@ -99,102 +166,30 @@ func validateReservedFile(
 	return nil
 }
 
-func readStoredContent(source io.Reader) (StoredContent, error) {
+// readStoredContent ограниченно считывает байты файла.
+func readStoredContent(source io.Reader) ([]byte, error) {
 	var buffer bytes.Buffer
 
 	written, err := io.Copy(
 		&buffer,
-		io.LimitReader(source, MaxFileSize+1),
+		io.LimitReader(source, cardimport_model.MaxFileSize+1),
 	)
 	if err != nil {
-		return StoredContent{}, fmt.Errorf(
+		return nil, fmt.Errorf(
 			"read cardimport file: %w",
 			err,
 		)
 	}
 	if written == 0 {
-		return StoredContent{}, invalidFileArgument("file is empty")
+		return nil, cardimport_contract.InvalidFileArgument("file is empty")
 	}
-	if written > MaxFileSize {
-		return StoredContent{}, fmt.Errorf(
+	if written > cardimport_model.MaxFileSize {
+		return nil, fmt.Errorf(
 			"actual file size exceeds limit '%d': %w",
-			MaxFileSize,
+			cardimport_model.MaxFileSize,
 			core_errors.ErrInvalidArgument,
 		)
 	}
 
-	content := append([]byte(nil), buffer.Bytes()...)
-
-	return StoredContent{
-		Bytes:  content,
-		SHA256: sha256.Sum256(content),
-	}, nil
-}
-
-// ParseFile всегда разбирает durable blob из PostgreSQL, а не Telegram stream.
-func (s *Service) ParseFile(
-	ctx context.Context,
-	command ParseFileCommand,
-) (SessionView, error) {
-	if err := command.validate(); err != nil {
-		return SessionView{}, err
-	}
-
-	content, err := s.repository.ClaimFileForParsing(ctx, command)
-	if err != nil {
-		return SessionView{}, fmt.Errorf(
-			"claim cardimport file for parsing: %w",
-			err,
-		)
-	}
-
-	parsed, parseErr := s.parser.Parse(
-		command.FileID,
-		bytes.NewReader(content),
-	)
-	if parseErr != nil {
-		parsed = ParsedFile{
-			FileID: command.FileID,
-			Issues: []ParseIssue{{
-				Severity: IssueSeverityError,
-				Code:     "xlsx_parse_failed",
-				Message: fmt.Sprintf(
-					"Не удалось разобрать XLSX: %v.",
-					parseErr,
-				),
-			}},
-		}
-	}
-
-	result := AggregateParsedFile(parsed)
-	file, err := s.repository.SaveParsedFile(ctx, command, result)
-	if err != nil {
-		return SessionView{}, fmt.Errorf(
-			"save parsed cardimport file: %w",
-			err,
-		)
-	}
-	if err := file.Validate(); err != nil {
-		return SessionView{}, fmt.Errorf(
-			"validate parsed cardimport file: %w",
-			err,
-		)
-	}
-
-	expectedStatus := FileStatusValid
-	if result.HasErrors() {
-		expectedStatus = FileStatusInvalid
-	}
-	if file.Status != expectedStatus {
-		return SessionView{}, fmt.Errorf(
-			"unexpected parsed file status %q: %w",
-			file.Status,
-			core_errors.ErrConflict,
-		)
-	}
-
-	return s.GetView(ctx, SessionCommand{
-		AuthorTelegramID: command.AuthorTelegramID,
-		SessionID:        command.SessionID,
-	})
+	return append([]byte(nil), buffer.Bytes()...), nil
 }

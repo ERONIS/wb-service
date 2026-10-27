@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
+	cardimport_model "github.com/ERONIS/wb-service/internal/feature/cardimport/service/model"
 
 	"github.com/xuri/excelize/v2"
 )
@@ -18,38 +18,38 @@ func NewParser() *Parser {
 }
 
 func (p *Parser) Parse(
-	fileID cardimport_service.FileID,
+	fileID cardimport_model.FileID,
 	reader io.Reader,
-) (cardimport_service.ParsedFile, error) {
+) (cardimport_model.ParsedFile, error) {
 	return Parse(fileID, reader)
 }
 
 // Parse разбирает строки листа "Товары". Каждая строка сохраняется отдельно;
 // Артикул WB игнорируется, а Group имеет область переданного fileID.
 func Parse(
-	fileID cardimport_service.FileID,
+	fileID cardimport_model.FileID,
 	reader io.Reader,
-) (cardimport_service.ParsedFile, error) {
+) (cardimport_model.ParsedFile, error) {
 	if fileID <= 0 {
-		return cardimport_service.ParsedFile{}, fmt.Errorf(
+		return cardimport_model.ParsedFile{}, fmt.Errorf(
 			"cardimport file ID must be positive",
 		)
 	}
 
 	workbook, err := openWorkbook(reader)
 	if err != nil {
-		return cardimport_service.ParsedFile{}, err
+		return cardimport_model.ParsedFile{}, err
 	}
 	defer func() { _ = workbook.Close() }()
 
 	sheetName, err := findProductsSheet(workbook)
 	if err != nil {
-		return cardimport_service.ParsedFile{}, err
+		return cardimport_model.ParsedFile{}, err
 	}
 
 	rows, err := workbook.Rows(sheetName)
 	if err != nil {
-		return cardimport_service.ParsedFile{}, fmt.Errorf(
+		return cardimport_model.ParsedFile{}, fmt.Errorf(
 			"open rows from XLSX sheet %q: %w",
 			sheetName,
 			err,
@@ -57,11 +57,11 @@ func Parse(
 	}
 	defer func() { _ = rows.Close() }()
 
-	result := cardimport_service.ParsedFile{
+	result := cardimport_model.ParsedFile{
 		FileID:    fileID,
 		SheetName: sheetName,
-		Rows:      make([]cardimport_service.ParsedRow, 0),
-		Issues:    make([]cardimport_service.ParseIssue, 0),
+		Rows:      make([]cardimport_model.ParsedRow, 0),
+		Issues:    make([]cardimport_model.ParseIssue, 0),
 	}
 
 	var parsedColumns columns
@@ -72,7 +72,7 @@ func Parse(
 	for rows.Next() {
 		rowNumber++
 		if rowNumber > maxRows {
-			return cardimport_service.ParsedFile{}, fmt.Errorf(
+			return cardimport_model.ParsedFile{}, fmt.Errorf(
 				"XLSX row limit exceeded: %d",
 				maxRows,
 			)
@@ -82,7 +82,7 @@ func Parse(
 			excelize.Options{RawCellValue: true},
 		)
 		if rowErr != nil {
-			return cardimport_service.ParsedFile{}, fmt.Errorf(
+			return cardimport_model.ParsedFile{}, fmt.Errorf(
 				"read XLSX sheet %q row %d: %w",
 				sheetName,
 				rowNumber,
@@ -92,7 +92,7 @@ func Parse(
 
 		totalCells += len(row)
 		if totalCells > maxCells {
-			return cardimport_service.ParsedFile{}, fmt.Errorf(
+			return cardimport_model.ParsedFile{}, fmt.Errorf(
 				"XLSX cell limit exceeded: %d",
 				maxCells,
 			)
@@ -105,7 +105,7 @@ func Parse(
 
 			parsedColumns, err = newColumns(row)
 			if err != nil {
-				return cardimport_service.ParsedFile{}, fmt.Errorf(
+				return cardimport_model.ParsedFile{}, fmt.Errorf(
 					"read XLSX headers at row %d: %w",
 					rowNumber,
 					err,
@@ -134,7 +134,7 @@ func Parse(
 
 		result.Rows = append(result.Rows, parsedRow)
 		if len(result.Rows) > maxParsedRows {
-			return cardimport_service.ParsedFile{}, fmt.Errorf(
+			return cardimport_model.ParsedFile{}, fmt.Errorf(
 				"XLSX parsed row limit exceeded: %d",
 				maxParsedRows,
 			)
@@ -142,14 +142,14 @@ func Parse(
 	}
 
 	if err := rows.Error(); err != nil {
-		return cardimport_service.ParsedFile{}, fmt.Errorf(
+		return cardimport_model.ParsedFile{}, fmt.Errorf(
 			"iterate XLSX sheet %q: %w",
 			sheetName,
 			err,
 		)
 	}
 	if !headerFound {
-		return cardimport_service.ParsedFile{}, fmt.Errorf(
+		return cardimport_model.ParsedFile{}, fmt.Errorf(
 			"XLSX header row with seller article and category was not found",
 		)
 	}

@@ -9,19 +9,8 @@ const (
 	LocaleZH Locale = "zh"
 )
 
-type ParentCategoriesQuery struct {
+type LocaleQuery struct {
 	Locale Locale `url:"locale,omitempty"`
-}
-
-type ParentCategoriesResponse struct {
-	Data []ParentCategory `json:"data"`
-	ResponseMeta
-}
-
-type ParentCategory struct {
-	ID        int64  `json:"id"`
-	Name      string `json:"name"`
-	IsVisible bool   `json:"isVisible"`
 }
 
 type SubjectsQuery struct {
@@ -32,10 +21,7 @@ type SubjectsQuery struct {
 	ParentID int64  `url:"parentID,omitempty"`
 }
 
-type SubjectsResponse struct {
-	Data []Subject `json:"data"`
-	ResponseMeta
-}
+type SubjectsResponse = DataResponse[[]Subject]
 
 type Subject struct {
 	SubjectID   int64  `json:"subjectID"`
@@ -44,14 +30,9 @@ type Subject struct {
 	ParentName  string `json:"parentName"`
 }
 
-type SubjectCharacteristicsQuery struct {
-	Locale Locale `url:"locale,omitempty"`
-}
+type SubjectCharacteristicsQuery = LocaleQuery
 
-type SubjectCharacteristicsResponse struct {
-	Data []SubjectCharacteristic `json:"data"`
-	ResponseMeta
-}
+type SubjectCharacteristicsResponse = DataResponse[[]SubjectCharacteristic]
 
 type SubjectCharacteristic struct {
 	CharacteristicID   int64  `json:"charcID"`

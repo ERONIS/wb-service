@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strconv"
 	"time"
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
@@ -37,26 +38,10 @@ func NewConnectionPool(
 		return nil, fmt.Errorf("validate postgres config: %w", err)
 	}
 
-	u := &url.URL{
-		Scheme: "postgres",
-		User:   url.UserPassword(config.User, config.Password),
-		Host:   net.JoinHostPort(config.Host, config.Port),
-		Path:   config.Database,
-	}
-	query := u.Query()
-	query.Set("sslmode", config.SSLMode)
-	u.RawQuery = query.Encode()
-
-	pgxconfig, err := pgxpool.ParseConfig(u.String())
+	pgxconfig, err := newPGXPoolConfig(config)
 	if err != nil {
-		return nil, fmt.Errorf("parse pgxconfig: %w", err)
+		return nil, err
 	}
-
-	pgxconfig.MaxConns = int32(config.MaxConns)
-	pgxconfig.MinConns = int32(config.MinConns)
-	pgxconfig.MaxConnLifetime = config.MaxConnLifetime
-	pgxconfig.MaxConnIdleTime = config.MaxConnIdleTime
-	pgxconfig.HealthCheckPeriod = config.HealthCheckPeriod
 
 	if len(loggers) > 0 && loggers[0] != nil {
 		pgxconfig.ConnConfig.Tracer = newQueryTracer(loggers[0])
@@ -76,6 +61,39 @@ func NewConnectionPool(
 		Pool:      pool,
 		opTimeout: config.Timeout,
 	}, nil
+}
+
+// newPGXPoolConfig собирает параметры соединения и серверный таймаут для каждого SQL-запроса.
+func newPGXPoolConfig(config Config) (*pgxpool.Config, error) {
+	u := &url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(config.User, config.Password),
+		Host:   net.JoinHostPort(config.Host, config.Port),
+		Path:   config.Database,
+	}
+	query := u.Query()
+	query.Set("sslmode", config.SSLMode)
+	query.Set("application_name", config.ApplicationName)
+	u.RawQuery = query.Encode()
+
+	pgxconfig, err := pgxpool.ParseConfig(u.String())
+	if err != nil {
+		return nil, fmt.Errorf("parse pgxconfig: %w", err)
+	}
+
+	pgxconfig.MaxConns = int32(config.MaxConns)
+	pgxconfig.MinConns = int32(config.MinConns)
+	pgxconfig.MaxConnLifetime = config.MaxConnLifetime
+	pgxconfig.MaxConnIdleTime = config.MaxConnIdleTime
+	pgxconfig.HealthCheckPeriod = config.HealthCheckPeriod
+
+	timeoutMillis := config.Timeout / time.Millisecond
+	if config.Timeout%time.Millisecond != 0 {
+		timeoutMillis++
+	}
+	pgxconfig.ConnConfig.RuntimeParams["statement_timeout"] =
+		strconv.FormatInt(int64(timeoutMillis), 10) + "ms"
+	return pgxconfig, nil
 }
 
 func (p *ConnectionPool) OperationContext(

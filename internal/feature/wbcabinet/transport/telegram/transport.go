@@ -34,7 +34,7 @@ var (
 type CabinetService interface {
 	Add(context.Context, wbcabinet_service.AddCommand) (wbcabinet_service.Cabinet, error)
 	ListByOwner(context.Context, int64) ([]wbcabinet_service.Cabinet, error)
-	Delete(context.Context, int64, wbcabinet_service.SellerID) error
+	Delete(context.Context, int64, domain.SellerID) error
 }
 
 type ProfileProvider interface {
@@ -77,6 +77,7 @@ func (handler *Handler) Register(
 	handler.profiles = profiles
 	handler.textFlows = menu
 	menu.RegisterTextFlow(addCabinetTextFlow, domain.RoleUser, handler.handleText)
+	menu.RegisterFlowCleanup(addCabinetTextFlow, handler.pending.Cancel)
 	menu.RegisterMenuItem(buttonCabinets, domain.RoleUser, handler.list)
 	menu.RegisterCallback(buttonAdd, domain.RoleUser, handler.startAdd)
 	menu.RegisterCallback(buttonCancel, domain.RoleUser, handler.cancelAdd)

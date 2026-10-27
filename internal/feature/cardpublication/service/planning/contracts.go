@@ -4,48 +4,36 @@ import (
 	"context"
 
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
-	cardprepare_service "github.com/ERONIS/wb-service/internal/feature/cardprepare/service"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	cardpublication_model "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/model"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+	transfer_publication "github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
 )
 
-type ErrorTargetSource interface {
-	PublicationTargets(context.Context) ([]transfer_service.MutationTarget, error)
-}
-
 type TransferSource interface {
-	ErrorTargetSource
-
-	ListAwaitingAuthorization(
+	ListReadyForPublicationPlanning(
 		context.Context,
-		transfer_service.TransferID,
+		transfer_model.TransferID,
 		int,
-	) ([]transfer_service.Transfer, error)
+	) ([]transfer_model.Transfer, error)
 
 	LoadPublicationPlanningSource(
 		context.Context,
-		transfer_service.TransferID,
-	) (transfer_service.PublicationPlanningSource, error)
+		transfer_model.TransferID,
+	) (transfer_publication.PublicationPlanningSource, error)
 }
 
-type TransferResultApplier interface {
-	ApplyWithin(
+type TransferResultRepository interface {
+	ApplyPublicationPlanResult(
 		context.Context,
 		core_postgres_transaction.DBTX,
-		transfer_service.ApplyPublicationPlanResultCommand,
+		transfer_publication.ApplyPublicationPlanResultCommand,
 	) error
-}
-
-type ProposalReader interface {
-	LoadProposals(
-		context.Context,
-		[]cardprepare_service.ProposalQuery,
-	) ([]cardprepare_service.StoredProposal, error)
 }
 
 type Repository interface {
 	InsertPlan(
 		context.Context,
 		core_postgres_transaction.DBTX,
-		PlanDraft,
-	) (PersistedPlan, error)
+		cardpublication_model.PlanDraft,
+	) (cardpublication_model.PersistedPlan, error)
 }

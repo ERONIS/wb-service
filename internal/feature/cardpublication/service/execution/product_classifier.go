@@ -8,20 +8,22 @@ import (
 
 	core_wb "github.com/ERONIS/wb-service/internal/core/transport/wb"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
+	cardpublication_model "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/model"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
 
 func executeProductMutation(
 	ctx context.Context,
-	transport CatalogTransport,
+	transport cardpublication_catalog.CatalogTransport,
 	action ProductAction,
 ) SubmissionResult {
 	var meta contentapi.ResponseMeta
 	var err error
 	switch action.Kind {
-	case ActionCreateGroup:
+	case cardpublication_model.ActionCreateGroup:
 		var request contentapi.UploadCardsRequest
-		if decodeErr := decodeExactJSON(action.RequestPayload, &request); decodeErr != nil {
+		if decodeErr := cardpublication_model.DecodeExactJSON(action.RequestPayload, &request); decodeErr != nil {
 			return classifySubmissionError(action, decodeErr)
 		}
 		var response contentapi.UploadCardsResponse
@@ -32,9 +34,9 @@ func executeProductMutation(
 			request,
 		)
 		meta = response.ResponseMeta
-	case ActionAddToGroup:
+	case cardpublication_model.ActionAddToGroup:
 		var request contentapi.UploadCardsAddRequest
-		if decodeErr := decodeExactJSON(action.RequestPayload, &request); decodeErr != nil {
+		if decodeErr := cardpublication_model.DecodeExactJSON(action.RequestPayload, &request); decodeErr != nil {
 			return classifySubmissionError(action, decodeErr)
 		}
 		var response contentapi.UploadCardsAddResponse
@@ -73,7 +75,7 @@ func classifySubmissionEnvelope(
 		for index, member := range action.Members {
 			members[index] = MemberSubmissionResult{
 				ActionMemberID: member.ID,
-				OutcomeClass:   transfer_service.ResultRejected,
+				OutcomeClass:   transfer_model.ResultRejected,
 				OutcomeCode:    "WB_ENVELOPE_MEMBER_REJECTED",
 			}
 		}
@@ -98,7 +100,9 @@ func classifySubmissionEnvelope(
 
 func classifySubmissionError(action ProductAction, err error) SubmissionResult {
 	var classified core_wb.ClassifiedError
-	if !errors.As(err, &classified) {
+	if !errors.As(err, &classified) ||
+		(classified.Delivery() == core_wb.NotDispatched &&
+			classified.Code() == core_wb.ErrorCodeExecutorUnavailable) {
 		return internalNotDispatched(action, "WB_CALL_NOT_DISPATCHED")
 	}
 	safeCode := "WB_TRANSPORT_" + strings.ToUpper(classified.Code())
@@ -132,7 +136,7 @@ func internalNotDispatched(action ProductAction, safeCode string) SubmissionResu
 	for index, member := range action.Members {
 		members[index] = MemberSubmissionResult{
 			ActionMemberID: member.ID,
-			OutcomeClass:   transfer_service.ResultInternalError,
+			OutcomeClass:   transfer_model.ResultInternalError,
 			OutcomeCode:    safeCode,
 		}
 	}
@@ -213,8 +217,8 @@ func ValidateSubmissionResult(result SubmissionResult) error {
 		for _, member := range result.MemberResults {
 			if member.ActionMemberID <= 0 || member.OutcomeCode == "" ||
 				len(member.OutcomeCode) > 128 ||
-				(member.OutcomeClass != transfer_service.ResultRejected &&
-					member.OutcomeClass != transfer_service.ResultInternalError) {
+				(member.OutcomeClass != transfer_model.ResultRejected &&
+					member.OutcomeClass != transfer_model.ResultInternalError) {
 				return errors.New("proven rejection member result is invalid")
 			}
 			if _, exists := seen[member.ActionMemberID]; exists {

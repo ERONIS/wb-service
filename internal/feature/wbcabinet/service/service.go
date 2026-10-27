@@ -11,6 +11,7 @@ import (
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
+	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	credentials "github.com/ERONIS/wb-service/internal/core/transport/wb/credentials"
 	"go.uber.org/zap"
 )
@@ -18,23 +19,26 @@ import (
 type Service struct {
 	repository     Repository
 	verifier       Verifier
+	uow            core_postgres_transaction.UnitOfWork
 	now            func() time.Time
 	mutationMu     sync.Mutex
-	restorePending map[SellerID]ClientGeneration
+	restorePending map[domain.SellerID]domain.ClientGeneration
 }
 
 func New(
 	repository Repository,
 	verifier Verifier,
+	uow core_postgres_transaction.UnitOfWork,
 ) *Service {
-	if repository == nil || verifier == nil {
+	if repository == nil || verifier == nil || uow == nil {
 		panic("wbcabinet service dependency is nil")
 	}
 	return &Service{
 		repository:     repository,
 		verifier:       verifier,
+		uow:            uow,
 		now:            time.Now,
-		restorePending: make(map[SellerID]ClientGeneration),
+		restorePending: make(map[domain.SellerID]domain.ClientGeneration),
 	}
 }
 
@@ -83,14 +87,7 @@ func (service *Service) add(ctx context.Context, command AddCommand) (Cabinet, e
 
 	prepared, err := service.verifier.Prepare(ctx, sellerID, command.Name, command.Token)
 	if err != nil {
-		return Cabinet{}, fmt.Errorf(
-			"prepare and verify WB credential: %w",
-			errors.Join(ErrVerification, err),
-		)
-	}
-	generation := domain.NewClientGeneration(command.Token)
-	if generation != prepared.Generation() {
-		return Cabinet{}, fmt.Errorf("WB credential generation differs from prepared client: %w", ErrIdentityMismatch)
+		return Cabinet{}, fmt.Errorf("prepare and verify WB credential: %w", err)
 	}
 	verified := VerifiedCredential{
 		SellerID:            sellerID,
@@ -100,18 +97,27 @@ func (service *Service) add(ctx context.Context, command AddCommand) (Cabinet, e
 		ContentWrite:        contentWrite,
 		TokenProperties:     claims.Properties,
 		CredentialExpiresAt: claims.ExpiresAt,
-		ClientGeneration:    generation,
 		VerifiedAt:          now,
 		Token:               command.Token,
 	}
-	cabinet, err := service.repository.UpsertVerified(ctx, verified)
+	txCtx, cancel := service.repository.OperationContext(ctx)
+	defer cancel()
+	var cabinet Cabinet
+	err = service.uow.WithinTransaction(txCtx, func(txCtx context.Context, tx core_postgres_transaction.DBTX) error {
+		var persistErr error
+		cabinet, persistErr = service.repository.UpsertVerified(txCtx, tx, verified)
+		return persistErr
+	})
 	if err != nil {
-		return Cabinet{}, err
+		return Cabinet{}, fmt.Errorf("persist verified WB cabinet: %w", err)
 	}
 	if cabinet.ID != sellerID {
 		return Cabinet{}, core_errors.Conflict("persisted WB seller ID differs from verified candidate")
 	}
-	if err := prepared.Activate(); err != nil {
+	if cabinet.ClientGeneration.IsZero() {
+		return Cabinet{}, core_errors.Conflict("persisted WB client generation is invalid")
+	}
+	if err := prepared.Activate(cabinet.ClientGeneration); err != nil {
 		return Cabinet{}, fmt.Errorf("activate verified WB cabinet: %w", err)
 	}
 	delete(service.restorePending, cabinet.ID)
@@ -131,7 +137,7 @@ func (service *Service) ListByOwner(
 func (service *Service) GetByOwner(
 	ctx context.Context,
 	ownerTelegramID int64,
-	sellerID SellerID,
+	sellerID domain.SellerID,
 ) (Cabinet, error) {
 	if ctx == nil || ownerTelegramID <= 0 || sellerID.Validate() != nil {
 		return Cabinet{}, core_errors.ErrInvalidArgument
@@ -142,7 +148,7 @@ func (service *Service) GetByOwner(
 func (service *Service) Delete(
 	ctx context.Context,
 	ownerTelegramID int64,
-	sellerID SellerID,
+	sellerID domain.SellerID,
 ) error {
 	if ctx == nil || ownerTelegramID <= 0 || sellerID.Validate() != nil {
 		return core_errors.ErrInvalidArgument
@@ -158,20 +164,10 @@ func (service *Service) Delete(
 	return nil
 }
 
-func (service *Service) Targets(
-	ctx context.Context,
-	ownerTelegramID int64,
-) ([]TargetCredential, error) {
-	if ownerTelegramID <= 0 {
-		return nil, core_errors.ErrInvalidArgument
-	}
-	return service.repository.ListTargets(ctx, ownerTelegramID)
-}
-
 func (service *Service) TargetsByOwnerRole(
 	ctx context.Context,
 	role domain.UserRole,
-) ([]TargetCredential, error) {
+) ([]domain.CabinetAccess, error) {
 	if ctx == nil || !role.IsValid() {
 		return nil, core_errors.ErrInvalidArgument
 	}
@@ -180,7 +176,7 @@ func (service *Service) TargetsByOwnerRole(
 
 func (service *Service) AllTargets(
 	ctx context.Context,
-) ([]TargetCredential, error) {
+) ([]domain.CabinetAccess, error) {
 	return service.repository.ListAllTargets(ctx)
 }
 

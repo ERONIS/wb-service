@@ -5,14 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
+	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	cardpublication_model "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/model"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+	transfer_publication "github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
 )
 
 const MaxManualResolutionIdempotencyKeyLength = 160
@@ -30,6 +32,151 @@ const (
 	ManualCloseUnresolvedNoRetry ManualResolutionKind = "close_unresolved_no_retry"
 )
 
+type ManualTrustedActor struct {
+	ID          int64
+	DisplayName string
+}
+
+type ManualResolutionCommand struct {
+	TransferID             transfer_model.TransferID
+	ActionID               int64
+	ActionMemberID         int64
+	ExpectedActionRevision int64
+	Kind                   ManualResolutionKind
+	EvidenceObservationID  int64
+	EvidenceErrorBatchID   int64
+	IdempotencyKey         string
+}
+
+type ResolutionSubjectKey struct {
+	TransferID             transfer_model.TransferID
+	ActionID               int64
+	ActionMemberID         int64
+	ExpectedActionRevision int64
+	AttemptID              int64
+}
+
+type ManualResolution struct {
+	ID                   int64
+	TransferID           transfer_model.TransferID
+	ActionID             int64
+	ActionMemberID       int64
+	Kind                 ManualResolutionKind
+	ResultActionRevision int64
+	OutcomeClass         transfer_model.ResultClass
+	OutcomeCode          string
+	NMID                 int64
+	IMTID                int64
+	SubjectID            int64
+	CreatedAt            time.Time
+}
+
+type ManualResolutionSubject struct {
+	TransferID               transfer_model.TransferID
+	ActionID                 int64
+	ActionMemberID           int64
+	ActionRevision           int64
+	PlanID                   int64
+	TargetID                 int64
+	SellerID                 core_domain.SellerID
+	ActionKind               cardpublication_model.ActionKind
+	RequestPayload           []byte
+	GroupTargetID            int64
+	TransferItemTargetID     int64
+	ItemTargetRevision       int64
+	VendorCode               string
+	MemberOutcomeClass       transfer_model.ResultClass
+	MemberOutcomeCode        string
+	MemberNMID               int64
+	AttemptID                int64
+	PreflightObservationID   int64
+	AttemptStartedAt         time.Time
+	AttentionClosedAt        *time.Time
+	IdentityState            string
+	IdentityNMID             int64
+	IdentityIMTID            int64
+	IdentitySubjectID        int64
+	IdentityActiveTransferID transfer_model.TransferID
+	IdentityActiveActionID   int64
+}
+
+type ManualObservationEvidence struct {
+	ID         int64
+	Payload    []byte
+	ObservedAt time.Time
+}
+
+type ManualErrorEvidence struct {
+	ID         int64
+	ErrorCodes []string
+}
+
+type ManualResolutionDecision struct {
+	Kind                  ManualResolutionKind
+	OutcomeClass          transfer_model.ResultClass
+	OutcomeCode           string
+	NMID                  int64
+	IMTID                 int64
+	SubjectID             int64
+	EvidenceObservationID int64
+	EvidenceErrorBatchID  int64
+	CloseAttentionNoRetry bool
+}
+
+type ApplyManualResolutionCommand struct {
+	Actor    ManualTrustedActor
+	Command  ManualResolutionCommand
+	Subject  ManualResolutionSubject
+	Decision ManualResolutionDecision
+}
+
+type ManualResolutionRepository interface {
+	LoadManualResolutionReplay(
+		context.Context,
+		core_postgres_transaction.DBTX,
+		string,
+		int64,
+		ManualResolutionCommand,
+	) (ManualResolution, bool, error)
+
+	LockResolutionSubject(
+		context.Context,
+		core_postgres_transaction.DBTX,
+		ResolutionSubjectKey,
+	) (ManualResolutionSubject, error)
+
+	LoadManualObservationEvidence(
+		context.Context,
+		core_postgres_transaction.DBTX,
+		ManualResolutionSubject,
+		int64,
+	) (ManualObservationEvidence, error)
+
+	LoadManualErrorEvidence(
+		context.Context,
+		core_postgres_transaction.DBTX,
+		ManualResolutionSubject,
+		int64,
+	) (ManualErrorEvidence, error)
+
+	ApplyManualResolution(
+		context.Context,
+		core_postgres_transaction.DBTX,
+		ApplyManualResolutionCommand,
+	) (ManualResolution, error)
+}
+
+type ManualResolver struct {
+	repository ManualResolutionRepository
+	transfer   transfer_publication.PublicationExecutionResultRepository
+	uow        core_postgres_transaction.UnitOfWork
+}
+
+type manualCatalogPayload struct {
+	Normal []contentapi.Card      `json:"normal"`
+	Trash  []contentapi.TrashCard `json:"trash"`
+}
+
 func (kind ManualResolutionKind) IsValid() bool {
 	switch kind {
 	case ManualMarkRemotePresent, ManualMarkRejected, ManualCloseUnresolvedNoRetry:
@@ -37,11 +184,6 @@ func (kind ManualResolutionKind) IsValid() bool {
 	default:
 		return false
 	}
-}
-
-type ManualTrustedActor struct {
-	ID          int64
-	DisplayName string
 }
 
 func (actor ManualTrustedActor) normalized() ManualTrustedActor {
@@ -54,32 +196,6 @@ func (actor ManualTrustedActor) validate() error {
 		return errors.New("manual resolution trusted actor is invalid")
 	}
 	return nil
-}
-
-func (actor ManualTrustedActor) digest() Digest {
-	return digestParts(
-		"cardpublication-manual-actor:v1",
-		[]byte(strconv.FormatInt(actor.ID, 10)),
-	)
-}
-
-type ManualResolutionCommand struct {
-	TransferID             transfer_service.TransferID
-	ActionID               int64
-	ActionMemberID         int64
-	ExpectedActionRevision int64
-	Kind                   ManualResolutionKind
-	EvidenceObservationID  int64
-	EvidenceErrorBatchID   int64
-	IdempotencyKey         string
-}
-
-type ResolutionSubjectKey struct {
-	TransferID             transfer_service.TransferID
-	ActionID               int64
-	ActionMemberID         int64
-	ExpectedActionRevision int64
-	AttemptID              int64
 }
 
 func (command ManualResolutionCommand) normalized() ManualResolutionCommand {
@@ -111,150 +227,9 @@ func (command ManualResolutionCommand) validate() error {
 	return nil
 }
 
-func (command ManualResolutionCommand) digest() Digest {
-	return digestParts(
-		"cardpublication-manual-command:v1",
-		[]byte(strconv.FormatInt(int64(command.TransferID), 10)),
-		[]byte(strconv.FormatInt(command.ActionID, 10)),
-		[]byte(strconv.FormatInt(command.ActionMemberID, 10)),
-		[]byte(strconv.FormatInt(command.ExpectedActionRevision, 10)),
-		[]byte(command.Kind),
-		[]byte(strconv.FormatInt(command.EvidenceObservationID, 10)),
-		[]byte(strconv.FormatInt(command.EvidenceErrorBatchID, 10)),
-	)
-}
-
-type ManualResolution struct {
-	ID                   int64
-	TransferID           transfer_service.TransferID
-	ActionID             int64
-	ActionMemberID       int64
-	Kind                 ManualResolutionKind
-	ResultActionRevision int64
-	OutcomeClass         transfer_service.ResultClass
-	OutcomeCode          string
-	NMID                 int64
-	IMTID                int64
-	SubjectID            int64
-	CreatedAt            time.Time
-}
-
-type ManualResolutionSubject struct {
-	TransferID               transfer_service.TransferID
-	ActionID                 int64
-	ActionMemberID           int64
-	ActionRevision           int64
-	PlanID                   int64
-	TargetID                 int64
-	SellerID                 SellerID
-	ActionKind               ActionKind
-	RequestPayload           []byte
-	PlanDigest               Digest
-	GroupTargetID            int64
-	TransferItemTargetID     int64
-	ItemTargetRevision       int64
-	VendorCode               string
-	MemberOutcomeClass       transfer_service.ResultClass
-	MemberOutcomeCode        string
-	MemberNMID               int64
-	AttemptID                int64
-	PreflightObservationID   int64
-	AttemptStartedAt         time.Time
-	AttentionClosedAt        *time.Time
-	IdentityState            string
-	IdentityNMID             int64
-	IdentityIMTID            int64
-	IdentitySubjectID        int64
-	IdentityActiveTransferID transfer_service.TransferID
-	IdentityActiveActionID   int64
-}
-
-type ManualObservationEvidence struct {
-	ID         int64
-	Digest     Digest
-	Payload    []byte
-	ObservedAt time.Time
-}
-
-type ManualErrorEvidence struct {
-	ID         int64
-	ErrorCodes []string
-}
-
-type ManualResolutionDecision struct {
-	Kind                  ManualResolutionKind
-	OutcomeClass          transfer_service.ResultClass
-	OutcomeCode           string
-	NMID                  int64
-	IMTID                 int64
-	SubjectID             int64
-	EvidenceObservationID int64
-	EvidenceErrorBatchID  int64
-	CloseAttentionNoRetry bool
-}
-
-type ApplyManualResolutionCommand struct {
-	Actor         ManualTrustedActor
-	ActorDigest   Digest
-	Command       ManualResolutionCommand
-	CommandDigest Digest
-	Subject       ManualResolutionSubject
-	Decision      ManualResolutionDecision
-}
-
-type ManualResolutionRepository interface {
-	LoadManualResolutionReplay(
-		context.Context,
-		core_postgres_transaction.DBTX,
-		string,
-		Digest,
-		Digest,
-	) (ManualResolution, bool, error)
-
-	LockResolutionSubject(
-		context.Context,
-		core_postgres_transaction.DBTX,
-		ResolutionSubjectKey,
-	) (ManualResolutionSubject, error)
-
-	LoadManualObservationEvidence(
-		context.Context,
-		core_postgres_transaction.DBTX,
-		ManualResolutionSubject,
-		int64,
-	) (ManualObservationEvidence, error)
-
-	LoadManualErrorEvidence(
-		context.Context,
-		core_postgres_transaction.DBTX,
-		ManualResolutionSubject,
-		int64,
-	) (ManualErrorEvidence, error)
-
-	ApplyManualResolution(
-		context.Context,
-		core_postgres_transaction.DBTX,
-		ApplyManualResolutionCommand,
-	) (ManualResolution, error)
-}
-
-type ManualTransferResultCorrector interface {
-	CorrectWithin(
-		context.Context,
-		core_postgres_transaction.DBTX,
-		transfer_service.CorrectPublicationItemResultCommand,
-	) error
-}
-
-type ManualResolver struct {
-	repository ManualResolutionRepository
-	transfer   ManualTransferResultCorrector
-	uow        core_postgres_transaction.UnitOfWork
-}
-
 func NewManualResolver(
 	repository ManualResolutionRepository,
-	transfer ManualTransferResultCorrector,
+	transfer transfer_publication.PublicationExecutionResultRepository,
 	uow core_postgres_transaction.UnitOfWork,
 ) *ManualResolver {
 	if repository == nil || transfer == nil || uow == nil {
@@ -279,7 +254,6 @@ func (resolver *ManualResolver) Resolve(
 	if err := command.validate(); err != nil {
 		return ManualResolution{}, err
 	}
-	actorDigest, commandDigest := actor.digest(), command.digest()
 	var resolution ManualResolution
 	err := resolver.uow.WithinTransaction(
 		ctx,
@@ -288,8 +262,8 @@ func (resolver *ManualResolver) Resolve(
 				ctx,
 				tx,
 				command.IdempotencyKey,
-				actorDigest,
-				commandDigest,
+				actor.ID,
+				command,
 			)
 			if err != nil {
 				return err
@@ -310,8 +284,8 @@ func (resolver *ManualResolver) Resolve(
 						ctx,
 						tx,
 						command.IdempotencyKey,
-						actorDigest,
-						commandDigest,
+						actor.ID,
+						command,
 					)
 					if replayErr != nil {
 						return replayErr
@@ -331,12 +305,10 @@ func (resolver *ManualResolver) Resolve(
 				ctx,
 				tx,
 				ApplyManualResolutionCommand{
-					Actor:         actor,
-					ActorDigest:   actorDigest,
-					Command:       command,
-					CommandDigest: commandDigest,
-					Subject:       subject,
-					Decision:      decision,
+					Actor:    actor,
+					Command:  command,
+					Subject:  subject,
+					Decision: decision,
 				},
 			)
 			if err != nil {
@@ -348,10 +320,10 @@ func (resolver *ManualResolver) Resolve(
 				outcomeCode = subject.MemberOutcomeCode
 				nmID = subject.MemberNMID
 			}
-			return resolver.transfer.CorrectWithin(
+			return resolver.transfer.CorrectPublicationItemResult(
 				ctx,
 				tx,
-				transfer_service.CorrectPublicationItemResultCommand{
+				transfer_publication.CorrectPublicationItemResultCommand{
 					TransferID:              subject.TransferID,
 					ActionID:                subject.ActionID,
 					GroupTargetID:           subject.GroupTargetID,
@@ -408,7 +380,7 @@ func (resolver *ManualResolver) decide(
 		}
 		return ManualResolutionDecision{
 			Kind:                 command.Kind,
-			OutcomeClass:         transfer_service.ResultRejected,
+			OutcomeClass:         transfer_model.ResultRejected,
 			OutcomeCode:          "MANUAL_ERROR_LIST_REJECTED",
 			EvidenceErrorBatchID: evidence.ID,
 		}, nil
@@ -432,16 +404,11 @@ func (resolver *ManualResolver) decide(
 	}
 }
 
-type manualCatalogPayload struct {
-	Normal []contentapi.Card      `json:"normal"`
-	Trash  []contentapi.TrashCard `json:"trash"`
-}
-
 func decideManualRemotePresent(
 	subject ManualResolutionSubject,
 	evidence ManualObservationEvidence,
 ) (ManualResolutionDecision, error) {
-	if evidence.ID <= 0 || evidence.Digest == (Digest{}) || len(evidence.Payload) == 0 ||
+	if evidence.ID <= 0 || len(evidence.Payload) == 0 ||
 		evidence.ObservedAt.IsZero() || evidence.ObservedAt.Before(subject.AttemptStartedAt) {
 		return ManualResolutionDecision{}, ErrManualEvidenceInvalid
 	}
@@ -466,15 +433,15 @@ func decideManualRemotePresent(
 	}
 	card := matching[0]
 	switch subject.ActionKind {
-	case ActionCreateGroup:
+	case cardpublication_model.ActionCreateGroup:
 		var request contentapi.UploadCardsRequest
-		if err := decodeExactJSON(subject.RequestPayload, &request); err != nil ||
+		if err := cardpublication_model.DecodeExactJSON(subject.RequestPayload, &request); err != nil ||
 			!uploadVendorMatchesSubject(request, subject.VendorCode, card.SubjectID) {
 			return ManualResolutionDecision{}, ErrManualEvidenceInvalid
 		}
-	case ActionAddToGroup:
+	case cardpublication_model.ActionAddToGroup:
 		var request contentapi.UploadCardsAddRequest
-		if err := decodeExactJSON(subject.RequestPayload, &request); err != nil ||
+		if err := cardpublication_model.DecodeExactJSON(subject.RequestPayload, &request); err != nil ||
 			request.IMTID <= 0 || request.IMTID != card.IMTID ||
 			countUploadVendor(request.CardsToAdd, subject.VendorCode) != 1 {
 			return ManualResolutionDecision{}, ErrManualEvidenceInvalid
@@ -484,7 +451,7 @@ func decideManualRemotePresent(
 	}
 	return ManualResolutionDecision{
 		Kind:                  ManualMarkRemotePresent,
-		OutcomeClass:          transfer_service.ResultSuccess,
+		OutcomeClass:          transfer_model.ResultSuccess,
 		OutcomeCode:           "MANUAL_REMOTE_PRESENT",
 		NMID:                  card.NMID,
 		IMTID:                 card.IMTID,

@@ -5,7 +5,8 @@ import (
 	"math"
 	"strings"
 
-	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
+	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
+	cardimport_model "github.com/ERONIS/wb-service/internal/feature/cardimport/service/model"
 )
 
 const weightComparisonTolerance = 0.01
@@ -15,10 +16,18 @@ func parseRow(
 	rowNumber int,
 	row []string,
 	columns columns,
-) (cardimport_service.ParsedRow, []cardimport_service.ParseIssue) {
-	issues := make([]cardimport_service.ParseIssue, 0)
+) (cardimport_model.ParsedRow, []cardimport_model.ParseIssue) {
+	issues := make([]cardimport_model.ParseIssue, 0)
 
-	group := strings.TrimSpace(columns.value(row, columnGroup))
+	group := requiredText(
+		columns.value(row, columnGroup),
+		"group_required",
+		"Не заполнена группа.",
+		sheetName,
+		rowNumber,
+		columns.firstColumn(columnGroup),
+		&issues,
+	)
 	vendorCode := requiredText(
 		columns.value(row, columnVendorCode),
 		"vendor_code_required",
@@ -137,7 +146,7 @@ func parseRow(
 		))
 	}
 
-	parsed := cardimport_service.ParsedRow{
+	parsed := cardimport_model.ParsedRow{
 		SourceRow:        rowNumber,
 		Group:            group,
 		Category:         category,
@@ -146,25 +155,25 @@ func parseRow(
 		AdultOnly:        columns.value(row, columnAdultOnly),
 		MarkingConfirmed: columns.value(row, columnMarkingConfirmed),
 		VATRate:          columns.value(row, columnVATRate),
-		Variant: cardimport_service.ParsedVariant{
+		Variant: cardpipeline.Variant{
 			VendorCode:  vendorCode,
 			Title:       title,
 			Description: description,
 			Brand:       brand,
-			Dimensions: cardimport_service.ParsedDimensions{
+			Dimensions: cardpipeline.Dimensions{
 				Length:       length,
 				Width:        width,
 				Height:       height,
 				WeightBrutto: weight,
 			},
-			Sizes: []cardimport_service.ParsedSize{{
+			Sizes: []cardpipeline.Size{{
 				TechSize: columns.value(row, columnTechSize),
 				WBSize:   columns.value(row, columnWBSize),
 				SKUs:     barcodes,
 			}},
 			Characteristics: columns.characteristics(row),
 		},
-		Media: cardimport_service.ParsedMedia{
+		Media: cardpipeline.Media{
 			Photos: splitValues(columns.value(row, columnPhoto), false),
 			Video:  video,
 		},
@@ -180,7 +189,7 @@ func requiredText(
 	sheetName string,
 	row int,
 	column string,
-	issues *[]cardimport_service.ParseIssue,
+	issues *[]cardimport_model.ParseIssue,
 ) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -200,7 +209,7 @@ func parsePositiveIntField(
 	sheetName string,
 	row int,
 	column string,
-	issues *[]cardimport_service.ParseIssue,
+	issues *[]cardimport_model.ParseIssue,
 ) int64 {
 	number, err := parsePositiveInt64(value)
 	if err != nil {
@@ -226,7 +235,7 @@ func parsePositiveFloatField(
 	sheetName string,
 	row int,
 	column string,
-	issues *[]cardimport_service.ParseIssue,
+	issues *[]cardimport_model.ParseIssue,
 ) float64 {
 	number, err := parsePositiveFloat64(value)
 	if err != nil {
@@ -251,7 +260,7 @@ func validateWeightGrams(
 	sheetName string,
 	row int,
 	column string,
-	issues *[]cardimport_service.ParseIssue,
+	issues *[]cardimport_model.ParseIssue,
 ) {
 	if strings.TrimSpace(value) == "" || column == "" {
 		return
@@ -291,9 +300,9 @@ func newIssue(
 	sheetName string,
 	row int,
 	column string,
-) cardimport_service.ParseIssue {
-	return cardimport_service.ParseIssue{
-		Severity:  cardimport_service.IssueSeverityError,
+) cardimport_model.ParseIssue {
+	return cardimport_model.ParseIssue{
+		Severity:  cardimport_model.IssueSeverityError,
 		Code:      code,
 		Message:   message,
 		SheetName: sheetName,
@@ -302,9 +311,9 @@ func newIssue(
 	}
 }
 
-func hasErrors(issues []cardimport_service.ParseIssue) bool {
+func hasErrors(issues []cardimport_model.ParseIssue) bool {
 	for _, issue := range issues {
-		if issue.Severity == cardimport_service.IssueSeverityError {
+		if issue.Severity == cardimport_model.IssueSeverityError {
 			return true
 		}
 	}

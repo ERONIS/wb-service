@@ -7,6 +7,7 @@ import (
 	"html"
 	"strings"
 
+	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 	core_tg_identity "github.com/ERONIS/wb-service/internal/core/transport/telegram/identity"
 	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
@@ -153,7 +154,7 @@ func confirmDeleteMarkup(cabinet wbcabinet_service.Cabinet) *tele.ReplyMarkup {
 	return markup
 }
 
-func cabinetCallbackKey(sellerID wbcabinet_service.SellerID) string {
+func cabinetCallbackKey(sellerID core_domain.SellerID) string {
 	digest := sha256.Sum256([]byte("wbcabinet-delete:v1:" + string(sellerID)))
 	return base64.RawURLEncoding.EncodeToString(digest[:cabinetCallbackKeyBytes])
 }

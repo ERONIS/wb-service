@@ -1,0 +1,235 @@
+package preparation
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sync"
+	"time"
+
+	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
+	cardprepare_model "github.com/ERONIS/wb-service/internal/feature/cardprepare/service/model"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+
+	"golang.org/x/sync/errgroup"
+)
+
+const (
+	preparationTransferPageSize = 100
+	preparationGroupBatchSize   = 100
+	preparationConcurrency      = 8
+)
+
+type Processor struct {
+	preparer         CardPreparer
+	repository       TransferRepository
+	resultRepository PreparationResultRepository
+	uow              core_postgres_transaction.UnitOfWork
+	mu               sync.Mutex
+	cursors          map[transfer_model.TransferID]PreparationPendingGroup
+}
+
+var _ interface {
+	ProcessPending(context.Context) error
+	ProcessPendingWithNotify(context.Context, func()) error
+} = (*Processor)(nil)
+
+func NewProcessor(
+	preparer CardPreparer,
+	repository TransferRepository,
+	resultRepository PreparationResultRepository,
+	uow core_postgres_transaction.UnitOfWork,
+) *Processor {
+	if preparer == nil || repository == nil || resultRepository == nil || uow == nil {
+		panic("cardprepare processor dependency is nil")
+	}
+	return &Processor{
+		preparer:         preparer,
+		repository:       repository,
+		resultRepository: resultRepository,
+		uow:              uow,
+		cursors:          make(map[transfer_model.TransferID]PreparationPendingGroup),
+	}
+}
+
+// ProcessPendingWithNotify сообщает о сохранённой порции до завершения общего обхода.
+func (processor *Processor) ProcessPendingWithNotify(ctx context.Context, onProgress func()) error {
+	if ctx == nil {
+		return errors.New("process pending card preparations: context is nil")
+	}
+	processor.mu.Lock()
+	defer processor.mu.Unlock()
+	seen := make(map[transfer_model.TransferID]bool)
+	var afterID transfer_model.TransferID
+	var firstErr error
+	for {
+		transfers, err := processor.repository.ListPreparing(ctx, afterID, preparationTransferPageSize)
+		if err != nil {
+			return fmt.Errorf("list card preparation transfers: %w", err)
+		}
+		for _, transfer := range transfers {
+			seen[transfer.ID] = true
+			completed, err := processor.processTransfer(ctx, transfer)
+			if completed > 0 && onProgress != nil {
+				onProgress()
+			}
+			if err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("process card preparation for transfer ID='%d': %w", transfer.ID, err)
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			afterID = transfer.ID
+		}
+		if len(transfers) < preparationTransferPageSize {
+			for id := range processor.cursors {
+				if !seen[id] {
+					delete(processor.cursors, id)
+				}
+			}
+			return firstErr
+		}
+	}
+}
+
+// ProcessPending реализует интерфейс Processor для обратной совместимости.
+func (processor *Processor) ProcessPending(ctx context.Context) error {
+	return processor.ProcessPendingWithNotify(ctx, nil)
+}
+
+// processTransfer обрабатывает одну порцию, продолжая следующий обход с сохранённого курсора.
+func (processor *Processor) processTransfer(ctx context.Context, transfer transfer_model.Transfer) (int, error) {
+	if !transfer.Phase.AllowsGroupWork() || transfer.Outcome != transfer_model.OutcomeRunning {
+		return 0, nil
+	}
+	pending, err := processor.repository.ListPendingPreparationGroups(ctx, transfer.ID,
+		preparationGroupBatchSize, processor.cursors[transfer.ID])
+	if err != nil {
+		return 0, err
+	}
+	if len(pending) == 0 {
+		delete(processor.cursors, transfer.ID)
+		return 0, nil
+	}
+	results := make([]error, len(pending))
+	completed := make([]bool, len(pending))
+	var group errgroup.Group
+	group.SetLimit(preparationConcurrency)
+	for index, pendingGroup := range pending {
+		group.Go(func() error {
+			completed[index], results[index] = processor.preparePendingGroup(ctx, transfer.ID, pendingGroup, processor.preparer)
+			return nil
+		})
+	}
+	_ = group.Wait()
+	// Курсор продвигается и после временных ошибок: повторяем их на следующем круге.
+	processor.cursors[transfer.ID] = pending[len(pending)-1]
+	if len(pending) < preparationGroupBatchSize {
+		delete(processor.cursors, transfer.ID)
+	}
+	var firstErr error
+	count := 0
+	for index, err := range results {
+		if err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("prepare group-target ID='%d': %w", pending[index].GroupTargetID, err)
+		}
+		if completed[index] {
+			count++
+		}
+	}
+	if ctx.Err() != nil {
+		return count, ctx.Err()
+	}
+	return count, firstErr
+}
+
+// preparePendingGroup вычисляет результат подготовки группы карточек и атомарно сохраняет его в БД.
+// Возвращает true после фиксации любого терминального результата.
+func (processor *Processor) preparePendingGroup(
+	ctx context.Context,
+	transferID transfer_model.TransferID,
+	group PreparationPendingGroup,
+	preparer CardPreparer,
+) (bool, error) {
+	source, err := processor.repository.LoadPreparationSource(
+		ctx,
+		transferID,
+		group.GroupTargetID,
+	)
+	if err != nil {
+		return false, err
+	}
+	srcGroup := cardprepare_model.SourceGroup{Items: make([]cardprepare_model.SourceItem, len(source.Items))}
+	for index, item := range source.Items {
+		srcGroup.Items[index] = cardprepare_model.SourceItem{Position: item.Position, Card: item.Card}
+	}
+
+	startedAt := time.Now().UTC()
+	result, err := preparer.PrepareTarget(ctx, source.SellerID, srcGroup)
+	finishedAt := time.Now().UTC()
+	if err != nil {
+		return false, err
+	}
+	if result.Outcome.Code == cardprepare_model.OutcomeTargetTemporarilyUnavailable {
+		return false, errors.New(
+			"WB target is temporarily unavailable for card preparation",
+		)
+	}
+	status := PreparationResultRejected
+	var artifact *PreparationArtifact
+	if result.Outcome.Code == cardprepare_model.OutcomePrepared {
+		if result.Proposal == nil || result.Proposal.Validate() != nil {
+			return false, errors.New("prepared card proposal is invalid")
+		}
+		request, err := validatePreparationRequest(
+			result.Proposal.EncodedRequest,
+			result.Proposal.SubjectID,
+		)
+		if err != nil || len(request[0].Variants) != len(source.Items) {
+			return false, errors.New("prepared card request does not match source items")
+		}
+		for index, item := range source.Items {
+			if request[0].Variants[index].VendorCode != item.Card.Variant.VendorCode {
+				return false, errors.New("prepared card request does not match source items")
+			}
+		}
+		status = PreparationResultSucceeded
+		snapshot, err := json.Marshal(result.Proposal.MetadataSnapshot)
+		if err != nil {
+			return false, fmt.Errorf("encode metadata snapshot: %w", err)
+		}
+		artifact = &PreparationArtifact{
+			SubjectID:        result.Proposal.SubjectID,
+			RequestPayload:   result.Proposal.EncodedRequest,
+			MetadataSnapshot: snapshot,
+			LimitsFree:       result.Proposal.Limits.FreeLimits,
+			LimitsPaid:       result.Proposal.Limits.PaidLimits,
+			LimitsObservedAt: result.Proposal.LimitsObservedAt,
+		}
+	} else if result.Outcome.Code == cardprepare_model.OutcomeCatalogContractError {
+		status = PreparationResultUnresolved
+	}
+
+	transferCmd := ApplyPreparationResultCommand{
+		TransferID:    transferID,
+		GroupTargetID: group.GroupTargetID,
+		Status:        status,
+		OutcomeCode:   string(result.Outcome.Code),
+		ItemPosition:  result.Outcome.ItemPosition,
+		Field:         result.Outcome.Field,
+		StartedAt:     startedAt,
+		FinishedAt:    finishedAt,
+		Artifact:      artifact,
+	}
+	if err := processor.uow.WithinTransaction(
+		ctx,
+		func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
+			return processor.resultRepository.ApplyPreparationResult(ctx, tx, transferCmd)
+		},
+	); err != nil {
+		return false, fmt.Errorf("apply card preparation result: %w", err)
+	}
+
+	return true, nil
+}

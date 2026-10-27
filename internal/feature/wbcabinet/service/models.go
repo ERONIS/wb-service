@@ -11,11 +11,6 @@ import (
 
 const MaxCabinetNameLength = 128
 
-type SellerID = domain.SellerID
-type ClientGeneration = domain.ClientGeneration
-
-type TokenProperties = credentials.TokenProperties
-
 type Status string
 
 const (
@@ -25,6 +20,47 @@ const (
 	StatusIdentityMismatch   Status = "identity_mismatch"
 )
 
+type Cabinet struct {
+	ID                  domain.SellerID
+	OwnerTelegramID     int64
+	Name                string
+	BindingRevision     int64
+	CapabilityRevision  int64
+	ContentRead         bool
+	ContentWrite        bool
+	TokenProperties     credentials.TokenProperties
+	CredentialExpiresAt time.Time
+	ClientGeneration    domain.ClientGeneration
+	VerifiedAt          time.Time
+	Status              Status
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
+type StoredCabinet struct {
+	Cabinet
+	Token string
+}
+
+type VerifiedCredential struct {
+	SellerID            domain.SellerID
+	OwnerTelegramID     int64
+	Name                string
+	ContentRead         bool
+	ContentWrite        bool
+	TokenProperties     credentials.TokenProperties
+	CredentialExpiresAt time.Time
+	VerifiedAt          time.Time
+	Token               string
+}
+
+type AddCommand struct {
+	OwnerTelegramID int64
+	Name            string
+	Token           string
+	SellerID        domain.SellerID
+}
+
 func (status Status) IsValid() bool {
 	switch status {
 	case StatusActive, StatusExpired, StatusVerificationFailed, StatusIdentityMismatch:
@@ -32,23 +68,6 @@ func (status Status) IsValid() bool {
 	default:
 		return false
 	}
-}
-
-type Cabinet struct {
-	ID                  SellerID
-	OwnerTelegramID     int64
-	Name                string
-	BindingRevision     int64
-	CapabilityRevision  int64
-	ContentRead         bool
-	ContentWrite        bool
-	TokenProperties     TokenProperties
-	CredentialExpiresAt time.Time
-	ClientGeneration    ClientGeneration
-	VerifiedAt          time.Time
-	Status              Status
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
 }
 
 func (cabinet Cabinet) Validate() error {
@@ -70,31 +89,4 @@ func (cabinet Cabinet) Validate() error {
 		return core_errors.InvalidArgument("invalid cabinet status")
 	}
 	return nil
-}
-
-type StoredCabinet struct {
-	Cabinet
-	Token string
-}
-
-type VerifiedCredential struct {
-	SellerID            SellerID
-	OwnerTelegramID     int64
-	Name                string
-	ContentRead         bool
-	ContentWrite        bool
-	TokenProperties     TokenProperties
-	CredentialExpiresAt time.Time
-	ClientGeneration    ClientGeneration
-	VerifiedAt          time.Time
-	Token               string
-}
-
-type TargetCredential = domain.CabinetAccess
-
-type AddCommand struct {
-	OwnerTelegramID int64
-	Name            string
-	Token           string
-	SellerID        SellerID
 }

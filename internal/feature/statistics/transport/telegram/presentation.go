@@ -3,10 +3,11 @@ package statistics_telegram_transport
 import (
 	"fmt"
 
+	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
 	core_tg_callback "github.com/ERONIS/wb-service/internal/core/transport/telegram/callback"
 	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
 	core_tg_presenter "github.com/ERONIS/wb-service/internal/core/transport/telegram/presenter"
-	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
+	cardimport_model "github.com/ERONIS/wb-service/internal/feature/cardimport/service/model"
 	statistics_service "github.com/ERONIS/wb-service/internal/feature/statistics/service"
 
 	tele "gopkg.in/telebot.v3"
@@ -25,7 +26,7 @@ func (handler *Handler) showDashboard(ctx tele.Context) error {
 	if err != nil {
 		return presentError(ctx, err)
 	}
-	var pendingBatch *cardimport_service.BatchHeader
+	var pendingBatch *cardimport_model.BatchHeader
 	arguments := callbackArguments(ctx.Args())
 	if len(arguments) > 0 {
 		batchID, parseErr := parsePositiveInt64(arguments, 0, 1)
@@ -53,7 +54,7 @@ func (handler *Handler) showDashboard(ctx tele.Context) error {
 		if !found && len(currentOperations) == 0 {
 			batch, batchErr := handler.batches.GetBatch(
 				handler.ctx,
-				cardimport_service.BatchID(batchID),
+				cardpipeline.BatchID(batchID),
 			)
 			if batchErr != nil {
 				return presentError(ctx, batchErr)
@@ -229,8 +230,6 @@ func operationStatus(row statistics_service.OperationRow) string {
 			return "Завершено частично"
 		case "rejected":
 			return "Карточки не отправлены"
-		case "cancelled":
-			return "Отменено"
 		default:
 			return "Нужна проверка"
 		}
@@ -238,16 +237,8 @@ func operationStatus(row statistics_service.OperationRow) string {
 	switch row.Phase {
 	case "initializing":
 		return "Принимаем данные"
-	case "preparing":
-		return "Проверяем карточки"
-	case "awaiting_authorization":
-		return "Запускаем отправку"
-	case "publishing":
-		return "Отправляем в WB"
-	case "reconciling":
-		return "Проверяем результат"
-	case "media":
-		return "Завершаем перенос"
+	case "active":
+		return "Переносим карточки"
 	default:
 		return "В работе"
 	}

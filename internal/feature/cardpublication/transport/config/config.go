@@ -2,29 +2,20 @@ package cardpublication_config_transport
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/kelseyhightower/envconfig"
 )
 
-type MediaUploadMethod string
-
-const (
-	MediaUploadByLinks MediaUploadMethod = "links"
-	MediaUploadByFile  MediaUploadMethod = "file"
-)
-
 type Config struct {
-	ReconciliationDelay   time.Duration     `envconfig:"RECONCILIATION_DELAY" default:"10s"`
-	ReconciliationTimeout time.Duration     `envconfig:"RECONCILIATION_TIMEOUT" default:"30m"`
-	MediaAutoDispatch     bool              `envconfig:"MEDIA_AUTO_DISPATCH" default:"true"`
-	MediaDispatchInterval time.Duration     `envconfig:"MEDIA_DISPATCH_INTERVAL" default:"3s"`
-	MediaCheckInterval    time.Duration     `envconfig:"MEDIA_CHECK_INTERVAL" default:"1m"`
-	MediaCheckTimeout     time.Duration     `envconfig:"MEDIA_CHECK_TIMEOUT" default:"30m"`
-	ProductConcurrency    int               `envconfig:"PRODUCT_CONCURRENCY" default:"5"`
-	MediaConcurrency      int               `envconfig:"MEDIA_CONCURRENCY" default:"20"`
-	MediaUploadMethod     MediaUploadMethod `envconfig:"MEDIA_UPLOAD_METHOD" default:"links"`
+	ReconciliationDelay   time.Duration `envconfig:"RECONCILIATION_DELAY" default:"10s"`
+	ReconciliationTimeout time.Duration `envconfig:"RECONCILIATION_TIMEOUT" default:"30m"`
+	MediaAutoDispatch     bool          `envconfig:"MEDIA_AUTO_DISPATCH" default:"true"`
+	MediaDispatchInterval time.Duration `envconfig:"MEDIA_DISPATCH_INTERVAL" default:"3s"`
+	MediaCheckInterval    time.Duration `envconfig:"MEDIA_CHECK_INTERVAL" default:"1m"`
+	MediaCheckTimeout     time.Duration `envconfig:"MEDIA_CHECK_TIMEOUT" default:"30m"`
+	ProductConcurrency    int           `envconfig:"PRODUCT_CONCURRENCY" default:"5"`
+	MediaConcurrency      int           `envconfig:"MEDIA_CONCURRENCY" default:"20"`
 }
 
 func New() (Config, error) {
@@ -47,10 +38,6 @@ func Must() Config {
 }
 
 func (config Config) Validate() error {
-	if config.MediaUploadMethod != MediaUploadByLinks &&
-		config.MediaUploadMethod != MediaUploadByFile {
-		return fmt.Errorf("media upload method must be %q or %q", MediaUploadByLinks, MediaUploadByFile)
-	}
 	if config.ReconciliationDelay <= 0 {
 		return fmt.Errorf("reconciliation delay must be positive")
 	}
@@ -74,11 +61,6 @@ func (config Config) Validate() error {
 	if config.MediaConcurrency <= 0 || config.MediaConcurrency > 20 {
 		return fmt.Errorf("media concurrency must be between 1 and 20")
 	}
-	return nil
-}
-
-func (method *MediaUploadMethod) Decode(value string) error {
-	*method = MediaUploadMethod(strings.ToLower(strings.TrimSpace(value)))
 	return nil
 }
 

@@ -42,7 +42,7 @@ func (s *UsersService) GetUsers(
 
 	// Запрашиваем 21 пользователя.
 	// Последняя запись нужна только для определения HasNext.
-	users, err := s.usersRepository.GetUsers(
+	users, err := s.usersRepository.List(
 		ctx,
 		usersPageSize+1,
 		offset,

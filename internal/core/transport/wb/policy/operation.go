@@ -10,19 +10,16 @@ import (
 const (
 	BodyModeNone          BodyMode      = "none"
 	BodyModeJSON          BodyMode      = "json"
-	BodyModeMultipart     BodyMode      = "multipart"
 	OperationKindRead     OperationKind = "read"
 	OperationKindMutation OperationKind = "mutation"
 )
 
-// OperationID — стабильный идентификатор операции WB Core.
-type OperationID string
-
-// OperationKind определяет, читает операция данные или изменяет их.
-type OperationKind string
-
-// BodyMode определяет формат тела запроса или ответа.
-type BodyMode string
+type (
+	OperationID   string
+	BucketID      string
+	OperationKind string
+	BodyMode      string
+)
 
 // Operation описывает одну разрешённую операцию WB API.
 type Operation struct {
@@ -31,7 +28,6 @@ type Operation struct {
 	host             string
 	path             string
 	bucketID         BucketID
-	kind             OperationKind
 	retryMode        RetryMode
 	successStatuses  []int
 	requestMode      BodyMode
@@ -72,8 +68,8 @@ func (id OperationID) String() string {
 	return string(id)
 }
 
-func (mode BodyMode) String() string {
-	return string(mode)
+func (id BucketID) String() string {
+	return string(id)
 }
 
 func (mode BodyMode) IsNone() bool {
@@ -82,10 +78,6 @@ func (mode BodyMode) IsNone() bool {
 
 func (mode BodyMode) IsJSON() bool {
 	return mode == BodyModeJSON
-}
-
-func (mode BodyMode) IsMultipart() bool {
-	return mode == BodyModeMultipart
 }
 
 func (kind OperationKind) IsRead() bool {
@@ -116,18 +108,8 @@ func (operation Operation) BucketID() BucketID {
 	return operation.bucketID
 }
 
-func (operation Operation) Kind() OperationKind {
-	return operation.kind
-}
-
 func (operation Operation) RetryMode() RetryMode {
 	return operation.retryMode
-}
-
-func (operation Operation) SuccessStatuses() []int {
-	return cloneSuccessStatuses(
-		operation.successStatuses,
-	)
 }
 
 func (operation Operation) IsSuccessStatus(
@@ -161,16 +143,13 @@ func (operation Operation) Headers() http.Header {
 
 func buildOperation(spec OperationSpec) Operation {
 	return Operation{
-		id:        spec.ID,
-		method:    spec.Method,
-		host:      spec.Host,
-		path:      spec.Path,
-		bucketID:  spec.BucketID,
-		kind:      spec.Kind,
-		retryMode: spec.RetryMode,
-		successStatuses: cloneSuccessStatuses(
-			spec.SuccessStatuses,
-		),
+		id:               spec.ID,
+		method:           spec.Method,
+		host:             spec.Host,
+		path:             spec.Path,
+		bucketID:         spec.BucketID,
+		retryMode:        spec.RetryMode,
+		successStatuses:  append([]int(nil), spec.SuccessStatuses...),
 		requestMode:      spec.RequestMode,
 		responseMode:     spec.ResponseMode,
 		maxRequestBytes:  spec.MaxRequestBytes,
@@ -216,8 +195,7 @@ func validateOperationIdentityAndModes(spec OperationSpec) error {
 		)
 	}
 
-	if !spec.RequestMode.IsNone() && !spec.RequestMode.IsJSON() &&
-		!spec.RequestMode.IsMultipart() {
+	if !spec.RequestMode.IsNone() && !spec.RequestMode.IsJSON() {
 		return fmt.Errorf(
 			"operation %q has unsupported request body mode %q",
 			spec.ID,

@@ -7,9 +7,11 @@ import (
 	"sort"
 	"sync"
 
+	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
-	cardprepare_service "github.com/ERONIS/wb-service/internal/feature/cardprepare/service"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
@@ -21,8 +23,7 @@ const (
 type Processor struct {
 	repository     Repository
 	transferSource TransferSource
-	proposalReader ProposalReader
-	catalogReader  *CatalogReader
+	catalogReader  *cardpublication_catalog.CatalogReader
 	planner        *Planner
 	saver          *Saver
 	logger         *zap.Logger
@@ -32,20 +33,18 @@ type Processor struct {
 func NewProcessor(
 	repository Repository,
 	transferSource TransferSource,
-	proposalReader ProposalReader,
-	catalogReader *CatalogReader,
+	catalogReader *cardpublication_catalog.CatalogReader,
 	planner *Planner,
 	saver *Saver,
 	loggers ...*zap.Logger,
 ) *Processor {
-	if repository == nil || transferSource == nil || proposalReader == nil ||
+	if repository == nil || transferSource == nil ||
 		catalogReader == nil || planner == nil || saver == nil {
 		panic("cardpublication processor dependency is nil")
 	}
 	return &Processor{
 		repository:     repository,
 		transferSource: transferSource,
-		proposalReader: proposalReader,
 		catalogReader:  catalogReader,
 		planner:        planner,
 		saver:          saver,
@@ -54,16 +53,20 @@ func NewProcessor(
 }
 
 func (processor *Processor) ProcessPending(ctx context.Context) error {
+	return processor.ProcessPendingWithNotify(ctx, nil)
+}
+
+func (processor *Processor) ProcessPendingWithNotify(ctx context.Context, onProgress func()) error {
 	if ctx == nil {
 		return errors.New("process pending publication plans: context is nil")
 	}
 	processor.processMu.Lock()
 	defer processor.processMu.Unlock()
 
-	var afterID transfer_service.TransferID
+	var afterID transfer_model.TransferID
 	var firstErr error
 	for {
-		transfers, err := processor.transferSource.ListAwaitingAuthorization(
+		transfers, err := processor.transferSource.ListReadyForPublicationPlanning(
 			ctx,
 			afterID,
 			publicationTransferPageSize,
@@ -72,7 +75,8 @@ func (processor *Processor) ProcessPending(ctx context.Context) error {
 			return fmt.Errorf("list publication planning transfers: %w", err)
 		}
 		for _, transfer := range transfers {
-			if err := processor.processTransfer(ctx, transfer); err != nil {
+			progress, err := processor.processTransfer(ctx, transfer)
+			if err != nil {
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
@@ -83,6 +87,8 @@ func (processor *Processor) ProcessPending(ctx context.Context) error {
 						err,
 					)
 				}
+			} else if progress && onProgress != nil {
+				onProgress()
 			}
 			afterID = transfer.ID
 		}
@@ -94,49 +100,24 @@ func (processor *Processor) ProcessPending(ctx context.Context) error {
 
 func (processor *Processor) processTransfer(
 	ctx context.Context,
-	transfer transfer_service.Transfer,
-) error {
+	transfer transfer_model.Transfer,
+) (bool, error) {
 	source, err := processor.transferSource.LoadPublicationPlanningSource(
 		ctx,
 		transfer.ID,
 	)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if len(source.Groups) == 0 {
-		return nil
+		return false, nil
 	}
-	queries := make([]cardprepare_service.ProposalQuery, len(source.Groups))
-	for index, sourceGroup := range source.Groups {
-		queries[index] = cardprepare_service.ProposalQuery{
-			TransferID:    transfer.ID,
-			GroupTargetID: sourceGroup.GroupTargetID,
-			ProposalRoot:  cardprepare_service.Digest(sourceGroup.ProposalRoot),
-		}
-	}
-	proposals, err := processor.proposalReader.LoadProposals(ctx, queries)
-	if err != nil {
-		return fmt.Errorf("load prepared publication proposals: %w", err)
-	}
-	if len(proposals) != len(source.Groups) {
-		return errors.New("prepared publication proposal count differs")
-	}
-	loaded := make([]loadedPlanningGroup, len(source.Groups))
-	for index, proposal := range proposals {
-		if proposal.TransferID != transfer.ID {
-			return errors.New("prepared proposal transfer identity differs")
-		}
-		loaded[index] = loadedPlanningGroup{
-			Source: source.Groups[index], Proposal: proposal,
-		}
-	}
-
 	vendorCodesByTarget := make(map[int64][]string)
-	cabinetByTarget := make(map[int64]SellerID)
+	cabinetByTarget := make(map[int64]core_domain.SellerID)
 	for _, group := range source.Groups {
-		sellerID := SellerID(group.SellerID)
+		sellerID := core_domain.SellerID(group.SellerID)
 		if existing, ok := cabinetByTarget[group.TargetID]; ok && existing != sellerID {
-			return errors.New("publication target has multiple cabinets")
+			return false, errors.New("publication target has multiple cabinets")
 		}
 		cabinetByTarget[group.TargetID] = sellerID
 		for _, member := range group.Members {
@@ -147,13 +128,13 @@ func (processor *Processor) processTransfer(
 		}
 	}
 
-	observations := make(map[int64]CatalogObservation, len(vendorCodesByTarget))
+	observations := make(map[int64]cardpublication_catalog.CatalogObservation, len(vendorCodesByTarget))
 	targetIDs := make([]int64, 0, len(vendorCodesByTarget))
 	for targetID := range vendorCodesByTarget {
 		targetIDs = append(targetIDs, targetID)
 	}
 	sort.Slice(targetIDs, func(left, right int) bool { return targetIDs[left] < targetIDs[right] })
-	loadedObservations := make([]CatalogObservation, len(targetIDs))
+	loadedObservations := make([]cardpublication_catalog.CatalogObservation, len(targetIDs))
 	group, readCtx := errgroup.WithContext(ctx)
 	for index, targetID := range targetIDs {
 		index, targetID := index, targetID
@@ -171,14 +152,17 @@ func (processor *Processor) processTransfer(
 		})
 	}
 	if err := group.Wait(); err != nil {
-		return err
+		return false, err
 	}
 	for index, targetID := range targetIDs {
 		observations[targetID] = loadedObservations[index]
 	}
-	draft, err := processor.planner.Build(transfer, loaded, observations)
+	draft, err := processor.planner.Build(transfer, source.Groups, observations)
 	if err != nil {
-		return err
+		return false, err
 	}
-	return processor.saver.Save(ctx, draft)
+	if err := processor.saver.Save(ctx, draft); err != nil {
+		return false, err
+	}
+	return true, nil
 }

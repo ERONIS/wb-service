@@ -1,10 +1,8 @@
 package request
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"mime/multipart"
 	"net/url"
 	"reflect"
 
@@ -17,10 +15,6 @@ func Prepare(
 	query any,
 	body any,
 ) (Prepared, error) {
-	if operation.ID() == "" {
-		return Prepared{}, errRequestOperationRequired
-	}
-
 	queryString, err := prepareQuery(query)
 	if err != nil {
 		return Prepared{}, err
@@ -29,6 +23,12 @@ func Prepare(
 	bodyBytes, contentType, err := prepareBody(operation, body)
 	if err != nil {
 		return Prepared{}, err
+	}
+	if int64(len(bodyBytes)) > operation.MaxRequestBytes() {
+		return Prepared{}, fmt.Errorf(
+			"WB request body exceeds %d bytes",
+			operation.MaxRequestBytes(),
+		)
 	}
 
 	requestURL := url.URL{
@@ -41,17 +41,10 @@ func Prepare(
 	return Prepared{
 		method:      operation.Method(),
 		urlString:   requestURL.String(),
-		requestMode: operation.RequestMode(),
 		bodyBytes:   bodyBytes,
 		contentType: contentType,
 		headers:     operation.Headers(),
 	}, nil
-}
-
-type MultipartFile struct {
-	FieldName string
-	FileName  string
-	Data      []byte
 }
 
 func prepareQuery(query any) (string, error) {
@@ -90,40 +83,11 @@ func prepareBody(
 		if err != nil {
 			return nil, "", fmt.Errorf("encode WB request body: %w", err)
 		}
-		return validateBodySize(operation, bodyBytes, "application/json")
-
-	case operation.RequestMode().IsMultipart():
-		form, ok := body.(MultipartFile)
-		if !ok || form.FieldName == "" || form.FileName == "" || form.Data == nil {
-			return nil, "", errRequestBodyRequired
-		}
-		var buffer bytes.Buffer
-		writer := multipart.NewWriter(&buffer)
-		part, err := writer.CreateFormFile(form.FieldName, form.FileName)
-		if err != nil {
-			return nil, "", fmt.Errorf("create WB multipart body: %w", err)
-		}
-		if _, err := part.Write(form.Data); err != nil {
-			return nil, "", fmt.Errorf("write WB multipart body: %w", err)
-		}
-		if err := writer.Close(); err != nil {
-			return nil, "", fmt.Errorf("close WB multipart body: %w", err)
-		}
-		return validateBodySize(operation, buffer.Bytes(), writer.FormDataContentType())
+		return bodyBytes, "application/json", nil
 
 	default:
 		return nil, "", errRequestBodyModeUnsupported
 	}
-}
-
-func validateBodySize(operation policy.Operation, bodyBytes []byte, contentType string) ([]byte, string, error) {
-	if int64(len(bodyBytes)) > operation.MaxRequestBytes() {
-		return nil, "", fmt.Errorf(
-			"WB request body exceeds %d bytes",
-			operation.MaxRequestBytes(),
-		)
-	}
-	return bodyBytes, contentType, nil
 }
 
 func isNilValue(value any) bool {

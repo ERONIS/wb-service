@@ -11,10 +11,10 @@ import (
 
 	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	core_postgres_pool "github.com/ERONIS/wb-service/internal/core/repository/postgres/pool"
-	core_postgres_telegramview "github.com/ERONIS/wb-service/internal/core/repository/postgres/telegramview"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
 	telegram_server "github.com/ERONIS/wb-service/internal/core/transport/telegram/server"
+	core_tg_postgres_store "github.com/ERONIS/wb-service/internal/core/transport/telegram/storage/postgres"
 	core_wb "github.com/ERONIS/wb-service/internal/core/transport/wb"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
 	cardimport "github.com/ERONIS/wb-service/internal/feature/cardimport"
@@ -25,7 +25,6 @@ import (
 	statistics "github.com/ERONIS/wb-service/internal/feature/statistics"
 	statistics_wb_transport "github.com/ERONIS/wb-service/internal/feature/statistics/transport/wb"
 	transfer "github.com/ERONIS/wb-service/internal/feature/transfer"
-	transfer_wb_transport "github.com/ERONIS/wb-service/internal/feature/transfer/transport/wb"
 	users "github.com/ERONIS/wb-service/internal/feature/users"
 	wbcabinet "github.com/ERONIS/wb-service/internal/feature/wbcabinet"
 
@@ -64,7 +63,7 @@ func main() {
 	wbClientset, err := core_wb.NewClientset(
 		ctx,
 		logger.Logger,
-		contentapi.BucketSpecs(),
+		contentapi.BucketCatalog(),
 	)
 	if err != nil {
 		panic(fmt.Errorf("create WB clientset: %w", err))
@@ -101,18 +100,15 @@ func main() {
 		postgresPool,
 	)
 	cardimportFeature := cardimport.New(
-		ctx,
 		postgresPool,
 		uow,
-		bot,
-		logger.Logger,
 	)
+	cardimportFeature.AttachTelegram(ctx, bot, logger.Logger)
 	transferFeature, err := transfer.New(
 		ctx,
 		postgresPool,
 		uow,
-		cardimportFeature.Service(),
-		transfer_wb_transport.NewTargetTransport(wbCabinetFeature.Service()),
+		wbCabinetFeature.Service(),
 		transfer.NewConfigMust(),
 		logger.Logger,
 	)
@@ -120,21 +116,17 @@ func main() {
 		panic(fmt.Errorf("create transfer feature: %w", err))
 	}
 	cardprepareFeature := cardprepare.New(
-		postgresPool,
-		uow,
 		cardprepare_wb_transport.NewCatalogTransport(wbClientset),
-		transferFeature.Service(),
-		transferFeature.PreparationResultApplier(),
 		logger.Logger,
 	)
 	cardpublicationFeature := cardpublication.New(
 		postgresPool,
 		uow,
 		cardpublication_wb_transport.NewCatalogTransport(wbClientset),
-		transferFeature.Service(),
-		transferFeature.PublicationResultApplier(),
-		transferFeature.PublicationExecutionResultApplier(),
-		cardprepareFeature.ProposalReader(),
+		transferFeature.PublicationSource(),
+		wbCabinetFeature.Service(),
+		transferFeature.PublicationSource(),
+		transferFeature.PublicationExecutionResults(),
 		cardpublication.NewConfigMust(),
 		logger.Logger,
 	)
@@ -157,13 +149,12 @@ func main() {
 		statistics_wb_transport.NewVerifier(wbClientset),
 	)
 	cardimportFeature.SetCompletionNavigator(statisticsFeature.CompletionNavigator())
-	cardimportFeature.SetProcessingNotifier(transferFeature)
 
 	telegramHandler := core_tg_menu.Register(
 		ctx,
 		bot,
 		usersFeature.Service(),
-		core_postgres_telegramview.New(postgresPool),
+		core_tg_postgres_store.New(postgresPool),
 	)
 	usersFeature.RegisterTelegram(telegramHandler)
 	wbCabinetFeature.RegisterTelegram(telegramHandler, usersFeature.Service())
@@ -205,11 +196,11 @@ func main() {
 			func(err error) {
 				logger.Logger.Error("process pending transfers", zap.Error(err))
 			},
-			cardprepareFeature.Processor(),
+			transferFeature.PreparationProcessor(cardprepareFeature),
 			cardpublicationFeature.Processor(),
-			cardpublicationFeature.ErrorFeed(),
 			transferFeature.AutomaticAuthorizationProcessor(),
 			cardpublicationFeature.ProductDispatcher(),
+			cardpublicationFeature.ErrorFeed(),
 		); err != nil && ctx.Err() == nil {
 			logger.Logger.Error("run transfer polling", zap.Error(err))
 			cancel()

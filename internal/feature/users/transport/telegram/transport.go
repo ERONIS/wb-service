@@ -19,8 +19,12 @@ const pendingAddTTL = 10 * time.Minute
 const addUserTextFlow = "users.add"
 
 var (
-	buttonListUsers = tele.Btn{
+	buttonUsersMenu = tele.Btn{
 		Text:   "👥 Пользователи",
+		Unique: "users_menu",
+	}
+	buttonListUsers = tele.Btn{
+		Text:   "👥 Все пользователи",
 		Unique: "users_list",
 	}
 	buttonStartAddUser = tele.Btn{
@@ -128,8 +132,14 @@ func (h *UsersTgHandler) Register(
 ) {
 	h.textFlows = menu
 	menu.RegisterTextFlow(addUserTextFlow, domain.RoleAdmin, h.handleAddUserText)
+	menu.RegisterFlowCleanup(addUserTextFlow, h.pendingAdds.Cancel)
 
 	menu.RegisterMenuItem(
+		buttonUsersMenu,
+		domain.RoleAdmin,
+		h.showUsersMenu,
+	)
+	menu.RegisterCallback(
 		buttonListUsers,
 		domain.RoleAdmin,
 		h.ListUsers,
@@ -184,6 +194,9 @@ func (h *UsersTgHandler) handleAddUserText(
 		return false, nil
 	}
 	pending, status := h.pendingAdds.Claim(senderID)
+	if status == core_tg_state.StateBusy {
+		return true, core_tg_menu.Notify(ctx, "users.add_busy", "⏳ Предыдущий запрос ещё обрабатывается.")
+	}
 	if status != core_tg_state.StateClaimed {
 		return false, nil
 	}

@@ -6,7 +6,7 @@ import (
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_wb "github.com/ERONIS/wb-service/internal/core/transport/wb"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
-	cardprepare_service "github.com/ERONIS/wb-service/internal/feature/cardprepare/service"
+	cardprepare_catalog "github.com/ERONIS/wb-service/internal/feature/cardprepare/service/catalog"
 )
 
 type CatalogTransport struct{ executors core_wb.ExecutorRegistry }
@@ -87,4 +87,4 @@ func (transport *CatalogTransport) TNVED(ctx context.Context, sellerID domain.Se
 	)
 }
 
-var _ cardprepare_service.CatalogTransport = (*CatalogTransport)(nil)
+var _ cardprepare_catalog.CatalogTransport = (*CatalogTransport)(nil)

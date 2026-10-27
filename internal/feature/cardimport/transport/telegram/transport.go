@@ -9,7 +9,8 @@ import (
 	"github.com/ERONIS/wb-service/internal/core/domain"
 	core_logger "github.com/ERONIS/wb-service/internal/core/logger"
 	core_tg_menu "github.com/ERONIS/wb-service/internal/core/transport/telegram/menu"
-	cardimport_service "github.com/ERONIS/wb-service/internal/feature/cardimport/service"
+	cardimport_contract "github.com/ERONIS/wb-service/internal/feature/cardimport/service/contract"
+	cardimport_model "github.com/ERONIS/wb-service/internal/feature/cardimport/service/model"
 
 	"go.uber.org/zap"
 	tele "gopkg.in/telebot.v3"
@@ -32,10 +33,6 @@ var (
 		Text:   "✅ Готово",
 		Unique: "cardimport_finalize",
 	}
-	buttonContinue = tele.Btn{
-		Text:   "➡️ Продолжить",
-		Unique: "cardimport_continue",
-	}
 	buttonResumeFiles = tele.Btn{
 		Text:   "🔄 Обработать зависшие файлы",
 		Unique: "cardimport_resume_files",
@@ -45,57 +42,52 @@ var (
 type CardImportService interface {
 	Begin(
 		ctx context.Context,
-		command cardimport_service.BeginCommand,
-	) (cardimport_service.Session, error)
+		command cardimport_contract.BeginCommand,
+	) (cardimport_model.Session, error)
 
 	GetActiveView(
 		ctx context.Context,
 		authorTelegramID int64,
-	) (cardimport_service.SessionView, error)
+	) (cardimport_model.SessionView, error)
 
 	GetView(
 		ctx context.Context,
-		command cardimport_service.SessionCommand,
-	) (cardimport_service.SessionView, error)
+		command cardimport_contract.SessionCommand,
+	) (cardimport_model.SessionView, error)
 
 	Cancel(
 		ctx context.Context,
-		command cardimport_service.SessionCommand,
+		command cardimport_contract.SessionCommand,
 	) error
-
-	Continue(
-		ctx context.Context,
-		command cardimport_service.ContinueCommand,
-	) (cardimport_service.SessionView, error)
 
 	ReserveFile(
 		ctx context.Context,
-		command cardimport_service.ReserveFileCommand,
-	) (cardimport_service.File, error)
+		command cardimport_contract.ReserveFileCommand,
+	) (cardimport_model.File, error)
 
 	StoreFile(
 		ctx context.Context,
-		command cardimport_service.StoreFileCommand,
+		command cardimport_contract.StoreFileCommand,
 		source io.Reader,
-	) (cardimport_service.File, error)
+	) (cardimport_model.File, error)
 
 	ParseFile(
 		ctx context.Context,
-		command cardimport_service.ParseFileCommand,
-	) (cardimport_service.SessionView, error)
+		command cardimport_contract.ParseFileCommand,
+	) (cardimport_model.SessionView, error)
 
 	ListRecoverableFiles(
 		ctx context.Context,
 		staleParsingBefore time.Time,
 		reparsePriceErrorsBefore time.Time,
 		limit int,
-	) ([]cardimport_service.RecoverableFile, error)
+	) ([]cardimport_contract.RecoverableFile, error)
 
 	Finalize(
 		ctx context.Context,
 		user domain.User,
-		command cardimport_service.FinalizeCommand,
-	) (cardimport_service.BatchHeader, error)
+		command cardimport_contract.FinalizeCommand,
+	) (cardimport_model.BatchHeader, error)
 }
 
 type Handler struct {
@@ -103,7 +95,6 @@ type Handler struct {
 	bot                    *tele.Bot
 	service                CardImportService
 	completion             CompletionNavigator
-	processing             ProcessingNotifier
 	uploadScreenMu         sync.Mutex
 	uploadScreenGeneration map[int64]uint64
 	menu                   *core_tg_menu.Handler
@@ -111,9 +102,9 @@ type Handler struct {
 	recoveryStartedAt      time.Time
 	recoveryStart          sync.Once
 	recoveryWake           chan struct{}
-	recoveryJobs           chan cardimportRecoveryKey
+	recoveryJobs           chan cardimport_model.FileID
 	recoveryMu             sync.Mutex
-	recoveryStates         map[cardimport_service.FileID]*cardimportRecoveryState
+	recoveryStates         map[cardimport_model.FileID]*cardimportRecoveryState
 	refreshWake            chan struct{}
 	refreshMu              sync.Mutex
 	pendingRefreshes       map[int64]cardimportSessionRefresh
@@ -122,12 +113,8 @@ type Handler struct {
 type CompletionNavigator interface {
 	ShowFinalizedSession(
 		tele.Context,
-		cardimport_service.BatchHeader,
+		cardimport_model.BatchHeader,
 	) error
-}
-
-type ProcessingNotifier interface {
-	NotifyFinalized()
 }
 
 func New(
@@ -154,8 +141,8 @@ func New(
 		recoveryStartedAt:      time.Now(),
 		uploadScreenGeneration: make(map[int64]uint64),
 		recoveryWake:           make(chan struct{}, 1),
-		recoveryJobs:           make(chan cardimportRecoveryKey, 256),
-		recoveryStates:         make(map[cardimport_service.FileID]*cardimportRecoveryState),
+		recoveryJobs:           make(chan cardimport_model.FileID, 256),
+		recoveryStates:         make(map[cardimport_model.FileID]*cardimportRecoveryState),
 		refreshWake:            make(chan struct{}, 1),
 		pendingRefreshes:       make(map[int64]cardimportSessionRefresh),
 	}
@@ -169,16 +156,6 @@ func (h *Handler) SetCompletionNavigator(navigator CompletionNavigator) {
 		panic("cardimport completion navigator is already configured")
 	}
 	h.completion = navigator
-}
-
-func (h *Handler) SetProcessingNotifier(notifier ProcessingNotifier) {
-	if notifier == nil {
-		panic("cardimport processing notifier is nil")
-	}
-	if h.processing != nil {
-		panic("cardimport processing notifier is already configured")
-	}
-	h.processing = notifier
 }
 
 func (h *Handler) Register(menu *core_tg_menu.Handler) {
@@ -207,11 +184,6 @@ func (h *Handler) Register(menu *core_tg_menu.Handler) {
 		h.finalize,
 	)
 	menu.RegisterCallback(
-		buttonContinue,
-		domain.RoleAdmin,
-		h.continueImport,
-	)
-	menu.RegisterCallback(
 		buttonResumeFiles,
 		domain.RoleAdmin,
 		h.resumeFiles,
@@ -222,9 +194,6 @@ func (h *Handler) Register(menu *core_tg_menu.Handler) {
 	)
 	if h.completion == nil {
 		panic("cardimport completion navigator is not configured")
-	}
-	if h.processing == nil {
-		panic("cardimport processing notifier is not configured")
 	}
 	h.recoveryStart.Do(func() {
 		go h.runRecoveryScheduler()

@@ -11,37 +11,15 @@ import (
 
 var ErrCapacityExceeded = core_errors.CapacityExceeded("transfer capacity exceeded")
 
-type TransferID = cardpipeline.TransferID
-type Digest = cardpipeline.Digest
-type SellerID = domain.SellerID
-type ClientGeneration = domain.ClientGeneration
+type TransferID int64
 
 type Phase string
 
 const (
-	PhaseInitializing          Phase = "initializing"
-	PhasePreparing             Phase = "preparing"
-	PhaseAwaitingAuthorization Phase = "awaiting_authorization"
-	PhasePublishing            Phase = "publishing"
-	PhaseReconciling           Phase = "reconciling"
-	PhaseMedia                 Phase = "media"
-	PhaseFinished              Phase = "finished"
+	PhaseInitializing Phase = "initializing"
+	PhaseActive       Phase = "active"
+	PhaseFinished     Phase = "finished"
 )
-
-func (phase Phase) IsValid() bool {
-	switch phase {
-	case PhaseInitializing,
-		PhasePreparing,
-		PhaseAwaitingAuthorization,
-		PhasePublishing,
-		PhaseReconciling,
-		PhaseMedia,
-		PhaseFinished:
-		return true
-	default:
-		return false
-	}
-}
 
 type Outcome string
 
@@ -52,23 +30,7 @@ const (
 	OutcomeRejected   Outcome = "rejected"
 	OutcomeUnresolved Outcome = "unresolved"
 	OutcomeFailed     Outcome = "failed"
-	OutcomeCancelled  Outcome = "cancelled"
 )
-
-func (outcome Outcome) IsValid() bool {
-	switch outcome {
-	case OutcomeRunning,
-		OutcomeSucceeded,
-		OutcomePartial,
-		OutcomeRejected,
-		OutcomeUnresolved,
-		OutcomeFailed,
-		OutcomeCancelled:
-		return true
-	default:
-		return false
-	}
-}
 
 type ResultClass string
 
@@ -81,24 +43,9 @@ const (
 	ResultInternalError ResultClass = "internal_error"
 )
 
-func (result ResultClass) IsValid() bool {
-	switch result {
-	case ResultSuccess,
-		ResultSkipped,
-		ResultRejected,
-		ResultPartial,
-		ResultUnresolved,
-		ResultInternalError:
-		return true
-	default:
-		return false
-	}
-}
-
 type ItemTargetState string
 
 const (
-	ItemTargetPending  ItemTargetState = "pending"
 	ItemTargetRunning  ItemTargetState = "running"
 	ItemTargetTerminal ItemTargetState = "terminal"
 )
@@ -121,6 +68,78 @@ type ItemTargetProjection struct {
 	UpdatedAt         time.Time
 }
 
+type Transfer struct {
+	ID                TransferID
+	BatchID           cardpipeline.BatchID
+	Phase             Phase
+	Outcome           Outcome
+	AttentionCode     string
+	ItemsCount        int
+	GroupsCount       int
+	TargetsCount      int
+	ItemTargetsCount  int64
+	GroupTargetsCount int64
+	CreatedAt         time.Time
+	StartedAt         time.Time
+	FinishedAt        *time.Time
+	UpdatedAt         time.Time
+}
+
+type MutationTarget struct {
+	Position            int
+	SellerID            domain.SellerID
+	ClientGeneration    domain.ClientGeneration
+	BindingRevision     int64
+	CapabilityRevision  int64
+	ContentRead         bool
+	ContentWrite        bool
+	CredentialExpiresAt time.Time
+}
+
+func (phase Phase) IsValid() bool {
+	switch phase {
+	case PhaseInitializing,
+		PhaseActive,
+		PhaseFinished:
+		return true
+	default:
+		return false
+	}
+}
+
+// AllowsGroupWork сообщает, можно ли продолжать подготовку и планирование отдельных групп.
+func (phase Phase) AllowsGroupWork() bool {
+	return phase == PhaseActive
+}
+
+func (outcome Outcome) IsValid() bool {
+	switch outcome {
+	case OutcomeRunning,
+		OutcomeSucceeded,
+		OutcomePartial,
+		OutcomeRejected,
+		OutcomeUnresolved,
+		OutcomeFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func (result ResultClass) IsValid() bool {
+	switch result {
+	case ResultSuccess,
+		ResultSkipped,
+		ResultRejected,
+		ResultPartial,
+		ResultUnresolved,
+		ResultInternalError:
+		return true
+	default:
+		return false
+	}
+}
+
 func (projection ItemTargetProjection) Validate() error {
 	if projection.ID <= 0 || projection.TransferID <= 0 ||
 		projection.GroupTargetID <= 0 || projection.TransferItemID <= 0 ||
@@ -133,13 +152,6 @@ func (projection ItemTargetProjection) Validate() error {
 		return invalidTransfer("item-target projection is invalid")
 	}
 	switch projection.State {
-	case ItemTargetPending:
-		if projection.OutcomeClass != "" || projection.OutcomeCode != "" ||
-			projection.NMID != 0 || projection.SourceActionID != 0 ||
-			projection.AttentionClosedAt != nil || projection.StartedAt != nil ||
-			projection.FinishedAt != nil {
-			return invalidTransfer("pending item-target has result")
-		}
 	case ItemTargetRunning:
 		if projection.OutcomeClass != "" || projection.OutcomeCode != "" ||
 			projection.AttentionClosedAt != nil || projection.StartedAt == nil ||
@@ -174,30 +186,6 @@ func (projection ItemTargetProjection) Validate() error {
 	return nil
 }
 
-type Transfer struct {
-	ID                        TransferID
-	BatchID                   cardpipeline.BatchID
-	Phase                     Phase
-	Outcome                   Outcome
-	AttentionCode             string
-	Revision                  int64
-	BatchSchemaVersion        int
-	BatchNormalizationVersion int
-	BatchChecksum             cardpipeline.Digest
-	ItemsCount                int
-	GroupsCount               int
-	CohortName                string
-	TargetSnapshotRevision    Digest
-	TargetSetRoot             Digest
-	TargetsCount              int
-	ItemTargetsCount          int64
-	GroupTargetsCount         int64
-	CreatedAt                 time.Time
-	StartedAt                 time.Time
-	FinishedAt                *time.Time
-	UpdatedAt                 time.Time
-}
-
 func (transfer Transfer) Validate() error {
 	expectedItemTargets, itemTargetsOK := checkedMultiply(
 		int64(transfer.ItemsCount),
@@ -220,19 +208,10 @@ func (transfer Transfer) Validate() error {
 	case strings.TrimSpace(transfer.AttentionCode) != transfer.AttentionCode ||
 		len(transfer.AttentionCode) > 128:
 		return invalidTransfer("attention code is invalid")
-	case transfer.Revision < 0:
-		return invalidTransfer("revision must not be negative")
-	case transfer.BatchSchemaVersion <= 0:
-		return invalidTransfer("batch schema version must be positive")
-	case transfer.BatchNormalizationVersion <= 0:
-		return invalidTransfer("batch normalization version must be positive")
 	case transfer.ItemsCount <= 0:
 		return invalidTransfer("items count must be positive")
 	case transfer.GroupsCount <= 0 || transfer.GroupsCount > transfer.ItemsCount:
 		return invalidTransfer("groups count is outside allowed bounds")
-	case strings.TrimSpace(transfer.CohortName) != transfer.CohortName ||
-		transfer.CohortName == "":
-		return invalidTransfer("cohort name is empty or not normalized")
 	case transfer.TargetsCount <= 0:
 		return invalidTransfer("targets count must be positive")
 	case transfer.ItemTargetsCount <= 0 || transfer.GroupTargetsCount <= 0:
@@ -263,70 +242,40 @@ func (transfer Transfer) Validate() error {
 		return invalidTransfer("finished time precedes started time")
 	case transfer.UpdatedAt.Before(transfer.CreatedAt):
 		return invalidTransfer("updated time precedes created time")
-	case isZeroDigest(transfer.TargetSnapshotRevision):
-		return invalidTransfer("target snapshot revision is empty")
-	case isZeroDigest(transfer.TargetSetRoot):
-		return invalidTransfer("target set root is empty")
-	case transfer.BatchChecksum == (cardpipeline.Digest{}):
-		return invalidTransfer("batch checksum is empty")
 	default:
 		return nil
 	}
 }
 
-type MutationTargetSnapshot struct {
-	CohortName string
-	Revision   Digest
-	Targets    []MutationTarget
-}
-
-type MutationTarget struct {
-	Position            int
-	SellerID            SellerID
-	ClientGeneration    ClientGeneration
-	BindingRevision     int64
-	CapabilityRevision  int64
-	ContentRead         bool
-	ContentWrite        bool
-	CredentialExpiresAt time.Time
-}
-
-func (snapshot MutationTargetSnapshot) Validate(now time.Time) error {
+func ValidateMutationTargets(targets []MutationTarget, now time.Time) error {
 	if now.IsZero() {
-		return invalidTargetSnapshot("validation time is empty")
+		return invalidMutationTargets("validation time is empty")
 	}
-	if strings.TrimSpace(snapshot.CohortName) != snapshot.CohortName ||
-		snapshot.CohortName == "" || len(snapshot.CohortName) > 128 {
-		return invalidTargetSnapshot("cohort name is invalid")
-	}
-	if isZeroDigest(snapshot.Revision) {
-		return invalidTargetSnapshot("snapshot revision is empty")
-	}
-	if len(snapshot.Targets) == 0 {
-		return invalidTargetSnapshot("target list is empty")
+	if len(targets) == 0 {
+		return invalidMutationTargets("target list is empty")
 	}
 
-	sellers := make(map[SellerID]struct{}, len(snapshot.Targets))
-	for index, target := range snapshot.Targets {
+	sellers := make(map[domain.SellerID]struct{}, len(targets))
+	for index, target := range targets {
 		switch {
 		case target.Position != index+1:
-			return invalidTargetSnapshot("target positions are not contiguous")
+			return invalidMutationTargets("target positions are not contiguous")
 		case target.SellerID.Validate() != nil:
-			return invalidTargetSnapshot("seller ID is invalid")
+			return invalidMutationTargets("seller ID is invalid")
 		case target.ClientGeneration.IsZero():
-			return invalidTargetSnapshot("client generation is empty")
+			return invalidMutationTargets("client generation is empty")
 		case target.BindingRevision <= 0:
-			return invalidTargetSnapshot("binding revision must be positive")
+			return invalidMutationTargets("binding revision must be positive")
 		case target.CapabilityRevision <= 0:
-			return invalidTargetSnapshot("capability revision must be positive")
+			return invalidMutationTargets("capability revision must be positive")
 		case !target.ContentRead || !target.ContentWrite:
-			return invalidTargetSnapshot("target lacks required Content capability")
+			return invalidMutationTargets("target lacks required Content capability")
 		case target.CredentialExpiresAt.IsZero() ||
 			!target.CredentialExpiresAt.After(now):
-			return invalidTargetSnapshot("target credential is expired")
+			return invalidMutationTargets("target credential is expired")
 		}
 		if _, exists := sellers[target.SellerID]; exists {
-			return invalidTargetSnapshot("seller ID is duplicated")
+			return invalidMutationTargets("seller ID is duplicated")
 		}
 		sellers[target.SellerID] = struct{}{}
 	}
@@ -334,14 +283,10 @@ func (snapshot MutationTargetSnapshot) Validate(now time.Time) error {
 	return nil
 }
 
-func isZeroDigest(digest Digest) bool {
-	return digest == Digest{}
-}
-
 func invalidTransfer(message string) error {
 	return core_errors.InvalidArgument("invalid transfer: %s", message)
 }
 
-func invalidTargetSnapshot(message string) error {
-	return core_errors.InvalidArgument("invalid mutation target snapshot: %s", message)
+func invalidMutationTargets(message string) error {
+	return core_errors.InvalidArgument("invalid mutation targets: %s", message)
 }

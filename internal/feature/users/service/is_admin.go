@@ -16,7 +16,7 @@ func (s *UsersService) IsAdmin(
 		return false, core_errors.InvalidArgument("invalid TelegramID='%d'", telegramID)
 	}
 
-	user, err := s.usersRepository.GetUserByTelegramID(
+	user, err := s.usersRepository.FindByTelegramID(
 		ctx,
 		telegramID,
 	)

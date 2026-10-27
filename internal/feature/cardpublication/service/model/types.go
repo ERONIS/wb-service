@@ -7,12 +7,9 @@ import (
 	"time"
 
 	"github.com/ERONIS/wb-service/internal/core/domain"
-	"github.com/ERONIS/wb-service/internal/core/domain/cardpipeline"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+	transfer_publication "github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
 )
-
-type SellerID = domain.SellerID
-type Digest = cardpipeline.Digest
 
 type ActionKind string
 
@@ -46,8 +43,7 @@ const (
 
 type ObservationDraft struct {
 	TargetID    int64
-	SellerID    SellerID
-	Digest      Digest
+	SellerID    domain.SellerID
 	NormalCount int
 	TrashCount  int
 	Payload     []byte
@@ -62,82 +58,81 @@ type ActionMemberDraft struct {
 }
 
 type ActionDraft struct {
-	Key              Digest
-	Kind             ActionKind
-	TargetID         int64
-	RequestDigest    Digest
-	RequestPayload   []byte
-	MemberSetDigest  Digest
-	MediaLinkSetRoot Digest
-	Members          []ActionMemberDraft
+	Position       int
+	Kind           ActionKind
+	TargetID       int64
+	RequestPayload []byte
+	Members        []ActionMemberDraft
 }
 
 type PlannedItemDraft struct {
 	GroupTargetID        int64
 	TransferItemTargetID int64
-	ActionKey            Digest
-	OutcomeClass         transfer_service.ResultClass
+	ActionPosition       int
+	OutcomeClass         transfer_model.ResultClass
 	OutcomeCode          DecisionCode
 	NMID                 int64
 }
 
 type PlannedGroupDraft struct {
 	GroupTargetID  int64
-	Status         transfer_service.PublicationProjectionStatus
-	OutcomeClass   transfer_service.ResultClass
+	Status         transfer_publication.PublicationProjectionStatus
+	OutcomeClass   transfer_model.ResultClass
 	OutcomeCode    DecisionCode
 	HasMediaAction bool
 }
 
 type IdentityDraft struct {
-	SellerID          SellerID
-	VendorCode        string
-	State             IdentityState
-	NMID              int64
-	IMTID             int64
-	SubjectID         int64
-	ObservationDigest Digest
+	SellerID   domain.SellerID
+	VendorCode string
+	State      IdentityState
+	NMID       int64
+	IMTID      int64
+	SubjectID  int64
 }
 
 type PlanDraft struct {
-	TransferID    transfer_service.TransferID
-	TargetSetRoot Digest
-	Digest        Digest
-	Observations  []ObservationDraft
-	Actions       []ActionDraft
-	Groups        []PlannedGroupDraft
-	Items         []PlannedItemDraft
-	Identities    []IdentityDraft
+	TransferID   transfer_model.TransferID
+	Observations []ObservationDraft
+	Actions      []ActionDraft
+	Groups       []PlannedGroupDraft
+	Items        []PlannedItemDraft
+	Identities   []IdentityDraft
+}
+
+type PersistedAction struct {
+	ID       int64
+	Position int
+}
+
+type PersistedPlan struct {
+	ID      int64
+	Actions []PersistedAction
 }
 
 func (draft PlanDraft) Validate() error {
-	if draft.TransferID <= 0 || draft.TargetSetRoot == (Digest{}) ||
-		draft.Digest == (Digest{}) {
+	if draft.TransferID <= 0 {
 		return errors.New("publication plan draft identity is invalid")
 	}
-	seenActions := make(map[Digest]struct{}, len(draft.Actions))
+	seenActions := make(map[int]struct{}, len(draft.Actions))
 	for index, action := range draft.Actions {
-		if action.Key == (Digest{}) || action.RequestDigest == (Digest{}) ||
-			action.MemberSetDigest == (Digest{}) || action.TargetID <= 0 ||
+		if action.Position <= 0 || action.TargetID <= 0 ||
 			len(action.RequestPayload) == 0 || len(action.Members) == 0 {
 			return fmt.Errorf("publication action at index %d is invalid", index)
 		}
 		switch action.Kind {
 		case ActionCreateGroup, ActionAddToGroup:
-			if action.MediaLinkSetRoot != (Digest{}) {
-				return errors.New("product action has media link root")
-			}
 		case ActionUploadMedia:
-			if action.MediaLinkSetRoot == (Digest{}) || len(action.Members) != 1 {
+			if len(action.Members) != 1 {
 				return errors.New("media action shape is invalid")
 			}
 		default:
 			return errors.New("publication action kind is invalid")
 		}
-		if _, exists := seenActions[action.Key]; exists {
-			return errors.New("publication action key is duplicated")
+		if _, exists := seenActions[action.Position]; exists {
+			return errors.New("publication action position is duplicated")
 		}
-		seenActions[action.Key] = struct{}{}
+		seenActions[action.Position] = struct{}{}
 		seenMembers := make(map[int64]struct{}, len(action.Members))
 		for memberIndex, member := range action.Members {
 			if member.GroupTargetID <= 0 || member.TransferItemTargetID <= 0 ||
@@ -155,15 +150,15 @@ func (draft PlanDraft) Validate() error {
 			seenMembers[member.TransferItemTargetID] = struct{}{}
 		}
 	}
+	for _, item := range draft.Items {
+		if item.ActionPosition < 0 {
+			return errors.New("publication item action position is invalid")
+		}
+		if item.ActionPosition > 0 {
+			if _, exists := seenActions[item.ActionPosition]; !exists {
+				return errors.New("publication item refers to missing action")
+			}
+		}
+	}
 	return nil
-}
-
-type PersistedAction struct {
-	ID  int64
-	Key Digest
-}
-
-type PersistedPlan struct {
-	ID      int64
-	Actions []PersistedAction
 }

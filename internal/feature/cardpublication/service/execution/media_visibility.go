@@ -9,14 +9,14 @@ import (
 
 	tx "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	"github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
-	transfer "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
 )
 
 const mediaVisibilityRequestTimeout = 45 * time.Second
 const mediaVisibilityLease = 2 * time.Minute
 
 type MediaVisibilityJob struct {
-	Candidate  MediaActionCandidate
+	Candidate  ProductActionCandidate
 	AttemptID  int64
 	Revision   int64
 	DeadlineAt time.Time
@@ -27,7 +27,7 @@ type MediaVisibilityUpdate struct {
 	Observation  catalog.MediaVisibility
 	NextDelay    time.Duration
 	ErrorCode    string
-	OutcomeClass transfer.ResultClass
+	OutcomeClass transfer_model.ResultClass
 	OutcomeCode  string
 }
 
@@ -66,7 +66,7 @@ func (dispatcher *MediaDispatcher) checkMediaVisibility(ctx context.Context, job
 	if action.State != "reconciling" || action.AttemptID != job.AttemptID {
 		return ErrMediaActionConflict
 	}
-	request, _, _, err := action.FinalRequest()
+	request, _, err := action.FinalRequest()
 	if err != nil {
 		return err
 	}
@@ -83,9 +83,9 @@ func (dispatcher *MediaDispatcher) checkMediaVisibility(ctx context.Context, job
 		}
 	}
 	if update.Observation.Visible {
-		update.OutcomeClass, update.OutcomeCode = transfer.ResultSuccess, "WB_MEDIA_VISIBLE"
+		update.OutcomeClass, update.OutcomeCode = transfer_model.ResultSuccess, "WB_MEDIA_VISIBLE"
 	} else if !time.Now().Before(job.DeadlineAt) {
-		update.OutcomeClass, update.OutcomeCode = transfer.ResultUnresolved, "WB_MEDIA_VISIBILITY_TIMEOUT"
+		update.OutcomeClass, update.OutcomeCode = transfer_model.ResultUnresolved, "WB_MEDIA_VISIBILITY_TIMEOUT"
 	}
 	resultCtx, cancel := publicationResultContext(ctx)
 	defer cancel()
@@ -101,7 +101,7 @@ func (dispatcher *MediaDispatcher) checkMediaVisibility(ctx context.Context, job
 		if err != nil {
 			return fmt.Errorf("persist media visibility check: %w", err)
 		}
-		if err := dispatcher.applyGroupResult(ctx, dbtx, locked.TransferID, group); err != nil {
+		if err := dispatcher.applyGroupResult(ctx, dbtx, locked, group); err != nil {
 			return err
 		}
 		if update.OutcomeClass == "" {

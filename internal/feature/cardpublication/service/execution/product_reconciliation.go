@@ -7,9 +7,15 @@ import (
 	"sort"
 	"time"
 
+	core_domain "github.com/ERONIS/wb-service/internal/core/domain"
 	core_postgres_transaction "github.com/ERONIS/wb-service/internal/core/repository/postgres/transaction"
 	contentapi "github.com/ERONIS/wb-service/internal/core/transport/wb/api/content/v1"
-	transfer_service "github.com/ERONIS/wb-service/internal/feature/transfer/service"
+	cardpublication_catalog "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/catalog"
+	cardpublication_model "github.com/ERONIS/wb-service/internal/feature/cardpublication/service/model"
+	transfer_authorization "github.com/ERONIS/wb-service/internal/feature/transfer/service/authorization"
+	transfer_model "github.com/ERONIS/wb-service/internal/feature/transfer/service/model"
+	transfer_publication "github.com/ERONIS/wb-service/internal/feature/transfer/service/publication"
+
 	"golang.org/x/sync/errgroup"
 )
 
@@ -17,7 +23,7 @@ const emptyResponseProductRetryDelay = 10 * time.Minute
 
 type productCatalogKey struct {
 	targetID int64
-	sellerID SellerID
+	sellerID core_domain.SellerID
 }
 
 type productCatalogRead struct {
@@ -31,10 +37,14 @@ func (dispatcher *ProductDispatcher) reconcilePending(ctx context.Context) error
 		ctx,
 		now,
 		dispatcher.reconciliationDelay,
+		dispatcher.reconcileAfterID,
 		productDispatchPageSize,
 	)
 	if err != nil {
 		return err
+	}
+	if len(candidates) > 0 {
+		dispatcher.reconcileAfterID = candidates[len(candidates)-1].ActionID
 	}
 	observations, catalogErr := dispatcher.readProductCatalog(ctx, candidates)
 	processErr := processConcurrently(ctx, candidates, dispatcher.concurrency, func(candidate ProductActionCandidate) error {
@@ -62,7 +72,7 @@ func (dispatcher *ProductDispatcher) reconcilePending(ctx context.Context) error
 func (dispatcher *ProductDispatcher) readProductCatalog(
 	ctx context.Context,
 	candidates []ProductActionCandidate,
-) (map[productCatalogKey]CatalogObservation, error) {
+) (map[productCatalogKey]cardpublication_catalog.CatalogObservation, error) {
 	vendorsByTarget := make(map[productCatalogKey]map[string]struct{})
 	for _, candidate := range candidates {
 		key := productCatalogKey{
@@ -93,7 +103,7 @@ func (dispatcher *ProductDispatcher) readProductCatalog(
 		return reads[left].key.targetID < reads[right].key.targetID
 	})
 
-	loaded := make([]CatalogObservation, len(reads))
+	loaded := make([]cardpublication_catalog.CatalogObservation, len(reads))
 	readErrors := make([]error, len(reads))
 	var group errgroup.Group
 	group.SetLimit(dispatcher.concurrency)
@@ -110,7 +120,7 @@ func (dispatcher *ProductDispatcher) readProductCatalog(
 		})
 	}
 	_ = group.Wait()
-	result := make(map[productCatalogKey]CatalogObservation, len(reads))
+	result := make(map[productCatalogKey]cardpublication_catalog.CatalogObservation, len(reads))
 	for index, read := range reads {
 		if readErrors[index] == nil {
 			result[read.key] = loaded[index]
@@ -122,7 +132,7 @@ func (dispatcher *ProductDispatcher) readProductCatalog(
 func (dispatcher *ProductDispatcher) reconcile(
 	ctx context.Context,
 	candidate ProductActionCandidate,
-	observation CatalogObservation,
+	observation cardpublication_catalog.CatalogObservation,
 	now time.Time,
 ) error {
 	action, err := dispatcher.loadLockedAction(ctx, candidate)
@@ -172,16 +182,22 @@ func (dispatcher *ProductDispatcher) reconcile(
 		now,
 		emptyResponseProductRetryDelay,
 	) {
-		return dispatcher.retryAfterEmptyResponse(ctx, candidate, action, targeted)
+		retried, err := dispatcher.retryAfterEmptyResponse(ctx, candidate, action, targeted)
+		if err != nil {
+			return err
+		}
+		if retried {
+			return nil
+		}
 	}
 	var memberResults []MemberReconciliationResult
 	var completeResult bool
-	var actionClass transfer_service.ResultClass
+	var actionClass transfer_model.ResultClass
 	var actionCode string
 	if retryResponseProvedRejection(action.EmptyResponseRetry) {
 		memberResults = rejectedRetryResults(action)
 		completeResult = true
-		actionClass = transfer_service.ResultRejected
+		actionClass = transfer_model.ResultRejected
 		actionCode = "PRODUCT_RETRY_REJECTED_BY_WB"
 	} else {
 		deadlineAction := action
@@ -240,7 +256,7 @@ func (dispatcher *ProductDispatcher) reconcile(
 			if err != nil {
 				return err
 			}
-			items := make([]transfer_service.PublicationTerminalItem, 0, len(locked.Members))
+			items := make([]transfer_publication.PublicationTerminalItem, 0, len(locked.Members))
 			byMember := make(map[int64]MemberReconciliationResult, len(memberResults))
 			for _, result := range memberResults {
 				byMember[result.ActionMemberID] = result
@@ -259,7 +275,7 @@ func (dispatcher *ProductDispatcher) reconcile(
 				if !exists {
 					return ErrProductActionConflict
 				}
-				items = append(items, transfer_service.PublicationTerminalItem{
+				items = append(items, transfer_publication.PublicationTerminalItem{
 					GroupTargetID:        member.GroupTargetID,
 					TransferItemTargetID: member.TransferItemTargetID,
 					OutcomeClass:         result.OutcomeClass,
@@ -267,10 +283,10 @@ func (dispatcher *ProductDispatcher) reconcile(
 					NMID:                 result.NMID,
 				})
 			}
-			if err := dispatcher.transferResults.ApplyWithin(
+			if err := dispatcher.transferResults.ApplyPublicationActionResult(
 				ctx,
 				tx,
-				transfer_service.ApplyPublicationActionResultCommand{
+				transfer_publication.ApplyPublicationActionResultCommand{
 					TransferID:         locked.TransferID,
 					ActionID:           locked.ActionID,
 					Items:              items,
@@ -286,7 +302,7 @@ func (dispatcher *ProductDispatcher) reconcile(
 
 func shouldRetryEmptyProductResponse(
 	action ProductAction,
-	observation CatalogObservation,
+	observation cardpublication_catalog.CatalogObservation,
 	matches []ErrorBatchMatch,
 	now time.Time,
 	delay time.Duration,
@@ -318,7 +334,7 @@ func rejectedRetryResults(action ProductAction) []MemberReconciliationResult {
 		if member.OutcomeClass == "" {
 			results = append(results, MemberReconciliationResult{
 				ActionMemberID: member.ID,
-				OutcomeClass:   transfer_service.ResultRejected,
+				OutcomeClass:   transfer_model.ResultRejected,
 				OutcomeCode:    "WB_RETRY_ENVELOPE_MEMBER_REJECTED",
 			})
 		}
@@ -331,8 +347,9 @@ func (dispatcher *ProductDispatcher) retryAfterEmptyResponse(
 	candidate ProductActionCandidate,
 	snapshot ProductAction,
 	targeted TargetedRecheck,
-) error {
+) (bool, error) {
 	var retry ProductRetry
+	var authorizationUnavailable bool
 	err := dispatcher.uow.WithinTransaction(
 		ctx,
 		func(ctx context.Context, tx core_postgres_transaction.DBTX) error {
@@ -343,6 +360,29 @@ func (dispatcher *ProductDispatcher) retryAfterEmptyResponse(
 			if !sameProductActionProgress(snapshot, action) ||
 				action.EmptyResponseRetry.ID != 0 {
 				return ErrProductActionConflict
+			}
+			_, err = dispatcher.authorization.LockValidProductRetry(
+				ctx,
+				tx,
+				transfer_authorization.LiveAuthorizationCheck{
+					TransferID:                    action.TransferID,
+					ActionID:                      action.ActionID,
+					AuthorizationID:               action.AuthorizationID,
+					ExpectedAuthorizationRevision: action.AuthorizationRevision,
+					PlanID:                        action.PlanID,
+					TargetID:                      action.TargetID,
+					SellerID:                      action.SellerID,
+					ClientGeneration:              action.ClientGeneration,
+				},
+			)
+			if errors.Is(err, transfer_authorization.ErrLiveAuthorization) ||
+				errors.Is(err, transfer_authorization.ErrLiveExpired) ||
+				errors.Is(err, transfer_authorization.ErrLiveModeDisabled) {
+				authorizationUnavailable = true
+				return nil
+			}
+			if err != nil {
+				return err
 			}
 			observationID, err := dispatcher.repository.InsertActionObservation(
 				ctx,
@@ -372,13 +412,16 @@ func (dispatcher *ProductDispatcher) retryAfterEmptyResponse(
 		},
 	)
 	if err != nil {
-		return err
+		return false, err
+	}
+	if authorizationUnavailable {
+		return false, nil
 	}
 
 	result := executeProductMutation(ctx, dispatcher.transport, snapshot)
 	resultCtx, cancel := publicationResultContext(ctx)
 	defer cancel()
-	return dispatcher.recordProductRetry(resultCtx, candidate, retry, result)
+	return true, dispatcher.recordProductRetry(resultCtx, candidate, retry, result)
 }
 
 func (dispatcher *ProductDispatcher) recordProductRetry(
@@ -453,11 +496,11 @@ func (dispatcher *ProductDispatcher) recordIncompleteReconciliation(
 
 func reconcileProductEvidence(
 	action ProductAction,
-	observation CatalogObservation,
+	observation cardpublication_catalog.CatalogObservation,
 	matches []ErrorBatchMatch,
 	now time.Time,
 	timeout time.Duration,
-) ([]MemberReconciliationResult, bool, transfer_service.ResultClass, string) {
+) ([]MemberReconciliationResult, bool, transfer_model.ResultClass, string) {
 	normalByVendor := make(map[string][]contentapi.Card)
 	for _, card := range observation.Normal {
 		normalByVendor[card.VendorCode] = append(normalByVendor[card.VendorCode], card)
@@ -480,9 +523,9 @@ func reconcileProductEvidence(
 	for _, member := range action.Members {
 		if member.OutcomeClass != "" {
 			switch member.OutcomeClass {
-			case transfer_service.ResultSuccess, transfer_service.ResultSkipped:
+			case transfer_model.ResultSuccess, transfer_model.ResultSkipped:
 				succeeded++
-			case transfer_service.ResultRejected:
+			case transfer_model.ResultRejected:
 				rejected++
 			default:
 				unresolved++
@@ -497,12 +540,12 @@ func reconcileProductEvidence(
 		case len(normal) == 1 && len(trash) == 0 && len(errorMatches) == 0:
 			card := normal[0]
 			if !observedCardMatchesProductAction(action, member, card) {
-				result.OutcomeClass = transfer_service.ResultUnresolved
+				result.OutcomeClass = transfer_model.ResultUnresolved
 				result.OutcomeCode = "REMOTE_PRODUCT_BINDING_MISMATCH"
 				unresolved++
 				break
 			}
-			result.OutcomeClass = transfer_service.ResultSuccess
+			result.OutcomeClass = transfer_model.ResultSuccess
 			result.OutcomeCode = "CREATED_CONFIRMED_BY_VENDOR_CODE"
 			result.NMID = card.NMID
 			result.IMTID = card.IMTID
@@ -510,16 +553,16 @@ func reconcileProductEvidence(
 			result.AttributionLevel = "observed_after_attempt"
 			succeeded++
 		case len(normal) == 0 && len(trash) == 0 && len(errorMatches) == 1:
-			result.OutcomeClass = transfer_service.ResultRejected
+			result.OutcomeClass = transfer_model.ResultRejected
 			result.OutcomeCode = "WB_ERROR_LIST_REJECTED"
 			result.ErrorBatchID = errorMatches[0].ID
 			rejected++
 		case len(normal) > 0 || len(trash) > 0 || len(errorMatches) > 1:
-			result.OutcomeClass = transfer_service.ResultUnresolved
+			result.OutcomeClass = transfer_model.ResultUnresolved
 			result.OutcomeCode = "REMOTE_EVIDENCE_CONFLICT"
 			unresolved++
 		case deadlineReached:
-			result.OutcomeClass = transfer_service.ResultUnresolved
+			result.OutcomeClass = transfer_model.ResultUnresolved
 			result.OutcomeCode = "RECONCILIATION_TIMEOUT"
 			unresolved++
 		default:
@@ -532,15 +575,15 @@ func reconcileProductEvidence(
 		return results, false, "", ""
 	}
 	if unresolved > 0 {
-		return results, true, transfer_service.ResultUnresolved, "PRODUCT_RECONCILIATION_UNRESOLVED"
+		return results, true, transfer_model.ResultUnresolved, "PRODUCT_RECONCILIATION_UNRESOLVED"
 	}
 	if rejected == len(action.Members) {
-		return results, true, transfer_service.ResultRejected, "PRODUCT_REJECTED_BY_ERROR_LIST"
+		return results, true, transfer_model.ResultRejected, "PRODUCT_REJECTED_BY_ERROR_LIST"
 	}
 	if succeeded == len(action.Members) {
-		return results, true, transfer_service.ResultSuccess, "PRODUCT_CREATED_BY_VENDOR_CODE"
+		return results, true, transfer_model.ResultSuccess, "PRODUCT_CREATED_BY_VENDOR_CODE"
 	}
-	return results, true, transfer_service.ResultPartial, "PRODUCT_RECONCILIATION_PARTIAL"
+	return results, true, transfer_model.ResultPartial, "PRODUCT_RECONCILIATION_PARTIAL"
 }
 
 func observedCardMatchesProductAction(
@@ -553,9 +596,9 @@ func observedCardMatchesProductAction(
 		return false
 	}
 	switch action.Kind {
-	case ActionCreateGroup:
+	case cardpublication_model.ActionCreateGroup:
 		var request contentapi.UploadCardsRequest
-		if decodeExactJSON(action.RequestPayload, &request) != nil {
+		if cardpublication_model.DecodeExactJSON(action.RequestPayload, &request) != nil {
 			return false
 		}
 		requestIndex := 0
@@ -568,9 +611,9 @@ func observedCardMatchesProductAction(
 				requestIndex++
 			}
 		}
-	case ActionAddToGroup:
+	case cardpublication_model.ActionAddToGroup:
 		var request contentapi.UploadCardsAddRequest
-		if decodeExactJSON(action.RequestPayload, &request) != nil ||
+		if cardpublication_model.DecodeExactJSON(action.RequestPayload, &request) != nil ||
 			member.RequestMemberIndex < 0 ||
 			member.RequestMemberIndex >= len(request.CardsToAdd) {
 			return false
@@ -609,7 +652,7 @@ func ValidateMemberReconciliationResults(
 			result.AttributionLevel != "observed_after_attempt" {
 			return errors.New("member reconciliation attribution level is invalid")
 		}
-		if result.OutcomeClass == transfer_service.ResultSuccess {
+		if result.OutcomeClass == transfer_model.ResultSuccess {
 			if result.AttributionLevel != "observed_after_attempt" || result.NMID <= 0 ||
 				result.IMTID <= 0 || result.SubjectID <= 0 || result.ErrorBatchID != 0 {
 				return errors.New("successful member reconciliation attribution is invalid")
