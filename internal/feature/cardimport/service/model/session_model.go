@@ -8,18 +8,16 @@ import (
 	core_errors "github.com/ERONIS/wb-service/internal/core/errors"
 )
 
-const (
-	MaxFilesPerSession = 0
-	MaxFileSize        = 20 << 20
-)
-
-type SessionStatus string
-
-const (
-	SessionStatusCollecting SessionStatus = "collecting"
-	SessionStatusFinalized  SessionStatus = "finalized"
-	SessionStatusCancelled  SessionStatus = "cancelled"
-)
+// SessionView объединяет сессию, файлы и замечания для просмотра.
+type SessionView struct {
+	Session
+	Files           []FileView
+	Issues          []IssueView
+	CardsCount      int
+	ReadyCardsCount int
+	ErrorsCount     int
+	Ready           bool
+}
 
 // Session представляет сессию приёма XLSX-файлов в памяти процесса.
 type Session struct {
@@ -31,15 +29,11 @@ type Session struct {
 	UpdatedAt        time.Time
 }
 
-type FileStatus string
-
-const (
-	FileStatusReserved FileStatus = "reserved"
-	FileStatusStored   FileStatus = "stored"
-	FileStatusParsing  FileStatus = "parsing"
-	FileStatusValid    FileStatus = "valid"
-	FileStatusInvalid  FileStatus = "invalid"
-)
+type FileView struct {
+	File
+	CardsCount  int
+	ErrorsCount int
+}
 
 // File представляет состояние одного загруженного Telegram-файла.
 type File struct {
@@ -57,27 +51,34 @@ type File struct {
 	UpdatedAt            time.Time
 }
 
-type FileView struct {
-	File
-	CardsCount  int
-	ErrorsCount int
-}
-
-type SessionView struct {
-	Session
-	Files           []FileView
-	Issues          []IssueView
-	CardsCount      int
-	ReadyCardsCount int
-	ErrorsCount     int
-	Ready           bool
-}
-
 type IssueView struct {
 	FileID   FileID
 	Filename string
 	Issue    ParseIssue
 }
+
+type SessionStatus string
+
+type FileStatus string
+
+const (
+	SessionStatusCollecting SessionStatus = "collecting"
+	SessionStatusFinalized  SessionStatus = "finalized"
+	SessionStatusCancelled  SessionStatus = "cancelled"
+)
+
+const (
+	FileStatusReserved FileStatus = "reserved"
+	FileStatusStored   FileStatus = "stored"
+	FileStatusParsing  FileStatus = "parsing"
+	FileStatusValid    FileStatus = "valid"
+	FileStatusInvalid  FileStatus = "invalid"
+)
+
+const (
+	MaxFilesPerSession = 0
+	MaxFileSize        = 20 << 20
+)
 
 // Validate проверяет поля и состояние сессии.
 func (s Session) Validate() error {

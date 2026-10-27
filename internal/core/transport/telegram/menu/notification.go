@@ -11,8 +11,7 @@ import (
 )
 
 const (
-	notificationVisibleFor = 4 * time.Second
-	notificationDedupeFor  = 30 * time.Second
+	notificationDedupeFor = 30 * time.Second
 )
 
 func Notify(ctx tele.Context, key string, text string) error {
@@ -39,13 +38,12 @@ func (host *menuHost) notify(ctx tele.Context, key string, text string) error {
 
 	state := host.chatState(chat.ID)
 	state.mu.Lock()
-	now := host.now().UTC()
-	if duplicateNotification(state.notification, key, now) {
-		state.mu.Unlock()
-		return nil
-	}
-
 	if ctx.Callback() != nil {
+		now := host.now().UTC()
+		if duplicateNotification(state.notification, key, now) {
+			state.mu.Unlock()
+			return nil
+		}
 		responseErr := ctx.RespondAlert(text)
 		if responseErr == nil {
 			host.recordNotification(state, key, now)
@@ -54,31 +52,26 @@ func (host *menuHost) notify(ctx tele.Context, key string, text string) error {
 		return responseErr
 	}
 
-	message, sendErr := host.bot.Send(chat, notificationText(text))
-	if sendErr != nil {
-		state.mu.Unlock()
-		return fmt.Errorf("send temporary Telegram notification: %w", sendErr)
+	base := state.menu
+	notice := notificationText(text)
+	opts := base.opts
+	if base.text != "" {
+		notice += "\n\n" + base.text
+	} else {
+		markup := host.bot.NewMarkup()
+		markup.Inline(markup.Row(MainMenuButton()))
+		opts = []interface{}{markup}
 	}
-	if message == nil || message.ID <= 0 {
-		state.mu.Unlock()
-		return errors.New("temporary Telegram notification has no message ID")
-	}
-	host.recordNotification(state, key, now)
+	renderErr := host.renderLocked(state, chat, menuPosition{}, notice, opts...)
+	state.menu = base
 	state.mu.Unlock()
-
-	go host.deleteAfter(message, notificationVisibleFor)
-	return nil
-}
-
-func (host *menuHost) deleteAfter(message *tele.Message, delay time.Duration) {
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-host.ctx.Done():
-		return
-	case <-timer.C:
+	if renderErr != nil {
+		return fmt.Errorf("render Telegram menu notification: %w", renderErr)
 	}
-	_ = host.bot.Delete(message)
+	if managed, ok := ctx.(*menuContext); ok {
+		managed.repositioned = true
+	}
+	return nil
 }
 
 func (host *menuHost) recordNotification(

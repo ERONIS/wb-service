@@ -25,17 +25,10 @@ type menuSnapshot struct {
 }
 
 type chatState struct {
-	mu                sync.Mutex
-	notification      notificationState
-	menu              menuSnapshot
-	lastMenuUpdate    time.Time
-	keyboardMu        sync.Mutex
-	keyboardInstalled bool
-}
-
-type persistentReplyKeyboard struct {
-	text   string
-	markup func() *tele.ReplyMarkup
+	mu             sync.Mutex
+	notification   notificationState
+	menu           menuSnapshot
+	lastMenuUpdate time.Time
 }
 
 type menuHost struct {
@@ -50,9 +43,6 @@ type menuHost struct {
 
 	fallbackMu sync.RWMutex
 	fallback   tele.HandlerFunc
-
-	replyKeyboardMu sync.RWMutex
-	replyKeyboard   persistentReplyKeyboard
 }
 
 func newMenuHost(ctx context.Context, bot *tele.Bot, store MenuStore) *menuHost {
@@ -72,7 +62,6 @@ func newMenuHost(ctx context.Context, bot *tele.Bot, store MenuStore) *menuHost 
 func (host *menuHost) Middleware() tele.MiddlewareFunc {
 	return func(next tele.HandlerFunc) tele.HandlerFunc {
 		return func(ctx tele.Context) error {
-			host.ensurePersistentReplyKeyboard(ctx)
 			active, err := host.acceptCallback(ctx)
 			if err != nil {
 				return fmt.Errorf("validate active Telegram menu: %w", err)

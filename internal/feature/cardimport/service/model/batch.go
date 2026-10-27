@@ -26,6 +26,11 @@ type BatchItem struct {
 	Payload           cardpipeline.Card
 }
 
+type (
+	SessionID int64
+	FileID    int64
+)
+
 // Validate проверяет состав и автора готовой пачки.
 func (header BatchHeader) Validate() error {
 	switch {

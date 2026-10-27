@@ -135,7 +135,11 @@ func usersPageMarkup(
 		rows = append(rows, navRow)
 	}
 
-	rows = append(rows, mainMenuRow(markup))
+	rows = append(
+		rows,
+		markup.Row(markup.Data("⬅️ Пользователи", buttonUsersMenu.Unique)),
+		mainMenuRow(markup),
+	)
 
 	markup.Inline(rows...)
 

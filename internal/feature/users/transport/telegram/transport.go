@@ -19,8 +19,12 @@ const pendingAddTTL = 10 * time.Minute
 const addUserTextFlow = "users.add"
 
 var (
-	buttonListUsers = tele.Btn{
+	buttonUsersMenu = tele.Btn{
 		Text:   "👥 Пользователи",
+		Unique: "users_menu",
+	}
+	buttonListUsers = tele.Btn{
+		Text:   "👥 Все пользователи",
 		Unique: "users_list",
 	}
 	buttonStartAddUser = tele.Btn{
@@ -131,6 +135,11 @@ func (h *UsersTgHandler) Register(
 	menu.RegisterFlowCleanup(addUserTextFlow, h.pendingAdds.Cancel)
 
 	menu.RegisterMenuItem(
+		buttonUsersMenu,
+		domain.RoleAdmin,
+		h.showUsersMenu,
+	)
+	menu.RegisterCallback(
 		buttonListUsers,
 		domain.RoleAdmin,
 		h.ListUsers,

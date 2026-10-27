@@ -4,6 +4,16 @@ import (
 	tele "gopkg.in/telebot.v3"
 )
 
+type menuContext struct {
+	tele.Context
+	host              *menuHost
+	repositionOnInput bool
+	inputMessageID    int
+	inputDeleted      bool
+	repositioned      bool
+	responded         bool
+}
+
 func isUserMessage(ctx tele.Context) bool {
 	if ctx == nil {
 		return false
@@ -17,16 +27,6 @@ func inputMessageID(ctx tele.Context) int {
 		return 0
 	}
 	return ctx.Update().Message.ID
-}
-
-type menuContext struct {
-	tele.Context
-	host              *menuHost
-	repositionOnInput bool
-	inputMessageID    int
-	inputDeleted      bool
-	repositioned      bool
-	responded         bool
 }
 
 // Respond отправляет ответ на callback один раз за обработку обновления.
@@ -71,16 +71,8 @@ func (ctx *menuContext) Delete() error {
 	return err
 }
 
-func (ctx *menuContext) SendNewMenu(what interface{}, opts ...interface{}) error {
-	text, ok := what.(string)
-	if !ok {
-		return ctx.Context.Send(what, opts...)
-	}
-	err := ctx.host.render(ctx.Context, menuPosition{fresh: true}, text, opts...)
-	if err == nil {
-		ctx.repositioned = true
-	}
-	return err
+func (ctx *menuContext) EditStoredMenu(what interface{}, opts ...interface{}) error {
+	return ctx.renderAt(menuPosition{}, what, opts...)
 }
 
 func (ctx *menuContext) NotifyMenu(key string, text string) error {
@@ -95,11 +87,15 @@ func (ctx *menuContext) position() menuPosition {
 }
 
 func (ctx *menuContext) render(what interface{}, opts ...interface{}) error {
+	return ctx.renderAt(ctx.position(), what, opts...)
+}
+
+func (ctx *menuContext) renderAt(position menuPosition, what interface{}, opts ...interface{}) error {
 	text, ok := what.(string)
 	if !ok {
 		return ctx.Context.Send(what, opts...)
 	}
-	err := ctx.host.render(ctx.Context, ctx.position(), text, opts...)
+	err := ctx.host.render(ctx.Context, position, text, opts...)
 	if err == nil {
 		ctx.repositioned = true
 	}

@@ -54,10 +54,6 @@ func Register(
 	handler := NewHandler(bot, roleAccess)
 	handler.menuHost = menuHost
 	handler.RegisterMainMenu()
-	menuHost.setPersistentReplyKeyboard(
-		replyKeyboardMessage,
-		handler.mainMenuReplyMarkup,
-	)
 	menuHost.setInputFallback(
 		roleAccess.Require(domain.RoleUser)(func(ctx tele.Context) error {
 			return handler.renderMainMenu(ctx)

@@ -14,7 +14,6 @@ import (
 const menuUpdateInterval = 1500 * time.Millisecond
 
 type menuPosition struct {
-	fresh          bool
 	afterMessageID int
 }
 
@@ -71,8 +70,7 @@ func (host *menuHost) renderLocked(
 		return err
 	}
 
-	fresh := position.fresh ||
-		(position.afterMessageID > 0 && previousID <= position.afterMessageID)
+	fresh := position.afterMessageID > 0 && previousID <= position.afterMessageID
 	if found && !fresh {
 		active := storedMessage(chat.ID, previousID)
 		_, editErr := host.bot.Edit(active, text, opts...)
